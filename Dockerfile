@@ -18,7 +18,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --upgrade pip setuptools \
+ && pip install -r requirements.txt
 COPY app/ app/
 
 USER 1001:1001
