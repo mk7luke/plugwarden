@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import queue
 import re
 import secrets
 import shutil
@@ -21,8 +22,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import (actions, audit, auth, config, configmerge, engine, health, inventory, jobs, plans, scheduler,
-               settings, updates)
+from . import (actions, amp, audit, auth, config, configmerge, engine, health, inventory, jobs, plans,
+               scheduler, settings, updates)
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -33,9 +34,12 @@ async def lifespan(_: FastAPI):
     config.ensure_dirs()
     jobs.recover_interrupted()
     scheduler.start()
+    amp.start_poller()
     # Index (hash + read) every jar in the background; read endpoints answer from the cache meanwhile.
     threading.Thread(target=inventory.index_all, name="indexer", daemon=True).start()
     yield
+    amp.stop_poller()
+    amp.CONSOLE.stop_all()
     scheduler.stop()
     inventory.flush_cache()
 
@@ -52,6 +56,20 @@ app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 @app.exception_handler(UnknownServer)
 async def _unknown_server(_: Request, exc: UnknownServer):
     return JSONResponse({"detail": str(exc)}, status_code=404)
+
+
+@app.exception_handler(amp.CommandRefused)
+async def _cmd_refused(_: Request, exc: amp.CommandRefused):
+    return JSONResponse({"detail": {"code": exc.code, "message": str(exc), "matched": exc.matched}},
+                        status_code=exc.status)
+
+
+@app.exception_handler(amp.AmpError)
+async def _amp_error(_: Request, exc: amp.AmpError):
+    code = {503: "amp_unavailable", 403: "amp_readonly", 404: "amp_not_instance"}.get(exc.status, "amp_error")
+    if not amp.configured():
+        code = "amp_unconfigured"
+    return JSONResponse({"detail": str(exc), "code": code}, status_code=exc.status)
 
 
 @app.exception_handler(inventory.NotFound)
@@ -275,6 +293,7 @@ def overview(request: Request):
         "default_source": snap["settings"]["default_source"],
         "version": config.VERSION,
         "indexing": inventory.indexing_state(),
+        "amp": amp.cached_status(),  # cache only: never a network call on the overview path
     }
 
 
@@ -301,6 +320,76 @@ def server_plugins(server_id: str):
 def server_tree(server_id: str, path: str = ""):
     srv = inventory.get_server(server_id)
     return inventory.list_tree(srv, path)
+
+
+# ---------------------------------------------------------------- AMP
+
+@app.get("/api/v2/amp/status")
+def amp_status():
+    """Live status per AMP Minecraft instance (refreshed if older than 5 s)."""
+    if not amp.configured():
+        return amp.cached_status()
+    return amp.status()
+
+
+@app.post("/api/v2/servers/{server_id}/power")
+def server_power(server_id: str, request: Request, body: dict = Body(...)):
+    """{action: start|stop|restart} → job. Acts on the Minecraft application; the AMP instance stays up."""
+    return job_ref(actions.start_power(user_of(request), server_id, (body or {}).get("action")))
+
+
+@app.post("/api/v2/restarts/rolling")
+def rolling_restart(request: Request, body: dict = Body(...)):
+    """One server at a time: warn players, restart, wait for Running + "Done (", check plugin health."""
+    return job_ref(actions.start_rolling(user_of(request), body))
+
+
+@app.post("/api/v2/servers/{server_id}/console")
+def console_command(server_id: str, request: Request, body: dict = Body(...)):
+    """{command, confirm?}. Commands matching the denylist setting need confirm: true. Audited."""
+    amp.require_writable()
+    srv = inventory.get_server(server_id)
+    cmd = amp.check_command((body or {}).get("command"), settings.load_raw()["amp_command_denylist"],
+                            (body or {}).get("confirm") is True)
+    amp.send_command(srv.id, cmd)
+    audit.record(user_of(request), "console-command", servers=[srv.id], path=cmd,
+                 detail="confirmed protected command" if (body or {}).get("confirm") is True else "")
+    return {"ok": True}
+
+
+@app.get("/api/v2/servers/{server_id}/console/stream")
+async def console_stream(server_id: str, request: Request):
+    """SSE: the last 200 console lines, then live lines (secrets redacted)."""
+    if not amp.configured():
+        raise amp.AmpError("AMP integration is not configured", 503)
+    srv = inventory.get_server(server_id)
+    q, backlog = await run_in_threadpool(amp.CONSOLE.subscribe, srv.id)
+
+    async def gen():
+        try:
+            yield "retry: 3000\n\n"
+            for ln in backlog:
+                yield f"data: {ln}\n\n"
+            idle = 0.0
+            while not await request.is_disconnected():
+                sent = False
+                while True:
+                    try:
+                        ln = q.get_nowait()
+                    except queue.Empty:
+                        break
+                    yield f"data: {ln}\n\n"
+                    sent = True
+                idle = 0.0 if sent else idle + 0.5
+                if idle >= 15:
+                    idle = 0.0
+                    yield ": ping\n\n"
+                await asyncio.sleep(0.5)
+        finally:
+            amp.CONSOLE.unsubscribe(srv.id, q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/v2/servers/{server_id}/health")

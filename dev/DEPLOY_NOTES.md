@@ -161,3 +161,22 @@ It is stored in `STATE_DIR/access.log` (JSON lines, rotated at 5 MB).
 - `app.stale-2025-12-14/` in the repo root is an old copy. Do not deploy it alongside `app/`.
 - `docker compose build` installs everything from `requirements.txt`, including `PyJWT[crypto]`.
 - `/healthz` is the only unauthenticated endpoint. It returns `{"ok":true}` and nothing else.
+
+## 8. AMP integration (optional)
+
+PlugWarden can talk to the CubeCoders AMP controller (ADS) for live status, start/stop/restart, rolling restarts, a live console and audited console commands. Leave it unconfigured and the UI hides these features.
+
+- **Credentials:** put the owner's AMP admin login in `.env.amp` next to `docker-compose.yml` (gitignored, `chmod 600`):
+  ```
+  LGT_AMP_USER=...
+  LGT_AMP_PASSWORD=...
+  # LGT_AMP_TOKEN=...   only if the account uses 2FA
+  ```
+  The compose file loads it as an optional env file. The credentials are never logged or returned by the API, and error texts are scrubbed.
+- **URL:** `LGT_AMP_URL=http://host.docker.internal:8080` (in `.env.example`). `extra_hosts: host.docker.internal:host-gateway` lets the container reach the ADS on the host. The ADS listens on 0.0.0.0:8080.
+- **Read-only mode:** `LGT_AMP_READONLY=1` allows status and console only. Power actions and console commands are refused with 403.
+- **What gets controlled:**
+  - Only Minecraft-module instances whose InstanceName equals a datastore server id. Generic instances (Enshrouded01, sonsforest101, subnautica101) and ADS01 are ignored.
+  - Power actions use the instance-level `Core/Start|Stop|Restart`: the Minecraft application restarts while the AMP instance process stays up.
+  - AMP self-updates are not touched.
+- **Development:** `LGT_AMP_MOCK=1 dev/serve.sh` starts `dev/mock_amp.py` on 127.0.0.1:18100. The mock writes realistic startup logs into the sandbox. `LGT_AMP_REAL=1 dev/serve.sh` reads the real ADS with `.env.amp`, forced read-only.

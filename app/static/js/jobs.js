@@ -5,8 +5,8 @@ import { relTime } from "./fmt.js";
 
 const patch = (id, p) => setState(s => ({ jobs: s.jobs.map(j => j.id === id ? { ...j, ...p } : j) }));
 
-export const JOB_TITLES = { "update-check": "Update check", "update-apply": "Apply updates", deploy: "Deploy", remove: "Remove", undo: "Undo" };
-export const KIND_ICON = { "update-check": "refresh-cw", "update-apply": "circle-arrow-up", deploy: "rocket", remove: "trash-2", undo: "undo-2" };
+export const JOB_TITLES = { "update-check": "Update check", "update-apply": "Apply updates", deploy: "Deploy", remove: "Remove", undo: "Undo", power: "Power", "rolling-restart": "Rolling restart" };
+export const KIND_ICON = { "update-check": "refresh-cw", "update-apply": "circle-arrow-up", deploy: "rocket", remove: "trash-2", undo: "undo-2", power: "zap", "rolling-restart": "rotate-ccw" };
 export const ACTIVE = ["queued", "running"];
 export const isActive = (st) => ACTIVE.includes(st);
 // Tone for a job status: ok | danger | warn | run

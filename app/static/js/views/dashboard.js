@@ -8,6 +8,7 @@ import { relTime, plural } from "../fmt.js";
 import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { updateCounts, updateHeadline, updateDetail, restartList, checkLine, updatesOf } from "../summary.js";
 import { CanaryStatus } from "../components/health.js";
+import { useAmpStatus, AmpBadge, RestartNow } from "../components/amp.js";
 
 const MODE = { off: "Off", notify: "Notify only", apply: "Automatic" };
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
@@ -19,6 +20,7 @@ export function Dashboard() {
   const mx = useQuery("/matrix");
   const jobs = useQuery("/jobs");
   const [view, setView] = useState(() => pref("amp.dash.view", "tiles"));
+  const amp = useAmpStatus();
   const setV = (v) => { setView(v); save("amp.dash.view", v); };
 
   const byServer = useMemo(() => {
@@ -51,7 +53,7 @@ export function Dashboard() {
           </div></div>
         ${!d ? html`<div class="tiles">${Array.from({ length: 9 }, () => html`<div class="tile tile-skel"><${Skel} w="55%" h=${12} /><${Skel} w="40%" h=${10} /><${Skel} w="80%" h=${8} /><${Skel} w="70%" h=${8} /><${Skel} w="60%" h=${8} /></div>`)}</div>`
           : view === "list" ? html`<${ServerList} servers=${d.servers} byServer=${byServer} />`
-          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} checked=${!!d.last_check} />`)}</div>`}
+          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} checked=${!!d.last_check} a=${amp.servers[s.id]} />`)}</div>`}
       </section>
       <aside aria-labelledby="feed-h"><${Feed} q=${jobs} /></aside>
     </div>`;
@@ -75,8 +77,11 @@ function Headline({ d, c, restarts }) {
         ${d.auto_update?.next_run ? ` · next ${relTime(d.auto_update.next_run)}` : ""}
         ${d.auto_update?.mode === "apply" && d.auto_update?.effective_canary && html` · canary <b>${d.auto_update.effective_canary}</b>${(() => { const soak = (d.auto_update.canary || []).filter(c => c.canary_health !== "failed"); return soak.length ? ` soaking ${plural(soak.length, "update")}, ${Math.ceil(Math.max(...soak.map(c => c.soak_hours_left || 0)))} h left` : ""; })()}`}</p>
 <${CanaryStatus} au=${d.auto_update} compact=${true} />
+      ${(() => { const f = d.servers.flatMap(s => (s.startup?.failed || []).map(p => ({ ...p, server: s.id }))); return f.length > 0 && html`<p class="hl-canary-fail"><${Icon} n="circle-x" cls="i-sm" />
+        <b>${plural(f.length, "plugin")} ${f.length === 1 ? "is" : "are"} not running:</b> ${f.slice(0, 3).map(p => html`<a class="link" href=${`#/servers/${encodeURIComponent(p.server)}`}>${p.name} on ${p.server}</a>`).reduce((a, x, i) => i ? [...a, ", ", x] : [x], [])}${f.length > 3 ? ` +${f.length - 3} more` : ""}</p>`; })()}
       ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
-        <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
+        <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span>
+        <${RestartNow} servers=${restarts.map(r => r.server)} /></p>`}
     </div>
     <div class="row wrap" style="gap:8px">
       ${has ? html`<${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => openChangeset("all", "Review: update everything")}>Review & update all<//>`
@@ -90,12 +95,13 @@ function Flags({ s, n, restart = true, compact = false }) {
   return html`<div class="tile-flags">
     ${n > 0 && html`<span class="tag tag-update tip" tabindex="0" data-tip=${`${plural(n, "plugin")} can be updated on ${s.id}`}>${plural(n, "update")}</span>`}
     ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip} aria-label=${`${s.drift} drift: ${driftTip}`}><${Icon} n="git-compare-arrows" />${s.drift}${compact ? "" : " drift"}</span>`}
+    ${(s.startup?.failed?.length || s.startup_failed) > 0 && html`<span class="tag tag-danger tip" tabindex="0" data-tip=${`Not running after the last start: ${(s.startup?.failed || []).map(f => f.name).join(", ") || s.startup_failed}`}><${Icon} n="circle-x" />${s.startup?.failed?.length || s.startup_failed} failed</span>`}
     ${restart && s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started"><${Icon} n="rotate-ccw" />Restart</span>`}
     ${!compact && s.is_source && html`<span class="tag tag-plain tip" tabindex="0" data-tip="Default deploy source"><${Icon} n="circle-dot" />source</span>`}
   </div>`;
 }
 
-function ServerTile({ s, ups, loadingUps, vers, checked }) {
+function ServerTile({ s, ups, loadingUps, vers, checked, a }) {
   const href = `#/servers/${encodeURIComponent(s.id)}`;
   const empty = s.plugin_count === 0;
   const n = ups.length;
@@ -114,7 +120,8 @@ function ServerTile({ s, ups, loadingUps, vers, checked }) {
         : html`<div class="watch-empty ok"><${Icon} n="circle-check" cls="i-sm" />All tracked plugins current</div>`}
     </div>
     <div class="tile-foot">
-      <span class="tile-plat ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} short=${!!s.pending_restart} />`}${s.is_source ? html` <span class="muted">· source</span>` : ""}</span>
+      <${AmpBadge} a=${a} />
+      ${!(a && s.pending_restart) && html`<span class="tile-plat ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} short=${!!s.pending_restart} />`}${s.is_source ? html` <span class="muted">· source</span>` : ""}</span>`}
       ${s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started — restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart</span>`}
       ${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}
         aria-label=${`Review ${plural(n, "update")} on ${s.id}`}>Review ${n}<//>`}

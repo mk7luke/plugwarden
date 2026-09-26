@@ -7,6 +7,7 @@ import { Sidebar, Topbar, Tabbar, Drawer } from "./components/shell.js";
 import { Toasts, ConfirmHost, Palette, Dock, NAV, Shortcuts } from "./components/overlays.js";
 import { ChangesetHost } from "./components/changeset.js";
 import { RemoveHost } from "./components/removedialog.js";
+import { RollingHost, ConsoleHost, AmpCacheSync } from "./components/amp.js";
 import { checkUpdates, openUpdateAll } from "./actions.js";
 import { Dashboard } from "./views/dashboard.js";
 import { ServersList, ServerDetail } from "./views/servers.js";
@@ -104,6 +105,9 @@ function App() {
     <${Palette} actions=${PALETTE_ACTIONS} />
     <${ChangesetHost} />
     <${RemoveHost} />
+    <${RollingHost} />
+    <${ConsoleHost} />
+    <${AmpCacheSync} />
     <${ConfirmHost} />
     <${Shortcuts} />
     <${Dock} />

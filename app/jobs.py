@@ -113,10 +113,13 @@ class Job:
                 self._cond.notify_all()
         self._maybe_save()
 
-    def add_result(self, server: str, item: str, action: str, outcome: str, detail: str = "", **extra) -> dict:
+    def add_result(self, server: str, item: str, action: str, outcome: str, detail: str = "",
+                   touched_files: bool = True, **extra) -> dict:
+        """touched_files=False for results that changed nothing on disk (power actions): they must not
+        mark the server as needing a restart."""
         r = {"server": server, "item": item, "action": action, "outcome": outcome, "detail": detail, **extra}
         self.results.append(r)
-        if outcome == "changed" and not self.dry_run and server not in self.changed_servers:
+        if touched_files and outcome == "changed" and not self.dry_run and server not in self.changed_servers:
             self.changed_servers.append(server)
         self._maybe_save()
         return r

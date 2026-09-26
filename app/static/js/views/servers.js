@@ -5,6 +5,7 @@ import { post, put } from "../api.js";
 import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
 import { ServerKnownIssues } from "../components/health.js";
+import { AmpPanel, RestartNow } from "../components/amp.js";
 import { relTime, bytes, plural, safeUrl } from "../fmt.js";
 import { navigate } from "../router.js";
 
@@ -63,6 +64,9 @@ export function ServerDetail({ id }) {
   }, [plugins.data, filter, search]);
   const outdated = (plugins.data || []).filter(p => p.status === "outdated");
   const reading = (plugins.data || []).some(p => p.indexing);
+  // Plugins the last start left not running (from the log-based health report; same query as the failures card).
+  const health = useQuery(srv && srv.plugin_count > 0 ? `/servers/${encodeURIComponent(id)}/health` : null);
+  const notRunning = new Set((health.data?.plugins || []).filter(h => h.status === "failed").map(h => h.key));
   const counts = { all: plugins.data?.length, outdated: outdated.length, unknown: plugins.data?.filter(p => p.status === "unknown").length, held: plugins.data?.filter(held).length };
 
   const review = (list, title) => openChangeset(list.length === outdated.length ? { server: id } : { items: list.map(p => ({ key: p.key, servers: [id] })) }, title);
@@ -85,7 +89,9 @@ export function ServerDetail({ id }) {
       <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${() => review(outdated, `Review updates on ${id}`)}>
         ${reading ? "Reading plugins…" : outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>
     <//>
+    ${srv && srv.family !== "fabric" && html`<${AmpPanel} server=${id} />`}
     ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed</b> — files changed since ${id} last started.</div>
+      <${RestartNow} servers=${[id]} label="Restart now…" />
       <${Btn} size="sm" icon="check" onClick=${markRestarted}>Mark restarted<//></div>`}
     ${srv && srv.plugin_count > 0 && html`<${ServerKnownIssues} server=${id} />`}
     ${srv?.platform === "velocity" && html`<div class="plan-warn" style="border:1px solid var(--warn-line);border-radius:var(--r-md);margin-bottom:var(--s-4)"><${Icon} n="shield" cls="i-sm" />Velocity proxy — it uses a different plugin ecosystem, and Bukkit/Paper plugins are never pushed here.</div>`}
@@ -122,7 +128,7 @@ export function ServerDetail({ id }) {
             <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
                 ${safeUrl(p.latest.changelog_url) && p.status === "outdated" && html` <a class="link small" href=${safeUrl(p.latest.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
               : html`<span class="muted small">—</span>`}</td>
-            <td class="hide-sm"><${Status} p=${p} id=${id} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
+            <td class="hide-sm">${notRunning.has(p.key) && html`<${Tag} kind="danger" icon="circle-x" title="Failed to start or disabled itself after the last server start — see the card above">Not running<//> `}<${Status} p=${p} id=${id} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
             <td class="col-actions"><div class="row-actions">
               ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => review([p], `Update ${p.name} on ${id}`)} aria-label=${`Review ${p.name} update`}><span class="hide-sm">Review</span><//>`}
               <${RowMenu} p=${p} id=${id} cells=${cellsOf(p.key)} />

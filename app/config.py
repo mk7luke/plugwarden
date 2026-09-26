@@ -24,6 +24,12 @@ CF_AUD = ""
 ALLOWED_HOSTS: set[str] = {"localhost", "127.0.0.1"}
 HOSTNAME = ""
 ALLOW_INSECURE = False  # LGT_AUTH_ALLOW_INSECURE=1: auth "none" on a non-loopback bind (dev container)
+# AMP (optional): ADS controller URL + admin login. Never logged or returned by the API.
+AMP_URL = ""
+AMP_USER = ""
+AMP_PASSWORD = ""
+AMP_TOKEN = ""
+AMP_READONLY = False  # LGT_AMP_READONLY=1: status/console only, no power actions or commands
 DOCS_ENABLED = False
 MIN_FREE_BYTES = 2 * 1024 ** 3
 
@@ -36,8 +42,13 @@ def init(base: str | None = None, state_dir: str | None = None, create: bool = T
     BASE = Path(base or override or os.environ.get("LGT_BASE", "").strip() or DEFAULT_BASE)
     STATE_DIR = Path(state_dir or os.environ.get("LGT_STATE_DIR", "").strip() or "/var/lib/lgt-amp-sync")
     global BIND, AUTH_MODE, CF_TEAM_DOMAIN, CF_AUD, ALLOWED_HOSTS, DOCS_ENABLED, MIN_FREE_BYTES, HOSTNAME
-    global ALLOW_INSECURE
+    global ALLOW_INSECURE, AMP_URL, AMP_USER, AMP_PASSWORD, AMP_TOKEN, AMP_READONLY
     ALLOW_INSECURE = os.environ.get("LGT_AUTH_ALLOW_INSECURE", "").strip() == "1"
+    AMP_URL = os.environ.get("LGT_AMP_URL", "").strip().rstrip("/")
+    AMP_USER = os.environ.get("LGT_AMP_USER", "").strip()
+    AMP_PASSWORD = os.environ.get("LGT_AMP_PASSWORD", "")
+    AMP_TOKEN = os.environ.get("LGT_AMP_TOKEN", "").strip()
+    AMP_READONLY = os.environ.get("LGT_AMP_READONLY", "").strip() == "1"
     BIND = os.environ.get("LGT_BIND", "127.0.0.1").strip() or "127.0.0.1"
     CF_TEAM_DOMAIN = os.environ.get("LGT_CF_TEAM_DOMAIN", "").strip().removeprefix("https://").rstrip("/")
     CF_AUD = os.environ.get("LGT_CF_AUD", "").strip()

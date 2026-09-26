@@ -68,3 +68,17 @@ export async function searchFiles(server, q, limit = 200) {
   const r = await get(`/servers/${encodeURIComponent(server)}/search?q=${encodeURIComponent(longest)}&limit=${limit}`);
   return { ...r, results: (r.results || []).filter(x => words.every(w => x.path.toLowerCase().includes(w))) };
 }
+
+// Generic SSE stream of text lines (e.g. a server console). Returns close().
+export function streamUrl(path, { onLine, onOpen, onError }) {
+  if (FIXTURES) {
+    let closed = false;
+    fixtures().then(f => f.consoleStream(path, l => !closed && onLine(l), () => !closed && onOpen?.()));
+    return () => { closed = true; };
+  }
+  const es = new EventSource("/api/v2" + path);
+  es.onopen = () => onOpen?.();
+  es.onmessage = (e) => onLine(e.data);
+  es.onerror = () => { if (es.readyState === EventSource.CLOSED) onError?.(); else onError?.(); };
+  return () => es.close();
+}

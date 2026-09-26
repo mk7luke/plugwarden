@@ -178,6 +178,7 @@ function server(id, platform, mc) {
     drift: ps.filter(p => dk.has(p.key)).length,
     pending_restart: pendingRestart.has(id),
     eligible_target: !["velocity", "fabric"].includes(platform),
+    startup: id === "M1-hub01" ? { failed: [{ key: "bukkit:voicechat", name: "voicechat", reason: "disabled itself after startup", preexisting: true }], checked_at: iso(20 * MIN) } : { failed: [] },
   };
 }
 const servers = () => SERVERS.map(s => server(...s));
@@ -260,6 +261,21 @@ function plan(body) {
 }
 
 const uploads = {};
+const ampOverride = {};
+const consoleEcho = [];
+function ampState(id, i) {
+  const st = ampOverride[id] || (id === "M7-bending01" ? "stopped" : "running");
+  return { state: st, players_online: st === "running" ? [4, 0, 12, 3, 7, 1, 0, 9, 2, 5][i % 10] : null, players_max: 100, players: st === "running" && i % 3 === 0 ? ["Pilber", "Gonzron23", "survivalsteve"] : [],
+    cpu_percent: st === "running" ? 12 + (i * 7) % 40 : null, memory_mb: st === "running" ? 2048 + i * 310 : null, memory_max_mb: 6144, uptime_seconds: st === "running" ? 3600 * (3 + i * 5) : null, error: null };
+}
+export function consoleStream(path, onLine, onOpen) {
+  const sv = decodeURIComponent(path.split("/")[2]);
+  const backlog = [`[22:10:01 INFO]: Done (12.402s)! For help, type "help"`, `[22:14:33 INFO]: Pilber joined the game`, `[22:15:02 WARN]: [voicechat] Failed to bind to address, binding to wildcard IP instead`, `[22:16:40 INFO]: <Pilber> anyone up for a match?`];
+  setTimeout(() => { onOpen(); backlog.forEach(onLine); }, 150);
+  let n = 0;
+  const t = setInterval(() => { while (consoleEcho.length) onLine(consoleEcho.shift()); if (++n % 4 === 0) onLine(`[22:${17 + n}:0${n % 10} INFO]: [${sv}] TPS 20.0 · ${3 + (n % 4)} players`); }, 800);
+  return () => clearInterval(t);
+}
 const plans = {};
 const pendingRestart = new Set(["M1-hub01", "M4-skyblock01"]);
 
@@ -304,7 +320,7 @@ export async function handle(method, path, body) {
       return delay({ servers: ss, totals: { servers: ss.length, plugins: m.plugins.length, updates: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, drift: [...driftKeys()].length },
         last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · 46 of 78 jars identified`,
         ...{},
-      restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), auto_update: { mode: "apply", next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString(), effective_canary: "elChapo01",
+      restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), amp: { configured: true, reachable: true }, auto_update: { mode: "apply", next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString(), effective_canary: "elChapo01",
           canary: [{ key: "bukkit:coreprotect", name: "CoreProtect", version: "23.4", server: "elChapo01", soak_hours_left: 9, canary_health: { status: "healthy", reason: "Enabling CoreProtect v23.4 logged", excerpt: [], log: "latest.log", checked_at: iso(20 * MIN) } }],
           held: [{ key: "bukkit:plugmanx", name: "PlugManX", version: "3.0.3", server: "elChapo01", at: iso(3 * HOUR), reason: "Error occurred while enabling PlugManX v3.0.3", excerpt: ["[12:04:11 ERROR]: Error occurred while enabling PlugManX v3.0.3 (Is it up to date?)", "java.lang.NoClassDefFoundError: com/…/PaperPluginManager"] }] }, user: "luke@interactep.com" });
     }
@@ -328,9 +344,12 @@ export async function handle(method, path, body) {
     if (p === "/settings") return delay(settings);
     if ((m = p.match(/^\/servers\/([^/]+)\/health$/))) return delay({ server: decodeURIComponent(m[1]), since: q.get("since"), checked_at: iso(0), logs: ["latest.log"], startup_complete: true, restarted: true, restarted_at: (now - 20 * MIN) / 1000,
       counts: { healthy: 1, failed: 1, unknown: 0 },
-      plugins: [{ key: "bukkit:plugmanx", name: "PlugManX", version: "3.2.1", status: "failed", reason: "Error occurred while enabling PlugManX v3.2.1", excerpt: ["[ERROR] Error occurred while enabling PlugManX v3.2.1 (Is it up to date?)", "java.lang.NoSuchMethodError: 'void org.bukkit…'"], log: "latest.log" },
+      plugins: [{ key: "bukkit:voicechat", name: "voicechat", version: "2.6.6", status: "failed", running: false, preexisting: true, reason: "disabled itself after startup", match_index: 1, line: 657, log: "latest.log", excerpt: ["[22:10:01 ERROR]: [voicechat] Voice chat server error", "[22:10:01 ERROR]: [voicechat] Disabling Simple Voice Chat", "[22:10:01 INFO]: [voicechat] Disabling voicechat v2.6.6"] },
+        { key: "bukkit:plugmanx", name: "PlugManX", version: "3.2.1", status: "failed", reason: "Error occurred while enabling PlugManX v3.2.1", excerpt: ["[ERROR] Error occurred while enabling PlugManX v3.2.1 (Is it up to date?)", "java.lang.NoSuchMethodError: 'void org.bukkit…'"], log: "latest.log" },
         { key: "bukkit:coreprotect", name: "CoreProtect", version: "24.1", status: "healthy", reason: "Enabling CoreProtect v24.1", excerpt: [], log: "latest.log" }],
-      preexisting_errors: [{ key: "bukkit:voicechat", name: "voicechat", reason: "Failed to bind UDP port 24454 (address already in use)", excerpt: ["[WARN] [voicechat] Failed to bind to 0.0.0.0:24454 — java.net.BindException: Address already in use"], log: "latest.log", seen_in_runs: 4 }] }, 400);
+      preexisting_errors: [{ key: "bukkit:essentials", name: "Essentials", level: "error", reason: "You are running an unsupported server version!", excerpt: ["[22:09:40 ERROR]: [Essentials] You are running an unsupported server version!"], match_index: 0, log: "latest.log", seen_in_runs: 3 },
+        { key: "bukkit:voicechat", name: "voicechat", level: "warning", reason: "Failed to bind UDP port 24454 (address already in use)", excerpt: ["[WARN] [voicechat] Failed to bind to 0.0.0.0:24454 — java.net.BindException: Address already in use"], log: "latest.log", seen_in_runs: 4 }] }, 400);
+    if (p === "/amp/status") return delay({ configured: true, readonly: false, servers: Object.fromEntries(SERVERS.filter(([id, pf]) => pf !== "fabric").map(([id], i) => [id, ampState(id, i)])) }, 150);
     if (p === "/access-log") return delay({ entries: [{ at: iso(3 * MIN), user: "luke@interactep.com", action: "diff", servers: ["elChapo01", "M1-hub01"], path: "LuckPerms/config.yml", detail: "2 value(s) redacted" }] });
   }
   if (method === "PUT" && p === "/settings") { Object.assign(settings, body); return delay(settings); }
@@ -375,6 +394,12 @@ export async function handle(method, path, body) {
     if ((m = p.match(/^\/plugins\/([^/]+)\/ignore$/))) { const k = decodeURIComponent(m[1]); settings.ignores = body.ignored ? [...new Set([...settings.ignores, k])] : settings.ignores.filter(x => x !== k); return delay(settings); }
     if ((m = p.match(/^\/plugins\/([^/]+)\/remove$/))) return delay({ job_id: newJob("remove", `Remove ${decodeURIComponent(m[1])}`, (body.servers || []).map(sv => ({ server: sv, item: decodeURIComponent(m[1]), action: "delete", outcome: "changed", detail: "removed" }))).id });
     if ((m = p.match(/^\/servers\/([^/]+)\/restarted$/))) { pendingRestart.delete(decodeURIComponent(m[1])); return delay({ ok: true }); }
+    if ((m = p.match(/^\/servers\/([^/]+)\/power$/))) { const sv = decodeURIComponent(m[1]); ampOverride[sv] = body.action === "stop" ? "stopping" : "restarting"; return delay({ job_id: newJob("power", `${body.action} ${sv}`, [{ server: sv, item: sv, action: body.action, outcome: "changed", detail: "" }]).id }); }
+    if (p === "/restarts/rolling") return delay({ job_id: newJob("rolling-restart", `Rolling restart of ${body.servers.length} server(s)`, body.servers.map(sv => ({ server: sv, item: sv, action: "restart", outcome: "changed", detail: "restarted · plugins healthy" }))).id });
+    if ((m = p.match(/^\/servers\/([^/]+)\/console$/))) {
+      if (/^(stop|restart|op |deop |ban|kill|whitelist off)/i.test(body.command) && !body.confirm) { const e = new Error(`“${body.command}” affects players or the server itself`); e.status = 409; e.code = "confirm_required"; throw e; }
+      consoleEcho.push(`> ${body.command}`); return delay({ ok: true }, 120);
+    }
     if ((m = p.match(/^\/jobs\/([^/]+)\/undo$/))) return delay({ job_id: newJob("undo", `Undo ${m[1]}`).id });
   }
   const e = new Error(`Fixture: no handler for ${method} ${path}`); e.status = 404; throw e;

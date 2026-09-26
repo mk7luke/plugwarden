@@ -288,3 +288,172 @@ def _raise_if_later(job_id: str) -> None:
             "message": f"{n} later job{'s' * (n != 1)} changed the same files; undo "
                        f"{'them' if n != 1 else 'it'} first, newest first",
             "jobs": sorted(later, reverse=True)})
+
+
+# ---------------------------------------------------------------- AMP power + rolling restarts
+
+DEFAULT_WARN_MESSAGE = "Server restarting in {seconds}s for maintenance."
+
+
+def _amp_target(server_id: str):
+    from . import amp
+    amp.require_writable()
+    srv = inventory.get_server(server_id)
+    amp.instance_id(srv.id)  # raises if this server isn't an AMP Minecraft instance
+    return srv
+
+
+def restart_one(job: jobs.Job, c, srv, opts: dict) -> bool:
+    """Warn players, restart the Minecraft application, wait for Running + "Done (", then check health.
+    Returns True on success. Records one result row."""
+    from . import amp
+    inst = amp.instance_id(srv.id)
+    notes = []
+    if opts.get("wait_for_empty"):
+        deadline = time.monotonic() + opts.get("max_wait_min", 10) * 60
+        while True:
+            online = amp.parse_status(c.call("Core/GetStatus", {}, inst), None).get("players_online") or 0
+            if not online:
+                break
+            if time.monotonic() > deadline:
+                notes.append(f"{online} player(s) still online after {opts.get('max_wait_min', 10)} min")
+                break
+            job.write(f"  {srv.id}: waiting for {online} player(s) to leave")
+            amp.SLEEP(15)
+    warns = sorted(set(opts.get("warn_seconds") or []), reverse=True)
+    template = opts.get("message") or DEFAULT_WARN_MESSAGE
+    for i, secs in enumerate(warns):
+        text = template.replace("{seconds}", str(secs)).replace("{server}", srv.id)
+        c.call("Core/SendConsoleMessage", {"message": f"say {text}"}, inst)
+        job.write(f"  {srv.id}: warned players ({secs}s)")
+        amp.SLEEP(secs - (warns[i + 1] if i + 1 < len(warns) else 0))
+    c.call("Core/GetUpdates", {}, inst)  # move this session's console cursor to "now"
+    started = time.time()
+    res = c.call("Core/Restart", {}, inst)
+    if isinstance(res, dict) and res.get("Status") is False:
+        job.add_result(srv.id, "restart", "restart", "error", f"AMP refused: {res.get('Reason') or 'unknown reason'}")
+        return False
+    done_seen, state = False, None
+    deadline = time.monotonic() + opts.get("start_timeout_min", 10) * 60
+    while True:
+        upd = c.call("Core/GetUpdates", {}, inst) or {}
+        state = (upd.get("Status") or {}).get("State")
+        for ln in amp.console_lines(upd):
+            if "Done (" in ln:
+                done_seen = True
+        if done_seen and state == amp.READY:
+            break
+        if time.monotonic() > deadline:
+            job.add_result(srv.id, "restart", "restart", "error",
+                           f"did not finish starting within {opts.get('start_timeout_min', 10)} min "
+                           f"(state {amp.STATES.get(state, state)}, startup {'done' if done_seen else 'not done'})")
+            return False
+        amp.SLEEP(2)
+    took = int(time.time() - started)
+    job.write(f"  {srv.id}: running again after {took}s")
+    ok = True
+    if opts.get("run_health_check", True):
+        rep = health.server_report(srv, since=started - 5)
+        new_fail = [p for p in rep["plugins"] if p["status"] == "failed" and not p.get("preexisting")]
+        if rep["run_started"] is None:
+            notes.append("plugin health unknown (no log of this start)")
+        elif new_fail:
+            ok = False
+            notes.append("plugin health failed: " + ", ".join(f"{p['name']} ({p['reason']})" for p in new_fail))
+        else:
+            notes.append(f"plugins healthy ({rep['counts']['healthy']} ok, {len(rep['preexisting_errors'])} known issue(s))")
+    if ok:
+        clear_pending(srv.id)
+    job.add_result(srv.id, "restart", "restart", "changed" if ok else "error",
+                   f"restarted in {took}s" + ("; " + "; ".join(notes) if notes else ""),
+                   touched_files=False, health_failed=not ok)
+    return ok
+
+
+def start_power(user: str, server_id: str, action: str) -> jobs.Job:
+    from . import amp
+    if action not in ("start", "stop", "restart"):
+        raise engine.DeployError("action must be start, stop or restart")
+    srv = _amp_target(server_id)
+
+    def body(job: jobs.Job) -> str | None:
+        c = amp.Client()
+        try:
+            inst = amp.instance_id(srv.id)
+            if action == "restart":
+                restart_one(job, c, srv, {"run_health_check": True})
+                return None
+            method = {"start": "Core/Start", "stop": "Core/Stop"}[action]
+            res = c.call(method, {}, inst)
+            if isinstance(res, dict) and res.get("Status") is False:
+                job.add_result(srv.id, action, action, "error", f"AMP refused: {res.get('Reason') or '?'}")
+                return None
+            target = {amp.READY} if action == "start" else {0}
+            amp.wait_state(c, inst, target, timeout=10 * 60)
+            job.add_result(srv.id, action, action, "changed", f"{'started' if action == 'start' else 'stopped'}",
+                           touched_files=False)
+            if action == "start":
+                clear_pending(srv.id)
+        finally:
+            c.close()
+        return None
+
+    return jobs.submit("power", user, {"server": srv.id, "action": action}, body, on_done=_finish)
+
+
+def validate_rolling(body: dict) -> dict:
+    from . import amp
+    if not isinstance(body, dict):
+        raise engine.DeployError("body must be an object")
+    servers = body.get("servers")
+    if not isinstance(servers, list) or not servers or not all(isinstance(s, str) for s in servers):
+        raise engine.DeployError("servers must be a non-empty list of server ids")
+    mapping = amp.instances()
+    unknown = [s for s in servers if s not in mapping]
+    if unknown:
+        raise engine.DeployError(f"not AMP Minecraft instances: {', '.join(unknown)}")
+    warn = body.get("warn_seconds", [60, 30, 10])
+    if not isinstance(warn, list) or len(warn) > 6 or not all(
+            isinstance(w, int) and not isinstance(w, bool) and 1 <= w <= 600 for w in warn):
+        raise engine.DeployError("warn_seconds must be up to 6 whole numbers between 1 and 600")
+    msg = body.get("message") or DEFAULT_WARN_MESSAGE
+    if not isinstance(msg, str) or len(msg) > 200 or any(ch in msg for ch in "\r\n\x00"):
+        raise engine.DeployError("message must be one line of at most 200 characters")
+    max_wait = body.get("max_wait_min", 10)
+    start_timeout = body.get("start_timeout_min", 10)
+    for name, v, lo, hi in (("max_wait_min", max_wait, 0, 120), ("start_timeout_min", start_timeout, 1, 30)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            raise engine.DeployError(f"{name} must be between {lo} and {hi}")
+    return {"servers": list(dict.fromkeys(servers)), "warn_seconds": warn, "message": msg,
+            "wait_for_empty": body.get("wait_for_empty") is True, "max_wait_min": max_wait,
+            "start_timeout_min": start_timeout, "stop_on_failure": body.get("stop_on_failure", True) is not False,
+            "run_health_check": body.get("run_health_check", True) is not False}
+
+
+def start_rolling(user: str, body: dict) -> jobs.Job:
+    from . import amp
+    amp.require_writable()
+    opts = validate_rolling(body)
+
+    def run(job: jobs.Job) -> str | None:
+        c = amp.Client()
+        try:
+            for i, sid in enumerate(opts["servers"]):
+                job.write(f"==> {sid} ({i + 1}/{len(opts['servers'])})")
+                try:
+                    ok = restart_one(job, c, inventory.get_server(sid), opts)
+                except (amp.AmpError, inventory.PathError) as e:
+                    job.add_result(sid, "restart", "restart", "error", str(e))
+                    ok = False
+                if not ok and opts["stop_on_failure"]:
+                    for rest in opts["servers"][i + 1:]:
+                        job.add_result(rest, "restart", "restart", "skipped",
+                                       f"not restarted: {sid} failed and stop_on_failure is on",
+                                       reason_code="stopped_after_failure")
+                    job.write("Rollout stopped after a failure")
+                    break
+        finally:
+            c.close()
+        return None
+
+    return jobs.submit("rolling-restart", user, opts, run, on_done=_finish)

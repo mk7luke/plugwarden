@@ -66,25 +66,33 @@ export function CanaryStatus({ au, compact }) {
 export function knownIssues(report) {
   if (!report) return [];
   const first = (e) => (Array.isArray(e.excerpt) ? (e.match_index != null ? e.excerpt[e.match_index] : e.excerpt.find(l => /ERROR|SEVERE|WARN|Exception/i.test(l)) || e.excerpt[0]) : e.excerpt) || "";
-  const brief = (l) => l.replace(/^\[[^\]]*\]\s*(\[[^\]]*\]:?\s*)*/, "").slice(0, 160);
+  // Strip "[time level]: [Plugin] " prefixes so the message itself reads first.
+  const brief = (l) => l.replace(/^(\[[^\]]*\]:?\s*)+/, "").slice(0, 160);
   // Top-level list when the backend sends it; its `reason` is generic, so show the log line itself.
   const known = Array.isArray(report.preexisting_errors)
-    ? report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs }))
-    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs })));
+    ? report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
+    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level })));
   // Errors that can't be judged yet (no earlier start to compare with) are only listed per plugin.
   const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ name: pname(p), reason: `${brief(first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
   return [...known, ...warn];
 }
 
 // Warnings that were already there before the latest change (e.g. a UDP port already in use).
-export function KnownIssues({ issues, title = "Known issues on this server", sub = "seen before this change — not caused by it" }) {
+// "2 errors, 1 warning" — by the backend's level, else by the matched log line.
+function byLevel(issues) {
+  const lv = (i) => i.level || (/\b(ERROR|SEVERE)\b/.test(i.reason || "") || /\b(ERROR|SEVERE)\b/.test(lines(i.excerpt)) ? "error" : "warning");
+  const e = issues.filter(i => lv(i) === "error").length, w = issues.length - e;
+  return [e && plural(e, "error"), w && plural(w, "warning")].filter(Boolean).join(", ");
+}
+
+export function KnownIssues({ issues, title = "Known issues on this server", sub = "that also appeared in earlier starts — not caused by recent changes" }) {
   if (!issues?.length) return null;
   // The same message logged by several code paths reads as one issue with a count.
   const grouped = [...issues.reduce((m, i) => { const k = `${i.name}|${i.reason}`; const g = m.get(k); g ? g.n++ : m.set(k, { ...i, n: 1 }); return m; }, new Map()).values()];
   issues = grouped;
   return html`<section class="known" aria-label=${title}>
     <div class="row" style="gap:8px"><${Icon} n="info" cls="i-sm" /><b class="small">${title}</b>
-      <span class="small muted">${plural(issues.length, "warning")} ${sub}</span></div>
+      <span class="small muted">${byLevel(issues)} ${sub}</span></div>
     <ul>${issues.map(i => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
       ${i.seen_in_runs > 1 && html`<span class="small muted"> · in the last ${i.seen_in_runs} starts</span>`}
       <${Excerpt} ...${ex(i)} /></li>`)}</ul>
@@ -96,11 +104,12 @@ export function ServerKnownIssues({ server }) {
   const q = useQuery(`/servers/${encodeURIComponent(server)}/health`);
   const failing = (q.data?.plugins || []).filter(p => p.status === "failed");
   return html`${failing.length > 0 && html`<section class="known is-failing" aria-label="Plugins failing at startup">
-      <div class="row" style="gap:8px"><${Icon} n="circle-x" cls="i-sm" /><b class="small">${plural(failing.length, "plugin")} failed to start in the last run</b>
+      <div class="row" style="gap:8px"><${Icon} n="circle-x" cls="i-sm" /><b class="small">${plural(failing.length, "plugin")} ${failing.some(p => p.running === false) ? "not running" : "failed to start"} after the last start</b>
         <span class="small muted">${q.data.restarted_at ? `started ${relTime(q.data.restarted_at)}` : ""}</span></div>
-      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting ? " (on every start)" : ""}</span><${Excerpt} ...${ex(p)} /></li>`)}</ul>
+      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting ? " (on every start)" : ""}</span>
+        ${p.running === false && html` <${Tag} kind="danger">Not running<//>`}<${Excerpt} ...${ex(p)} /></li>`)}</ul>
     </section>`}
-    <${KnownIssues} issues=${knownIssues(q.data)} sub="that also appeared in earlier starts — informational, not failures" />`;
+    <${KnownIssues} issues=${knownIssues(q.data)} />`;
 }
 
 // On-demand startup report for one server since a point in time.

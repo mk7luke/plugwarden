@@ -166,12 +166,12 @@ export function Policy({ au }) {
           <fieldset class="policy-safety" disabled=${p.mode === "off"}>
             <legend>Safety</legend>
             <label class="switch"><input type="checkbox" checked=${p.skip_prereleases !== false} onChange=${e => setP({ ...p, skip_prereleases: e.currentTarget.checked })} />Skip pre-releases (alpha, beta, snapshot)</label>
-            <div class="row wrap" style="gap:12px;align-items:flex-end">
+            <div class="row wrap" style="gap:12px;align-items:flex-start">
               <div class="field grow" style="min-width:130px"><label for="au-age">Minimum release age</label>
                 <select id="au-age" class="select" value=${p.min_release_age_hours ?? 0} onChange=${e => setP({ ...p, min_release_age_hours: +e.currentTarget.value })}>
                   ${[[0, "No minimum"], [12, "12 hours"], [24, "1 day"], [48, "2 days"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
               <div class="field grow" style="min-width:170px"><span class="field-label">Changes per run</span>
-                <div class="row" style="gap:8px">
+                <div class="row" style="gap:8px;min-height:32px">
                   <label class="switch small"><input type="checkbox" checked=${limitOn} onChange=${e => { const on = e.currentTarget.checked; setP({ ...p, max_changes_per_run: on ? (+maxRaw || 20) : null }); if (on && !maxRaw) setMaxRaw("20"); }} />Limit</label>
                   ${limitOn ? html`<input id="au-max" class=${"input" + (errOf("max_changes_per_run") ? " is-invalid" : "")} style="width:90px" inputmode="numeric" aria-label="Maximum changes per run (1–500)"
                       aria-invalid=${errOf("max_changes_per_run") ? "true" : undefined} aria-describedby=${errOf("max_changes_per_run") ? "err-max_changes_per_run" : undefined}
