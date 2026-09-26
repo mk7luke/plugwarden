@@ -208,36 +208,7 @@ def run_cycle() -> str:
                 "at": time.time(), "server": canary,
                 "sha1": ((r.get("_latest") or {}).get("hashes") or {}).get("sha1")}
     write_json(_state_file(), st)
-    result += f"; apply: {real.status} ({real.summary}); {len(deferred)} waiting"
-    result += _auto_restart(au, canary, {r["server"] for r in real.results if r["outcome"] == "changed"})
-    return _record(result)
-
-
-def _auto_restart(au: dict, canary: str | None, changed: set[str]) -> str:
-    """In the maintenance window, optionally restart the canary (so its health gate can run now) and/or
-    roll-restart the other updated servers. Needs AMP with write access."""
-    from . import amp
-    if not changed or not (au.get("auto_restart_canary") or au.get("auto_restart_rest")):
-        return ""
-    if not amp.configured() or config.AMP_READONLY:
-        return "; auto-restart skipped (AMP not configured or read-only)"
-    try:
-        mapped = set(amp.instances())
-    except amp.AmpError as e:
-        return f"; auto-restart skipped ({e})"
-    out = ""
-    if au.get("auto_restart_canary") and canary in changed and canary in mapped:
-        job = jobs.wait(actions.start_rolling(USER, {"servers": [canary]}), timeout=45 * 60)
-        out += f"; canary restart: {job.status}"
-        st = load_state()
-        csrv = inventory.servers_by_id().get(canary)
-        if csrv:
-            check_canary_health(st, csrv)
-    rest = sorted((changed - {canary}) & mapped)
-    if au.get("auto_restart_rest") and rest:
-        job = jobs.wait(actions.start_rolling(USER, {"servers": rest}), timeout=6 * 3600)
-        out += f"; rolling restart of {len(rest)}: {job.status}"
-    return out
+    return _record(result + f"; apply: {real.status} ({real.summary}); {len(deferred)} waiting")
 
 
 def check_canary_health(st: dict, csrv: inventory.Server) -> None:

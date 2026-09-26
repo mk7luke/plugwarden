@@ -40,6 +40,14 @@ _TIME = re.compile(r"^\[(\d{1,2}):(\d{2}):(\d{2})")
 _LEVEL = re.compile(r"^\[[^\]]*?\b(ERROR|SEVERE)\]|^\[[^\]]*\]\s*\[[^\]]*/(ERROR|SEVERE)\]")
 _WARN_LEVEL = re.compile(r"^\[[^\]]*?\b(WARN|WARNING)\]|^\[[^\]]*\]\s*\[[^\]]*/(WARN|WARNING)\]")
 _MSG = re.compile(r"^(?:\[[^\]]*\]\s*)+?(?:\[[^\]]*/[A-Z]+\](?:\s*\[[^\]]*\])?:?|[A-Z]+\]:)\s*")
+# Known-issue noise: banner decoration, "join my discord" lines, and update nags (not problems).
+_TAGS = re.compile(r"^(?:\[[^\]]*\]\s*)+")
+_ALNUM = re.compile(r"[A-Za-z0-9]")
+_BANNER = re.compile(r"discord\.gg/|discord(?:app)?\.com/invite|github\.com/|patreon\.com|ko-fi\.com|paypal\.me|"
+                     r"join (?:my|our) discord|support (?:server|discord)", re.I)
+_NAG = re.compile(r"\bnew(?:er)? (?:plugin )?(?:version|release|update)|\bupdate (?:for .+ )?(?:is )?available|"
+                  r"\bupdates? available|\b(?:is|seems to be|are|you're) (?:running an )?out(?:dated| of date)|"
+                  r"\bplease update\b|\bnewest version\b", re.I)
 _GZ_NAME = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(\d+)\.log\.gz$")
 _PLAYER_LINES = [re.compile(r"UUID of player (\w{3,16})"), re.compile(r"\b(\w{3,16})\[/[\d.:]+\] logged in"),
                  re.compile(r"\b(\w{3,16}) (?:joined|left) the game"),
@@ -212,6 +220,51 @@ def _blocks(lines: list[tuple], warnings: bool = False) -> list[tuple[int, int]]
     return out
 
 
+def _message(line: str) -> str:
+    return _MSG.sub("", line, count=1)
+
+
+def _noise(line: str) -> bool:
+    """Banner decoration (no letters or digits once the [tags] are gone) or a support/discord/GitHub link."""
+    msg = _message(line)
+    rest = _TAGS.sub("", msg)
+    return not _ALNUM.search(rest) or bool(_BANNER.search(msg))
+
+
+def _groups(lines: list[tuple], warnings: bool = False) -> list[dict]:
+    """ERROR (or WARN) entries, with consecutive entries from the same thread, second and plugin tag merged
+    into one issue (multi-line banners). Each group is titled by its first line that isn't decoration or a
+    support link; groups made only of those are dropped."""
+    out: list[dict] = []
+    prev_key = None
+    for a, b in _blocks(lines, warnings):
+        head = lines[a][1]
+        msg = _message(head)
+        tag = _TAGS.match(msg)
+        key = (head[:len(head) - len(msg)], tag.group(0).strip() if tag else None)
+        if out and key == prev_key and out[-1]["end"] == a:
+            g = out[-1]
+            g["end"], g["size"] = b, g["size"] + 1
+        else:
+            g = {"start": a, "end": b, "size": 1, "title": None}
+            out.append(g)
+        if g["title"] is None and not _noise(head):
+            g["title"] = a
+        prev_key = key
+    return [g for g in out if g["title"] is not None]
+
+
+def _dedup(items: list[dict]) -> list[dict]:
+    """The same message several times in one start = one entry with a repeat count."""
+    out: dict[str, dict] = {}
+    for it in sorted(items, key=lambda k: k.get("line") or 0):
+        if it["signature"] in out:
+            out[it["signature"]]["repeats"] += 1
+        else:
+            out[it["signature"]] = {**it, "repeats": 1}
+    return list(out.values())
+
+
 def _cut_shutdown(lines: list[tuple]) -> list[tuple]:
     for i, (_t, ln) in enumerate(lines):
         if "Stopping server" in ln or "Stopping the server" in ln or "Shutting down the proxy" in ln:
@@ -290,15 +343,20 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
                     "preexisting": False, "running": False}
     if base_sigs is None:
         base_sigs = baseline_signatures(baseline, players)
-    new, known, late, new_warn = [], [], [], []
+    new, known, late, new_warn, notices = [], [], [], [], []
     for level in ("error", "warning"):
-        for a, b in _blocks(lines, warnings=level == "warning"):
-            t, head = lines[a]
-            block = "\n".join(ln for _t, ln in lines[a:b])
+        for g in _groups(lines, warnings=level == "warning"):
+            i = g["title"]
+            t, head = lines[i]
+            block = "\n".join(ln for _t, ln in lines[g["start"]:g["end"]])
             if not m.references(head, block):
                 continue
-            item = {"signature": signature(head, players), "level": level, **_hit(run, lines, a, min(b - a, 8))}
-            if start and t and t - start > GRACE_SECONDS:
+            item = {"signature": signature(head, players), "level": level,
+                    "title": scrub_value(_message(head))[:300], "group_size": g["size"],
+                    **_hit(run, lines, i, min(g["end"] - i, 8))}
+            if _NAG.search(_message(head)):
+                notices.append(item)  # "a new version is available": not a problem, listed separately
+            elif start and t and t - start > GRACE_SECONDS:
                 if level == "error":
                     late.append(item)  # runtime error long after start: not the update's startup, reported only
             elif item["signature"] in base_sigs:
@@ -309,15 +367,11 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
                 new.append(item)
             else:
                 new_warn.append({**item, "reason": "new warning (not blocking)"})
-    known.sort(key=lambda k: k["line"])
-    dedup: dict[str, dict] = {}
-    for k in known:  # the same message several times in one start (banners, repeated warnings) = one entry
-        if k["signature"] in dedup:
-            dedup[k["signature"]]["repeats"] += 1
-        else:
-            dedup[k["signature"]] = {**k, "repeats": 1}
-    known = list(dedup.values())
-    res = {"preexisting_errors": known, "later_errors": late, "warnings": new_warn, "running": None}
+    known, new, late, new_warn = map(_dedup, (known, new, late, new_warn))
+    # one notice per plugin: nags often come as several differently worded lines
+    notices = [{**min(notices, key=lambda n: n.get("line") or 0), "repeats": len(notices)}] if notices else []
+    res = {"preexisting_errors": known, "later_errors": late, "warnings": new_warn, "update_notices": notices,
+           "running": None}
     off = _disabled_after_done(run, m)
     if off is not None:
         again = any(_disabled_after_done(r, m) is not None for r in baseline)
@@ -392,7 +446,8 @@ def plugin_health(srv: Server, runs: list[dict], plugin: dict, meta_desc: dict |
                   since: float | None = None, _ctx: dict | None = None) -> dict:
     ctx = _ctx or context(runs, since)
     target, baseline = ctx["target"], ctx["baseline"]
-    empty = {"excerpt": [], "log": None, "preexisting_errors": [], "later_errors": [], "warnings": []}
+    empty = {"excerpt": [], "log": None, "preexisting_errors": [], "later_errors": [], "warnings": [],
+             "update_notices": []}
     if target is None:
         return {**empty, "status": "unknown", "reason": "no server start in the logs since then"}
     if target["start"] is None:
@@ -426,11 +481,14 @@ def server_report(srv: Server, since: float | None) -> dict:
         plugins.append({"key": p["key"], "name": p["name"], "jar": p["jar"], "version": p["version"], **r})
     order = {"failed": 0, "unknown": 1, "healthy": 2}
     plugins.sort(key=lambda r: (order[r["status"]], r["name"].lower()))
-    known = []
+    known, notices = [], []
     for p in plugins:
         for e in p.get("preexisting_errors") or []:
             known.append({"key": p["key"], "name": p["name"], "plugin": p["name"], "log": p.get("log"),
                           "reason": "also in earlier starts", **e})
+        for e in p.get("update_notices") or []:
+            notices.append({"key": p["key"], "name": p["name"], "plugin": p["name"], "log": p.get("log"), **e})
+    known.sort(key=lambda k: (k["level"] != "error", k["name"].lower(), k.get("line") or 0))
     last_start = last_startup(srv) or None
     lines = target["lines"] if target else []
     report = {"server": srv.id, "since": since, "checked_at": time.time(),
@@ -442,6 +500,7 @@ def server_report(srv: Server, since: float | None) -> dict:
             "restarted": bool(last_start and (since is None or last_start >= since)),
             "counts": {s: sum(1 for r in plugins if r["status"] == s) for s in ("healthy", "failed", "unknown")},
             "preexisting_errors": known,
+            "update_notices": notices,
             "indexing": inventory.indexing_state(),
             "plugins": plugins}
     if not cached_only:
@@ -471,6 +530,7 @@ def _summarise(report: dict) -> dict:
     return {"failed": failed, "failed_count": len(failed), "run_started": report["run_started"],
             "known_errors": sum(1 for k in known if k.get("level") == "error"),
             "known_warnings": sum(1 for k in known if k.get("level") == "warning"),
+            "update_notices": len(report.get("update_notices") or []),
             "checked_at": report["checked_at"]}
 
 

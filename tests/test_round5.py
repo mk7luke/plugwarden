@@ -1,10 +1,11 @@
 """Round 5: policy validation (422 per field, null = no limit), canary/log health checks, audit collapsing."""
+import json
 import os
 import time
 
 import pytest
 
-from app import actions, audit, health, inventory, scheduler, settings
+from app import actions, audit, config, health, inventory, scheduler, settings
 from app.main import app
 from conftest import client_for, make_jar
 
@@ -412,7 +413,9 @@ def test_plugin_disabling_itself_after_done_fails_and_is_not_running(env):
     assert "Disabling voicechat v2.6.6" in r["excerpt"][r["match_index"]]
     levels = sorted({(k["level"], k["signature"][:30]) for k in r["preexisting_errors"]})
     assert ("warning", "[voicechat] Running in offline") in levels
-    assert sum(1 for k in r["preexisting_errors"] if k["level"] == "error") == 4
+    errs = [k for k in r["preexisting_errors"] if k["level"] == "error"]
+    # the three VoiceChatServerThread lines of the same second are one issue; the Server-thread line is another
+    assert len(errs) == 2 and sorted(k["group_size"] for k in errs) == [1, 3]
     # first time (no baseline): still failed, but not "on every start"
     for f in logs.glob("*.gz"):
         f.unlink()
@@ -469,3 +472,114 @@ def test_failed_undo_marked_real_flow_and_backfilled(env):
     assert jobs.backfill_undo_failures() == 1
     assert jobs.get(job.id).to_dict()["undo_failed_by"] == undo.id
     assert jobs.backfill_undo_failures() == 0
+
+
+# ---------------------------------------------------------------- round 7: known-issues noise
+
+PLUGMAN_BANNER = [
+    "[{t}] [Server thread/WARN]: [PlugManX] ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "[{t}] [Server thread/WARN]: [PlugManX] It seems like you're running on paper.",
+    "[{t}] [Server thread/WARN]: [PlugManX] PlugManX cannot interact with paper-plugins, yet.",
+    "[{t}] [Server thread/WARN]: [PlugManX] Also, if you encounter any issues, please join my discord: https://discord.gg/abc",
+    "[{t}] [Server thread/WARN]: [PlugManX] Or create an issue on GitHub: https://github.com/x/PlugMan",
+    "[{t}] [Server thread/WARN]: [PlugManX] ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+]
+NAGS = [
+    "[{t}] [Server thread/WARN]: [com.fastasyncworldedit.core.util.UpdateNotification] A new release for FastAsyncWorldEdit is available: 2.15.4",
+    "[{t}] [Server thread/WARN]: [com.fastasyncworldedit.core.util.UpdateNotification] An update for FastAsyncWorldEdit is available. You are 12 builds out of date.",
+]
+
+
+def _noise_run(when):
+    t = when.strftime("%H:%M:%S")
+    return ([L(T, "[PlugManX] Enabling PlugManX v2.4.1", t), L(T, "[FastAsyncWorldEdit] Enabling FastAsyncWorldEdit v2.15.3", t)]
+            + [ln.format(t=t) for ln in PLUGMAN_BANNER + NAGS]
+            + ["[{t}] [Server thread/WARN]: [PlugManX] ==============".format(t=t),
+               "[{t}] [Server thread/WARN]: [PlugManX] Support: https://discord.gg/abc".format(t=t),
+               L(T, "Done (60s)!", t)])
+
+
+def test_known_issues_group_banners_drop_noise_and_split_update_nags(env):
+    logs = env["src"].parent / "logs"
+    day = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=8)
+    write_log(logs, day, _noise_run(day), name=day.strftime("%Y-%m-%d-2.log.gz"))
+    now = datetime.now() - timedelta(hours=1)
+    write_log(logs, now, _noise_run(now))
+    make_jar(env["src"] / "PlugManX-2.4.1.jar", "PlugManX", "2.4.1")
+    make_jar(env["src"] / "FastAsyncWorldEdit-2.15.3.jar", "FastAsyncWorldEdit", "2.15.3")
+    srv = inventory.get_server("elChapo01")
+    pm = _check(srv, "PlugManX", "2.4.1", "PlugManX-2.4.1.jar")
+    assert pm["status"] == "healthy"
+    # six banner lines = one issue, titled by its first real line; the later decoration/link-only group is gone
+    assert len(pm["preexisting_errors"]) == 1
+    issue = pm["preexisting_errors"][0]
+    assert issue["group_size"] == 6 and issue["title"] == "[PlugManX] It seems like you're running on paper."
+    assert issue["excerpt"][issue["match_index"]].endswith("running on paper.")
+    fawe = _check(srv, "FastAsyncWorldEdit", "2.15.3", "FastAsyncWorldEdit-2.15.3.jar")
+    assert fawe["preexisting_errors"] == [] and fawe["warnings"] == []
+    assert len(fawe["update_notices"]) == 1 and "new release" in fawe["update_notices"][0]["title"]
+    with client_for(app) as c:
+        r = c.get("/api/v2/servers/elChapo01/health").json()
+    assert [n["plugin"] for n in r["update_notices"]] == ["FastAsyncWorldEdit"]
+    assert not any("discord" in k["title"] or "~~~" in k["title"] for k in r["preexisting_errors"])
+
+
+def test_update_nag_after_an_update_does_not_fail_the_plugin(env):
+    now = datetime.now() - timedelta(hours=1)
+    body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+            L(E, "[CoreProtect] A new version of CoreProtect is available: 24.2", _at(now, 1)),
+            L(T, "Done (60s)!", _at(now, 2))]
+    srv, _ = _setup(env, body, when=now)
+    r = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar")
+    assert r["status"] == "healthy" and len(r["update_notices"]) == 1
+
+
+def test_canary_gate_fails_on_self_disable(env):
+    """No AMP needed: the canary check reads the logs after the owner restarts the server."""
+    make_jar(env["src"] / "voicechat-bukkit-2.6.6.jar", "voicechat", "2.6.6")
+    applied = time.time() - 3 * 3600
+    st = {"canary": {"bukkit:voicechat|2.6.6": {"at": applied, "server": "elChapo01", "sha1": None}}}
+    write_log(env["src"].parent / "logs", datetime.now() - timedelta(hours=1), _vc_run(datetime.now() - timedelta(hours=1)))
+    scheduler.check_canary_health(st, inventory.get_server("elChapo01"))
+    c = st["canary"]["bukkit:voicechat|2.6.6"]
+    assert c["health"]["status"] == "failed" and c["health"]["reason"].startswith("disabled itself after startup")
+    assert "bukkit:voicechat|2.6.6" in st["held"]
+
+
+def test_legacy_job_kinds_still_render(env):
+    """Records of removed features (e.g. rolling-restart, power) stay readable in Activity."""
+    from app import jobs
+    d = config.state("jobs")
+    d.mkdir(parents=True, exist_ok=True)
+    rec = {"id": "20260926-074609-0edad7", "kind": "rolling-restart", "status": "failed", "user": "a@b.c",
+           "started": time.time() - 60, "finished": time.time(), "summary": "1 changed, 1 error, 1 skipped",
+           "params": {"servers": ["M1-hub01"]}, "dry_run": False, "progress": {"done": 3, "total": 3, "current": None},
+           "results": [{"server": "M1-hub01", "item": "restart", "action": "restart", "outcome": "changed",
+                        "detail": "restarted in 12s"}], "log_lines": ["x"], "changed_servers": []}
+    (d / f"{rec['id']}.json").write_text(json.dumps(rec))
+    (d / "20260926-000000-aaaaaa.json").write_text(json.dumps({**rec, "id": "20260926-000000-aaaaaa", "kind": "power"}))
+    with client_for(app) as c:
+        lst = c.get("/api/v2/jobs").json()
+        ids = {j["id"]: j for j in (lst["jobs"] if isinstance(lst, dict) else lst)}
+        assert ids["20260926-074609-0edad7"]["kind"] == "rolling-restart"
+        one = c.get("/api/v2/jobs/20260926-074609-0edad7")
+        assert one.status_code == 200 and one.json()["results"][0]["outcome"] == "changed"
+        assert c.get("/api/v2/overview").status_code == 200
+        assert c.post("/api/v2/jobs/20260926-074609-0edad7/undo").status_code in (400, 409)
+    assert jobs.get("20260926-000000-aaaaaa") is not None
+
+
+def test_removed_settings_are_dropped(env):
+    """auto_restart_* and amp_command_denylist came with the removed AMP integration."""
+    config.state("settings.json").write_text(json.dumps({
+        "auto_update": {"mode": "notify", "auto_restart_canary": True, "auto_restart_rest": True},
+        "amp_command_denylist": ["stop"]}))
+    raw = settings.load_raw()
+    assert raw["auto_update"]["mode"] == "notify"
+    assert "auto_restart_canary" not in raw["auto_update"] and "auto_restart_rest" not in raw["auto_update"]
+    assert "amp_command_denylist" not in raw
+    with client_for(app) as c:
+        r = c.put("/api/v2/settings", json={"auto_update": {"interval_hours": 12}})
+        assert r.status_code == 200 and "auto_restart_rest" not in r.json()["auto_update"]
+    stored = json.loads(config.state("settings.json").read_text())
+    assert "amp_command_denylist" not in stored and "auto_restart_canary" not in stored["auto_update"]

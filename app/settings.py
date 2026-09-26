@@ -21,12 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "auto_update": {"mode": "off", "interval_hours": 24, "window": None, "dry_run_first": True,
                     # unattended "apply" safety policy
                     "min_release_age_hours": 48, "canary_server": None, "canary_soak_hours": 24,
-                    "max_changes_per_run": 20,
-                    # restart servers in the maintenance window after an unattended apply (needs AMP)
-                    "auto_restart_canary": False, "auto_restart_rest": False},
-    # console commands that need an explicit confirm (fnmatch patterns, case-insensitive)
-    "amp_command_denylist": ["stop", "restart", "reload*", "op *", "deop *", "lp user * permission set *",
-                             "luckperms user * permission set *", "whitelist off", "ban-ip *", "pardon *"],
+                    "max_changes_per_run": 20},
     "backup_max_age_days": 30,
     "backup_max_gb": 5,
     "pins": {},      # key -> {"version": str, "servers": [ids] | "*"}
@@ -96,6 +91,10 @@ def builtin_groups(servers: list[inventory.Server] | None = None) -> dict[str, l
     }
 
 
+# Removed options still present in older settings.json files; dropped on load (and on the next save).
+RETIRED_AUTO_UPDATE = ("auto_restart_canary", "auto_restart_rest")
+
+
 def load_raw() -> dict:
     data = read_json(_path(), {}) or {}
     out = copy.deepcopy(DEFAULTS)
@@ -104,7 +103,7 @@ def load_raw() -> dict:
             out[k] = data[k]
     out["pins"], out["ignores"] = migrate_holds(out["pins"], out["ignores"])
     au = dict(DEFAULTS["auto_update"])
-    au.update(out.get("auto_update") or {})
+    au.update({k: v for k, v in (out.get("auto_update") or {}).items() if k not in RETIRED_AUTO_UPDATE})
     out["auto_update"] = au
     return out
 
@@ -168,9 +167,6 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 errors["auto_update.window"] = "Use HH:MM-HH:MM (24 h), or leave empty for any time"
         if "dry_run_first" in au:
             cur["dry_run_first"] = bool(au["dry_run_first"])
-        for flag in ("auto_restart_canary", "auto_restart_rest"):
-            if flag in au:
-                cur[flag] = au[flag] is True
         if "canary_server" in au:
             if au["canary_server"] not in (None, "") and au["canary_server"] not in known_ids:
                 errors["auto_update.canary_server"] = f"Unknown server: {au['canary_server']}"
@@ -223,12 +219,6 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 entry["asset"] = str(v["asset"])[:200]
             clean[k] = entry
         out["source_map"] = clean
-    if "amp_command_denylist" in new:
-        dl = new["amp_command_denylist"]
-        if not isinstance(dl, list) or len(dl) > 100 or not all(
-                isinstance(x, str) and 0 < len(x.strip()) <= 100 for x in dl):
-            raise SettingsError(fields={"amp_command_denylist": "A list of up to 100 command patterns"})
-        out["amp_command_denylist"] = [x.strip() for x in dl]
     errors = {}
     for fld in ("backup_keep_jobs", "backup_max_age_days", "backup_max_gb"):
         if fld in new:

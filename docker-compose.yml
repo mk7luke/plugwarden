@@ -12,9 +12,4 @@ services:
       - /mnt/storage_ssd/ssd-live:/mnt/storage_ssd/ssd-live
       - ./data:/var/lib/lgt-amp-sync
       - /etc/localtime:/etc/localtime:ro   # server logs carry local times (health checks, restart detection)
-    env_file:
-      - .env
-      - path: .env.amp          # optional AMP login (LGT_AMP_USER / LGT_AMP_PASSWORD), chmod 600
-        required: false
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # reach the AMP ADS on the host (LGT_AMP_URL)
+    env_file: .env
