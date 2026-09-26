@@ -437,7 +437,7 @@ function DiffView({ d }) {
   const redNote = red.length > 0 && html`<div class="diff-note small muted"><${Icon} n="shield" cls="i-xs" />${plural(red.length, "secret value")} hidden (${[...new Set(red.map(x => x.key.replace(/ \(\d+\)$/, "")))].join(", ")})${d.redacted_changed ? " — at least one differs" : ""}</div>`;
   const kept = d.kept_keys?.length > 0 && html`<div class="diff-note small"><${Icon} n="shield" cls="i-xs" style="color:var(--ok)" />Merged preview — keeps this server's ${d.kept_keys.join(", ")}</div>`;
   const mergeErr = d.merge_error && html`<div class="diff-note small" style="color:var(--danger)"><${Icon} n="triangle-alert" cls="i-xs" />Can't keep this server's values here (${d.merge_error}) — this file will be refused; diff shows the raw source.</div>`;
-  if (d.identical) return html`${kept}<div class="diff small muted">Identical after merge — nothing would change.</div>`;
+  if (d.identical) return html`${kept}<div class="diff small muted">${kept ? "Identical after merge" : "Identical"} — nothing would change.</div>`;
   if (!d.diff && d.redacted_changed) return html`<div class="diff small">Only redacted values differ (${red.filter(x => x.changed).map(x => x.key).join(", ")}).</div>`;
   if (!d.target_exists) return html`<div class="diff small muted">New file on this server.</div>`;
   const lines = (d.diff || "").split("\n").filter(l => !/^(---|\+\+\+) /.test(l));
