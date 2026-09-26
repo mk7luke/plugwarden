@@ -11,6 +11,7 @@ import threading
 import time
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import actions, audit, auth, config, configmerge, engine, inventory, jobs, plans, scheduler, settings, updates
+from . import (actions, audit, auth, config, configmerge, engine, health, inventory, jobs, plans, scheduler,
+               settings, updates)
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -79,6 +81,8 @@ async def _plan_error(_: Request, exc: plans.PlanError):
 
 @app.exception_handler(SettingsError)
 async def _settings_error(_: Request, exc: SettingsError):
+    if exc.fields:  # validation: per-field messages for inline errors
+        return JSONResponse({"detail": {"message": str(exc), "fields": exc.fields}}, status_code=422)
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
@@ -296,6 +300,23 @@ def server_tree(server_id: str, path: str = ""):
     return inventory.list_tree(srv, path)
 
 
+@app.get("/api/v2/servers/{server_id}/health")
+def server_health(server_id: str, since: str | None = None):
+    """Plugin enable report from the server's logs (latest run, or every run since `since`:
+    ISO time or epoch seconds)."""
+    srv = inventory.get_server(server_id)
+    ts = None
+    if since:
+        try:
+            ts = float(since)
+        except ValueError:
+            try:
+                ts = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                raise HTTPException(400, "since must be an ISO timestamp or epoch seconds")
+    return health.server_report(srv, ts)
+
+
 @app.post("/api/v2/servers/{server_id}/restarted")
 def server_restarted(server_id: str):
     srv = inventory.get_server(server_id)
@@ -338,6 +359,8 @@ def matrix():
 @app.get("/api/v2/updates")
 def updates_list():
     snap = snapshot()
+    for u in snap["pending"]:
+        u["canary_health"] = scheduler.canary_health_for(u["key"], u["to_version"])
     return {"updates": snap["pending"], "counts": snap["counts"], "last_check": snap["cache"].get("checked_at"),
             "check_summary": _check_summary(snap)}
 
@@ -663,5 +686,5 @@ def _audit_settings(user: str, action: str, before: dict, after: dict, path: str
 
 
 @app.get("/api/v2/health")
-def health() -> dict[str, Any]:
+def api_health() -> dict[str, Any]:
     return {"ok": True, "version": config.VERSION, "base_exists": config.BASE.is_dir()}

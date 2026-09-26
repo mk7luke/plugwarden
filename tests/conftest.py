@@ -50,6 +50,8 @@ def env(tmp_path):
     config.init(base=str(base), state_dir=str(state))
     inventory.reset_cache()
     updates.TRANSPORT = None
+    from app import audit
+    audit._recent.clear()
 
     src = make_server(base, "elChapo01")
     a = make_server(base, "M1-hub01")

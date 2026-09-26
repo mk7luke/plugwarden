@@ -259,6 +259,7 @@ def _desc(d: dict, kind: str) -> dict | None:
         "authors": [a for a in (_scalar(x, 100) for x in authors[:10]) if a],
         "api_version": _scalar(d.get("api-version"), 20),
         "folia_supported": d.get("folia-supported") is True,
+        "main": _scalar(d.get("main"), 200),
         "depends": _dep_names(d),
     }
 
@@ -356,7 +357,7 @@ def jar_meta(path: Path) -> dict:
     """sha1 + descriptors, cached by (path, size, mtime_ns)."""
     global _meta_dirty
     st = path.stat()
-    ck = f"v3:{st.st_size}:{st.st_mtime_ns}"  # bump the prefix when descriptor fields change
+    ck = f"v4:{st.st_size}:{st.st_mtime_ns}"  # bump the prefix when descriptor fields change
     key = str(path)
     with _meta_lock:
         cached = _load_cache().get(key)

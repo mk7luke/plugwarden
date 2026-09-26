@@ -500,12 +500,23 @@ def test_scheduler_apply_cycle_end_to_end(env):
     _mock_modrinth(env, new_bytes)
     settings.update({"auto_update": {"mode": "apply", "min_release_age_hours": 0, "canary_soak_hours": 0,
                                      "canary_server": "elChapo01"}})
+    import gzip, os
+    logs = env["src"].parent / "logs"
+    logs.mkdir()
+    (logs / "latest.log").write_text("[10:00:00 INFO]: [CoreProtect] Enabling CoreProtect v24.1\n"
+                                     "[10:00:05 INFO]: Done (5.1s)! For help, type \"help\"\n")
+    with gzip.open(logs / "2026-01-01-1.log.gz", "wt") as f:
+        f.write("[09:00:00 INFO]: old run\n")
+    t = time.time() + 60  # the canary restarted after the scheduler first saw 24.1 on it
+    os.utime(logs / "2026-01-01-1.log.gz", (t, t))
     result = scheduler.run_cycle()
     assert "apply: done" in result, result
     jars = [p["jar"] for p in inventory.list_plugins(inventory.get_server("M1-hub01")) if p["key"] == "bukkit:coreprotect"]
     assert jars == ["CoreProtect-CE-24.1.jar"]
     sel = scheduler.status()["last_selection"]
-    assert sel["applied"] == [{"server": "M1-hub01", "key": "bukkit:coreprotect", "to_version": "24.1"}]
+    row = sel["applied"][0]
+    assert (row["server"], row["key"], row["to_version"]) == ("M1-hub01", "bukkit:coreprotect", "24.1")
+    assert row["canary_health"]["status"] == "healthy" and "Enabling CoreProtect v24.1" in row["canary_health"]["excerpt"][0]
 
 
 def test_healthz_and_insecure_container_mode(env, monkeypatch):

@@ -265,6 +265,8 @@ def start_undo(user: str, job_id: str) -> jobs.Job:
                 jobs.mark_undone(job_id, job.id, job.user)
                 if original.undo_of:  # undoing an undo re-applies the first job: it is no longer undone
                     jobs.mark_undone(original.undo_of, None)
+            else:
+                jobs.mark_undo_failed(job_id, job.id)
         _finish(job)
 
     def body(job: jobs.Job) -> None:

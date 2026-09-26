@@ -132,6 +132,7 @@ class Job:
             "undoable": self.undoable, "changed_servers": self.changed_servers,
             "restart_servers": [] if self.dry_run else self.changed_servers,
             "undone_at": getattr(self, "undone_at", None), "undone_user": getattr(self, "undone_user", None),
+            "undo_failed_by": None if undone else getattr(self, "undo_failed_by", None),
             "progress": getattr(self, "progress", None),
             "has_backup": self.has_backup,
         }
@@ -181,6 +182,7 @@ def _from_disk(d: dict) -> Job:
         "summary": d.get("summary", ""), "results": d.get("results") or [], "log": d.get("log_lines") or [],
         "undo_of": d.get("undo_of"), "undone_by": d.get("undone_by"), "has_backup": d.get("has_backup", False),
         "changed_servers": d.get("changed_servers") or [], "undone_at": d.get("undone_at"), "undone_user": d.get("undone_user"),
+        "undo_failed_by": d.get("undo_failed_by"),
         "progress": d.get("progress"), "_last_save": 0.0, "_cond": threading.Condition(),
     })
     return j
@@ -239,6 +241,14 @@ def find_active(kind: str) -> Job | None:
         if j.kind == kind:
             return j
     return None
+
+
+def mark_undo_failed(job_id: str, by: str) -> None:
+    """Remember a failed undo on the original job, so the UI can offer to retry it."""
+    j = get(job_id)
+    if j:
+        j.undo_failed_by = by
+        j.save()
 
 
 def mark_undone(job_id: str, by: str | None, user: str | None = None) -> None:

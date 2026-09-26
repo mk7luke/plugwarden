@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from . import actions, config, inventory, jobs, plans, settings, updates
+from . import actions, audit, config, health, inventory, jobs, plans, settings, updates
 from .storage import read_json, write_json
 
 USER = "scheduler"
@@ -68,7 +68,9 @@ def status() -> dict:
         key, _, version = k.partition("|")
         left = max(0.0, au["canary_soak_hours"] - (now - v["at"]) / 3600)
         canary.append({"key": key, "version": version, "server": v.get("server"),
-                       "applied_at": _iso(v["at"]), "soak_hours_left": round(left, 1)})
+                       "applied_at": _iso(v["at"]), "soak_hours_left": round(left, 1),
+                       "canary_health": _public_health(v.get("health"))})
+    held = [{**h, "at": _iso(h["at"])} for h in (st.get("held") or {}).values()]
     return {"mode": au["mode"], "next_run": nr.astimezone().isoformat(timespec="seconds") if nr else None,
             "last_run": _iso(st["last_run"]) if st.get("last_run") else None,
             "last_result": st.get("last_result"), "interval_hours": au["interval_hours"],
@@ -77,7 +79,20 @@ def status() -> dict:
                                          "max_changes_per_run")},
             "effective_canary": _canary_id(au),
             "canary": sorted(canary, key=lambda c: c["applied_at"], reverse=True)[:50],
+            "held": sorted(held, key=lambda h: h["at"], reverse=True),
             "last_selection": st.get("last_selection")}
+
+
+def _public_health(h: dict | None) -> dict:
+    if not h:
+        return {"status": "pending", "reason": "not checked yet (waiting for the canary to restart)"}
+    return {k: h.get(k) for k in ("status", "reason", "excerpt", "log")} | {
+        "checked_at": _iso(h["checked_at"]) if h.get("checked_at") else None}
+
+
+def canary_health_for(key: str, version: str) -> dict | None:
+    c = (load_state().get("canary") or {}).get(f"{key}|{version}")
+    return _public_health(c.get("health")) if c else None
 
 
 def _iso(ts: float) -> str:
@@ -89,15 +104,16 @@ def _canary_id(au: dict) -> str | None:
 
 
 def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str | None,
-                     canary_restarted: bool, now: float,
-                     installed_on_canary: dict[str, tuple[str, str]]) -> tuple[list[dict], list[dict]]:
+                     canary_restarted: bool, now: float, installed_on_canary: dict[str, tuple[str, str]],
+                     held: set[str] = frozenset()) -> tuple[list[dict], list[dict]]:
     """Which plan rows the unattended run may apply, and why the others wait.
 
     Only verified release builds from a Modrinth hash match (or a manual source marked auto_apply),
     published at least min_release_age_hours ago. The canary server gets them first; other servers only
-    after the canary has run that exact version for canary_soak_hours and restarted since. Plugins the
-    canary doesn't have wait min_release_age_hours + canary_soak_hours instead. At most
-    max_changes_per_run rows, canary rows first."""
+    after the canary has run that exact build for canary_soak_hours, restarted since, and its log shows
+    the plugin enabled cleanly (canary health "healthy"). A version that failed the canary check is held
+    and never auto-applied again. Plugins the canary doesn't have wait min_release_age_hours +
+    canary_soak_hours instead. At most max_changes_per_run rows (None = no limit), canary rows first."""
     chosen, deferred = [], []
     min_age = au["min_release_age_hours"] * 3600
     soak = au["canary_soak_hours"] * 3600
@@ -106,7 +122,9 @@ def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str
         why = None
         published = updates._parse_time(r.get("published"))
         age = now - published.timestamp() if published else None
-        if not r.get("verified"):
+        if f"{r['key']}|{r['to_version']}" in held:
+            why = "held: this version failed the canary health check"
+        elif not r.get("verified"):
             why = "no verified hash"
         elif r.get("type") != "release":
             why = "pre-release"
@@ -129,12 +147,17 @@ def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str
                     why = f"canary soak ({au['canary_soak_hours']:g} h)"
                 elif not canary_restarted:
                     why = f"waiting for {canary} to restart"
+                elif (c.get("health") or {}).get("status") != "healthy":
+                    h = c.get("health") or {}
+                    why = (f"canary health check failed on {canary}" if h.get("status") == "failed"
+                           else f"waiting for {canary}'s log to show the plugin enabled")
             elif age < min_age + soak:
                 why = "no canary for this plugin: waiting release age + soak"
         (deferred if why else chosen).append({**r, "reason": why} if why else r)
     chosen.sort(key=lambda r: r["server"] != canary)
-    over = chosen[au["max_changes_per_run"]:]
-    chosen = chosen[:au["max_changes_per_run"]]
+    cap = au.get("max_changes_per_run")  # None = no limit
+    over = chosen[cap:] if cap else []
+    chosen = chosen[:cap] if cap else chosen
     deferred += [{**r, "reason": "over max_changes_per_run"} for r in over]
     return chosen, deferred
 
@@ -158,9 +181,11 @@ def run_cycle() -> str:
     csrv = servers.get(canary) if canary else None
     installed = {p["key"]: (p["version"] or "", p["sha1"]) for p in inventory.list_plugins(csrv)} if csrv else {}
     _note_canary_versions(st, canary, installed, plan["rows"])
+    if csrv:
+        check_canary_health(st, csrv)
     chosen, deferred = select_auto_rows(plan["rows"], au, st.get("canary") or {}, canary,
                                         csrv is not None and not actions.pending_restart(csrv), time.time(),
-                                        installed)
+                                        installed, set(st.get("held") or {}))
     _save_selection(chosen, deferred)
     if not chosen:
         return _record(result + f"; nothing eligible ({len(deferred)} waiting)")
@@ -186,6 +211,35 @@ def run_cycle() -> str:
     return _record(result + f"; apply: {real.status} ({real.summary}); {len(deferred)} waiting")
 
 
+def check_canary_health(st: dict, csrv: inventory.Server) -> None:
+    """After the canary restarted with a new version, read its logs: healthy / failed / unknown.
+    A failure holds that version for good (never auto-retried) and is written to the audit log."""
+    plugins = {p["key"]: p for p in inventory.list_plugins(csrv)}
+    last_start = actions._last_start(csrv)
+    held = st.setdefault("held", {})
+    for k, c in (st.get("canary") or {}).items():
+        if c.get("server") != csrv.id or (c.get("health") or {}).get("status") in ("healthy", "failed"):
+            continue
+        if last_start < c["at"]:
+            continue  # not restarted with it yet
+        key, _, version = k.partition("|")
+        p = plugins.get(key)
+        if not p:
+            c["health"] = {"status": "unknown", "reason": "plugin no longer installed on the canary",
+                           "excerpt": [], "checked_at": time.time()}
+            continue
+        desc = inventory.jar_meta(csrv.plugins_dir / p["jar"])["descriptors"].get(csrv.family)
+        res = health.plugin_health(csrv, health.read_runs(csrv, c["at"]), {**p, "version": version}, desc)
+        c["health"] = {**res, "checked_at": time.time()}
+        if res["status"] == "failed" and k not in held:
+            held[k] = {"key": key, "name": p["name"], "version": version, "server": csrv.id,
+                       "at": time.time(), "reason": res["reason"], "excerpt": res["excerpt"]}
+            audit.record(USER, "canary-failed", servers=[csrv.id], path=key,
+                         detail=f"{p['name']} {version} failed the canary health check: {res['reason']}; "
+                                "rollout held", after={"excerpt": res["excerpt"], "log": res.get("log")})
+    write_json(_state_file(), st)
+
+
 def _note_canary_versions(st: dict, canary: str | None, installed: dict[str, tuple[str, str]],
                           rows: list[dict]) -> None:
     """If the canary already runs a version other servers are about to get (e.g. updated by hand), start
@@ -207,9 +261,10 @@ def _save_selection(chosen: list[dict], deferred: list[dict]) -> None:
     st = load_state()
     st["last_selection"] = {
         "at": _iso(time.time()),
-        "applied": [{"server": r["server"], "key": r["key"], "to_version": r["to_version"]} for r in chosen],
-        "waiting": [{"server": r["server"], "key": r["key"], "to_version": r["to_version"], "reason": r["reason"]}
-                    for r in deferred][:200]}
+        "applied": [{"server": r["server"], "key": r["key"], "to_version": r["to_version"],
+                     "canary_health": canary_health_for(r["key"], r["to_version"])} for r in chosen],
+        "waiting": [{"server": r["server"], "key": r["key"], "to_version": r["to_version"], "reason": r["reason"],
+                     "canary_health": canary_health_for(r["key"], r["to_version"])} for r in deferred][:200]}
     write_json(_state_file(), st)
 
 

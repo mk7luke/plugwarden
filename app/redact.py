@@ -147,6 +147,8 @@ def redact_lines(lines: list[str], rel: str = "") -> tuple[list[str], dict[str, 
         cm = re.match(r"^(\s*#+\s*)(.*)$", body)
         prefix, content = (cm.group(1), cm.group(2)) if cm else ("", body)
         m = _QKEY_LINE.match(content) or _KEY_LINE.match(content)
+        if m and prefix and not re.fullmatch(r"[\w.-]+", m.group("key").strip()):
+            m = None  # prose in a comment ("... license https://...") is not a key
         if m and is_secret_key(m.group("key")):
             val = m.group("val").strip()
             if val.lower() in _TOGGLES - {""}:

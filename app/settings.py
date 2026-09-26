@@ -34,7 +34,49 @@ _lock = threading.Lock()
 
 
 class SettingsError(ValueError):
-    pass
+    """Invalid settings. `fields` maps a field path (e.g. "auto_update.max_changes_per_run") to a
+    message the UI can show inline; the API returns 422 {detail: {message, fields}}."""
+
+    def __init__(self, message: str = "", fields: dict[str, str] | None = None):
+        self.fields = dict(fields or {})
+        super().__init__(message or "; ".join(f"{k}: {v}" for k, v in self.fields.items()))
+
+
+# Numeric settings: (min, max, integer, nullable). None for max_changes_per_run means "no limit".
+NUMERIC = {
+    "auto_update.interval_hours": (1, 720, False, False),
+    "auto_update.min_release_age_hours": (0, 24 * 90, False, False),
+    "auto_update.canary_soak_hours": (0, 24 * 30, False, False),
+    "auto_update.max_changes_per_run": (1, 500, True, True),
+    "backup_keep_jobs": (5, 1000, True, False),
+    "backup_max_age_days": (1, 3650, False, False),
+    "backup_max_gb": (0.1, 10000, False, False),
+}
+
+
+def _number(path: str, value: Any, errors: dict[str, str]):
+    lo, hi, integer, nullable = NUMERIC[path]
+    kind = "a whole number" if integer else "a number"
+    if value is None or value == "":
+        if nullable:
+            return None
+        errors[path] = f"Enter {kind} between {lo:g} and {hi:g}"
+        return _MISSING
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        errors[path] = f"Enter {kind} between {lo:g} and {hi:g}"
+        return _MISSING
+    try:
+        v = float(value)
+    except ValueError:
+        errors[path] = f"Enter {kind} between {lo:g} and {hi:g}"
+        return _MISSING
+    if v != v or (integer and v != int(v)) or not lo <= v <= hi:
+        errors[path] = f"Enter {kind} between {lo:g} and {hi:g}" + (" (or leave empty for no limit)" if nullable else "")
+        return _MISSING
+    return int(v) if integer else v
+
+
+_MISSING = object()
 
 
 def _path():
@@ -80,41 +122,37 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
     if "groups" in new:
         g = new["groups"]
         if not isinstance(g, dict):
-            raise SettingsError("groups must be an object")
+            raise SettingsError("groups must be an object", {"groups": "groups must be an object"})
         groups = {}
         for name, ids in g.items():
             if name in BUILTIN_GROUPS:
                 continue
             if not isinstance(name, str) or not name.strip() or len(name) > 60:
-                raise SettingsError(f"invalid group name: {name!r}")
+                raise SettingsError(f"invalid group name: {name!r}", {"groups": f"invalid group name: {name!r}"})
             if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-                raise SettingsError(f"group {name!r} must be a list of server ids")
+                raise SettingsError(f"group {name!r} must be a list of server ids", {"groups": f"group {name!r} must be a list of server ids"})
             unknown = [i for i in ids if i not in known_ids]
             if unknown:
-                raise SettingsError(f"group {name!r} has unknown servers: {unknown}")
+                raise SettingsError(f"group {name!r} has unknown servers: {unknown}", {"groups": f"group {name!r} has unknown servers: {unknown}"})
             groups[name.strip()] = list(dict.fromkeys(ids))
         out["groups"] = groups
     if "default_source" in new:
         if new["default_source"] not in known_ids:
-            raise SettingsError(f"unknown default_source: {new['default_source']!r}")
+            raise SettingsError(fields={"default_source": f"Unknown server: {new['default_source']}"})
         out["default_source"] = new["default_source"]
     if "auto_update" in new:
         au = new["auto_update"]
         if not isinstance(au, dict):
-            raise SettingsError("auto_update must be an object")
+            raise SettingsError(fields={"auto_update": "must be an object"})
         cur = dict(out["auto_update"])
-        if "mode" in au:
-            if au["mode"] not in MODES:
-                raise SettingsError(f"auto_update.mode must be one of {MODES}")
+        if "mode" in au and au["mode"] in MODES:
             cur["mode"] = au["mode"]
-        if "interval_hours" in au:
-            try:
-                ih = float(au["interval_hours"])
-            except (TypeError, ValueError):
-                raise SettingsError("interval_hours must be a number")
-            if not 1 <= ih <= 24 * 30:
-                raise SettingsError("interval_hours must be between 1 and 720")
-            cur["interval_hours"] = ih
+        errors: dict[str, str] = {}
+        for fld in ("interval_hours", "min_release_age_hours", "canary_soak_hours", "max_changes_per_run"):
+            if fld in au:
+                v = _number(f"auto_update.{fld}", au[fld], errors)
+                if v is not _MISSING:
+                    cur[fld] = v
         if "window" in au:
             w = au["window"]
             if w in (None, ""):
@@ -122,23 +160,18 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
             elif isinstance(w, str) and WINDOW_RE.match(w):
                 cur["window"] = w
             else:
-                raise SettingsError("window must be null or 'HH:MM-HH:MM'")
+                errors["auto_update.window"] = "Use HH:MM-HH:MM (24 h), or leave empty for any time"
         if "dry_run_first" in au:
             cur["dry_run_first"] = bool(au["dry_run_first"])
-        for fld, lo, hi in (("min_release_age_hours", 0, 24 * 90), ("canary_soak_hours", 0, 24 * 30),
-                            ("max_changes_per_run", 1, 500)):
-            if fld in au:
-                try:
-                    v = float(au[fld])
-                except (TypeError, ValueError):
-                    raise SettingsError(f"auto_update.{fld} must be a number")
-                if not lo <= v <= hi:
-                    raise SettingsError(f"auto_update.{fld} must be between {lo} and {hi}")
-                cur[fld] = int(v) if fld == "max_changes_per_run" else v
         if "canary_server" in au:
             if au["canary_server"] not in (None, "") and au["canary_server"] not in known_ids:
-                raise SettingsError(f"unknown canary_server: {au['canary_server']!r}")
-            cur["canary_server"] = au["canary_server"] or None
+                errors["auto_update.canary_server"] = f"Unknown server: {au['canary_server']}"
+            else:
+                cur["canary_server"] = au["canary_server"] or None
+        if "mode" in au and au["mode"] not in MODES:
+            errors["auto_update.mode"] = f"One of {', '.join(MODES)}"
+        if errors:
+            raise SettingsError(fields=errors)
         out["auto_update"] = cur
     if "pins" in new or "ignores" in new:
         pins, ignores = migrate_holds(new.get("pins", out["pins"]), new.get("ignores", out["ignores"]))
@@ -182,21 +215,14 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 entry["asset"] = str(v["asset"])[:200]
             clean[k] = entry
         out["source_map"] = clean
-    for fld, lo, hi in (("backup_max_age_days", 1, 3650), ("backup_max_gb", 0.1, 10000)):
+    errors = {}
+    for fld in ("backup_keep_jobs", "backup_max_age_days", "backup_max_gb"):
         if fld in new:
-            try:
-                v = float(new[fld])
-            except (TypeError, ValueError):
-                raise SettingsError(f"{fld} must be a number")
-            if not lo <= v <= hi:
-                raise SettingsError(f"{fld} must be between {lo} and {hi}")
-            out[fld] = v
-    if "backup_keep_jobs" in new:
-        try:
-            n = int(new["backup_keep_jobs"])
-        except (TypeError, ValueError):
-            raise SettingsError("backup_keep_jobs must be an integer")
-        out["backup_keep_jobs"] = max(5, min(n, 1000))
+            v = _number(fld, new[fld], errors)
+            if v is not _MISSING:
+                out[fld] = v
+    if errors:
+        raise SettingsError(fields=errors)
     return out
 
 

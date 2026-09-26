@@ -381,9 +381,10 @@ def test_diff_redacts_secrets_and_flags_changes(env):
         assert r["diff"] == "" and r["identical"] is False and r["redacted_changed"] is True
         log = c.get("/api/v2/access-log").json()["entries"]
         # the plain email header is never trusted: identity comes from auth (loopback dev mode → "local")
-        assert len(log) == 2 and log[0]["user"] == "local" and log[1]["user"] == "local"
-        assert log[1]["servers"] == ["elChapo01", "M1-hub01"] and log[1]["path"] == "LuckPerms/config.yml"
-        assert log[1]["action"] == "diff" and "redacted" in log[1]["detail"]
+        # the same diff viewed twice within 10 minutes is one row with a count
+        assert len(log) == 1 and log[0]["user"] == "local" and log[0]["count"] == 2
+        assert log[0]["servers"] == ["elChapo01", "M1-hub01"] and log[0]["path"] == "LuckPerms/config.yml"
+        assert log[0]["action"] == "diff" and "redacted" in log[0]["detail"] and log[0]["last_seen"] >= log[0]["at"]
         assert c.get("/api/v2/access-log", params={"user": "LOC"}).json()["entries"] == log
         assert c.get("/api/v2/access-log", params={"user": "ops@"}).json()["entries"] == []
         assert c.get("/api/v2/access-log", params={"server": "M3"}).json()["entries"] == []

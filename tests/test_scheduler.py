@@ -60,9 +60,17 @@ def test_auto_policy_age_prerelease_manual_and_canary():
     assert why["M6-creative01"].startswith("manual source")
     assert why["M7-bending01"] == "waiting for canary elChapo01"  # opted in, still canaried
     # canary applied 25 h ago and restarted → rollout proceeds
-    state = {"bukkit:cp|24.1": {"at": now - 25 * 3600}}
+    state = {"bukkit:cp|24.1": {"at": now - 25 * 3600, "health": {"status": "healthy"}}}
     chosen, waiting = scheduler.select_auto_rows(rows[1:2], AU, state, "elChapo01", True, now, installed)
     assert [r["server"] for r in chosen] == ["M1-hub01"]
+    # soaked and restarted, but the log hasn't shown the plugin enabled yet / showed a failure
+    for h, why in (({}, "waiting for elChapo01's log"), ({"status": "failed"}, "canary health check failed")):
+        st2 = {"bukkit:cp|24.1": {"at": now - 25 * 3600, "health": h}}
+        _, waiting = scheduler.select_auto_rows(rows[1:2], AU, st2, "elChapo01", True, now, installed)
+        assert waiting[0]["reason"].startswith(why)
+    # a held version is never auto-applied again, not even to the canary
+    _, waiting = scheduler.select_auto_rows(rows[:1], AU, {}, "elChapo01", True, now, installed, {"bukkit:cp|24.1"})
+    assert waiting[0]["reason"].startswith("held")
     chosen, waiting = scheduler.select_auto_rows(rows[1:2], AU, state, "elChapo01", False, now, installed)
     assert waiting[0]["reason"] == "waiting for elChapo01 to restart"
     state = {"bukkit:cp|24.1": {"at": now - 2 * 3600}}
