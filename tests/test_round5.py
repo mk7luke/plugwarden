@@ -113,7 +113,7 @@ def test_known_issues_are_preexisting_not_failed(env):
     assert "<ip>" in vc["preexisting_errors"][0]["signature"]
 
 
-def test_new_startup_error_after_update_fails(env):
+def test_new_startup_error_after_update_is_a_warning_while_running(env):
     now = datetime.now() - timedelta(hours=1)
     body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
             L(E, "[CoreProtect] Database schema upgrade failed: table co_blocks missing", _at(now, 1)),
@@ -121,7 +121,7 @@ def test_new_startup_error_after_update_fails(env):
             L(T, "Done (60s)!", _at(now, 2))]
     srv, _ = _setup(env, body, when=now)
     res = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar", "net.coreprotect.CoreProtect")
-    assert (res["status"], res["reason"]) == ("failed", "new error after the update")
+    assert (res["status"], res["reason"], res["running"]) == ("warning", "new error after the update", True)
     assert res["new_errors"][0]["signature"].startswith("[CoreProtect] Database schema upgrade failed")
 
 
@@ -153,7 +153,7 @@ def test_runtime_errors_after_grace_are_not_startup_failures(env):
     # the same new event error inside the grace window counts
     body[2] = L(E, "Could not pass event PlayerQuitEvent to Vivecraft-Spigot-Extension v1.3.15-1", _at(now, 5))
     srv, _ = _setup(env, body, when=now)
-    assert _check(srv, "Vivecraft-Spigot-Extension", "1.3.15-1", "V.jar")["status"] == "failed"
+    assert _check(srv, "Vivecraft-Spigot-Extension", "1.3.15-1", "V.jar")["status"] == "warning"
 
 
 def test_no_baseline_means_warning_not_failure(env):
@@ -311,7 +311,7 @@ def test_excerpt_contains_match_with_context_and_file_line(env):
             L(T, "Done (60s)!", _at(now, 2)), L(T, "after 1", _at(now, 2)), L(T, "after 2", _at(now, 2))]
     srv, _ = _setup(env, body, when=now)
     r = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar", "net.coreprotect.CoreProtect")
-    assert r["status"] == "failed"
+    assert r["status"] == "warning"
     assert "[CoreProtect] Something brand new" in r["excerpt"][r["match_index"]]
     assert r["match_index"] == 2 and len(r["excerpt"]) >= r["match_index"] + 3  # context after the match
     # line numbers point into the actual log file (line 1 is the start marker written by write_log)

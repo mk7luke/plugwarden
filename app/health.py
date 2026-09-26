@@ -3,7 +3,8 @@
 Logs are read from <server>/Minecraft/logs (latest.log + rotated YYYY-MM-DD-N.log.gz), confined to the
 server directory and bounded to MAX_LOG_BYTES in total, newest first. Lines are stitched into *runs*
 (one per server start: Paper/Purpur "[bootstrap] Running Java"/"Starting minecraft server", Velocity
-"Booting up Velocity"); daily log rollover does not start a new run.
+"Booting up Velocity"); daily log rollover does not start a new run, a JVM boot line always does (a start
+that crashed or was killed never logs "Done (" or "Stopping server").
 
 The verdict is differential:
   * hard failures always fail: "Error occurred while enabling X", "Could not load '…/<jar>'", unknown
@@ -11,8 +12,9 @@ The verdict is differential:
   * other ERROR/SEVERE blocks that reference the plugin ([Name] tag, name in the message, "Could not pass
     event … to Name", or its main-class package in the stack trace) count only if they occur within
     GRACE_SECONDS of the start AND their normalised signature (no timestamps, numbers, IPs, UUIDs, hex,
-    player names) did not occur in the baseline runs before. Known signatures are reported as
-    preexisting; without any baseline run a new error is only a warning;
+    player names) did not occur in any of the BASELINE_RUNS earlier starts, whatever plugin version ran
+    then. Known signatures are reported as preexisting; a new one makes the plugin a "warning" (it still
+    runs), never "failed"; without an earlier start a new error is only listed as a warning;
   * healthy additionally needs the plugin's own enable line ("Enabling X v<version>" /
     Velocity "Loaded plugin <id> <version>"); without it the result is unknown.
 """
@@ -32,10 +34,11 @@ from .redact import scrub_value
 MAX_LOG_BYTES = 20 * 1024 * 1024
 MAX_LOG_FILES = 40
 GRACE_SECONDS = 30 * 60
-BASELINE_RUNS = 2
+BASELINE_RUNS = 8
 EXCERPT_BEFORE, EXCERPT_AFTER = 2, 12
 
 _START = re.compile(r"\[bootstrap\] Running Java|Starting minecraft server version|Booting up Velocity")
+_BOOT = re.compile(r"\[bootstrap\] Running Java|Booting up Velocity")  # first line of every JVM start
 _TIME = re.compile(r"^\[(\d{1,2}):(\d{2}):(\d{2})")
 _LEVEL = re.compile(r"^\[[^\]]*?\b(ERROR|SEVERE)\]|^\[[^\]]*\]\s*\[[^\]]*/(ERROR|SEVERE)\]")
 _WARN_LEVEL = re.compile(r"^\[[^\]]*?\b(WARN|WARNING)\]|^\[[^\]]*\]\s*\[[^\]]*/(WARN|WARNING)\]")
@@ -119,7 +122,8 @@ def read_runs(srv: Server, since: float | None = None, want_before: int = BASELI
         if starts:
             t = _abs(day, starts[0])
             if since is None or (t is not None and t < since):
-                starts_seen_before += max(1, sum(1 for ln in lines if "Done (" in ln))
+                starts_seen_before += (sum(1 for ln in lines if _BOOT.search(ln))
+                                       or max(1, sum(1 for ln in lines if "Done (" in ln)))
         if starts_seen_before > want_before:  # enough history: the newest run + baseline runs
             break
     runs: list[dict] = []
@@ -127,14 +131,20 @@ def read_runs(srv: Server, since: float | None = None, want_before: int = BASELI
     for p, day, lines in reversed(chunks):
         for n, ln in enumerate(lines, 1):
             t = _abs(day, ln)
-            # One start logs several markers ("[bootstrap] Running Java", then "Starting minecraft server");
-            # a marker only opens a new run once the current one finished starting or stopped.
-            if _START.search(ln) and (cur is None or cur["start"] is None or cur.get("ended")):
-                cur = {"start": t, "file": p.name, "lines": [], "pos": [], "complete": True}
+            # One start logs several markers ("[bootstrap] Running Java", then "Starting minecraft server"): a
+            # marker opens a new run if the current one finished starting or stopped, if it is a JVM boot line,
+            # or if the current run already logged that marker (a crashed start never logs "Done (").
+            kind = ("boot" if _BOOT.search(ln) else "mc") if _START.search(ln) else None
+            if kind and (cur is None or cur["start"] is None or cur.get("ended") or kind == "boot"
+                         or kind in cur["markers"]):
+                cur = {"start": t, "file": p.name, "lines": [], "pos": [], "complete": True, "markers": set()}
                 runs.append(cur)
             elif cur is None:
-                cur = {"start": None, "file": p.name, "lines": [], "pos": [], "complete": False}  # started before
+                cur = {"start": None, "file": p.name, "lines": [], "pos": [], "complete": False,  # started before
+                       "markers": set()}
                 runs.append(cur)
+            if kind:
+                cur["markers"].add(kind)
             cur["lines"].append((t, ln))
             cur["pos"].append((p.name, n))  # file + 1-based line number, parallel to "lines"
             if "Done (" in ln or "Stopping server" in ln or "Shutting down the proxy" in ln:
@@ -387,9 +397,12 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
         return {**res, "status": "failed", "running": False, "preexisting": again,
                 "reason": "disabled itself after startup" + (" (on every start)" if again else ""),
                 **_hit(run, lines, off)}
+    # Only earlier *starts* can show a startup error is new (a fragment from before the oldest start can't).
+    baseline = [r for r in baseline if r["start"]]
     if new and baseline:
+        # A soft error never means "not running": the plugin enabled (or at least didn't fail to).
         first = {k: new[0][k] for k in ("line", "log", "excerpt", "match_index")}
-        return {**res, "status": "failed", "reason": "new error after the update", **first, "new_errors": new,
+        return {**res, "status": "warning", "reason": "new error after the update", **first, "new_errors": new,
                 "running": True if enabled_i is not None else None}
     if new:
         res["warnings"] = [{**n, "reason": "error with no earlier run to compare against"} for n in new] + new_warn
@@ -612,7 +625,7 @@ def _server_report(srv: Server, since: float | None) -> dict:
         desc = (meta or {}).get("descriptors", {}).get(srv.family)
         r = plugin_health(srv, runs, p, desc, since, _ctx=ctx)
         plugins.append({"key": p["key"], "name": p["name"], "jar": p["jar"], "version": p["version"], **r})
-    order = {"failed": 0, "unknown": 1, "healthy": 2}
+    order = {"failed": 0, "warning": 1, "unknown": 2, "healthy": 3}
     plugins.sort(key=lambda r: (order[r["status"]], r["name"].lower()))
     known, notices = [], []
     for p in plugins:
@@ -631,7 +644,7 @@ def _server_report(srv: Server, since: float | None) -> dict:
             "startup_complete": any("Done (" in ln for _t, ln in lines),
             "restarted_at": last_start,
             "restarted": bool(last_start and (since is None or last_start >= since)),
-            "counts": {s: sum(1 for r in plugins if r["status"] == s) for s in ("healthy", "failed", "unknown")},
+            "counts": {s: sum(1 for r in plugins if r["status"] == s) for s in ("healthy", "warning", "failed", "unknown")},
             "preexisting_errors": known,
             "update_notices": notices,
             "indexing": inventory.indexing_state(),
@@ -655,11 +668,15 @@ def _signature(srv: Server) -> tuple:
 
 
 def _summarise(report: dict) -> dict:
+    # "failed" is what the dashboard shows as not running: only plugins the start left not running.
     failed = [{"key": p["key"], "name": p["name"], "reason": p["reason"], "preexisting": bool(p.get("preexisting")),
                "running": p.get("running"), "cause": p.get("cause")}
-              for p in report["plugins"] if p["status"] == "failed"]
+              for p in report["plugins"] if p["status"] == "failed" and p.get("running") is False]
+    warnings = [{"key": p["key"], "name": p["name"], "reason": p["reason"], "running": p.get("running")}
+                for p in report["plugins"] if p["status"] == "warning"]
     known = report["preexisting_errors"]
-    return {"failed": failed, "failed_count": len(failed), "run_started": report["run_started"],
+    return {"failed": failed, "failed_count": len(failed), "warnings": warnings, "warning_count": len(warnings),
+            "run_started": report["run_started"],
             "known_errors": sum(1 for k in known if k.get("level") == "error"),
             "known_warnings": sum(1 for k in known if k.get("level") == "warning"),
             "update_notices": len(report.get("update_notices") or []),

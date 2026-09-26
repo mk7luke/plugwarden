@@ -10,6 +10,7 @@ import { relTime, plural } from "../fmt.js";
 
 const HEALTH = {
   healthy: ["ok", "circle-check", "enabled cleanly"],
+  warning: ["warn", "triangle-alert", "running, new errors"],
   failed: ["danger", "circle-x", "failed to enable"],
   unknown: ["", "circle-dashed", "not in the log yet"],
   pending: ["", "clock", "waiting for restart"],
@@ -68,7 +69,7 @@ export function CanaryStatus({ au, compact }) {
       <span class="grow"><b>${pname(r)} ${r.version}</b> <span class="muted">on ${r.server}</span></span>
       <${HealthTag} h=${r.canary_health} />
       ${st === "healthy" && r.soak_hours_left > 0 && html`<span class="small muted">${Math.ceil(r.soak_hours_left)} h soak left</span>`}
-      ${st === "failed" && html`<div class="canary-ex"><${Cause} cause=${r.canary_health?.cause} server=${r.server} /><${Excerpt} ...${ex(r.canary_health)} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
+      ${(st === "failed" || st === "warning") && html`<div class="canary-ex"><${Cause} cause=${r.canary_health?.cause} server=${r.server} /><${Excerpt} ...${ex(r.canary_health)} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
     </li>`; })}</ul>`}
     ${held.length > 0 && html`<div class="field-label" style="margin-top:8px">Held — never auto-applied</div>
     <ul>${held.map(h => html`<li><span class="grow"><b>${pname(h)} ${h.version}</b> <span class="muted">failed on ${h.server} ${relTime(h.at)}</span></span>

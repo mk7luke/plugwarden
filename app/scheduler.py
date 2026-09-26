@@ -149,7 +149,7 @@ def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str
                     why = f"waiting for {canary} to restart"
                 elif (c.get("health") or {}).get("status") != "healthy":
                     h = c.get("health") or {}
-                    why = (f"canary health check failed on {canary}" if h.get("status") == "failed"
+                    why = (f"canary health check failed on {canary}" if h.get("status") in ("failed", "warning")
                            else f"waiting for {canary}'s log to show the plugin enabled")
             elif age < min_age + soak:
                 why = "no canary for this plugin: waiting release age + soak"
@@ -218,7 +218,7 @@ def check_canary_health(st: dict, csrv: inventory.Server) -> None:
     last_start = actions._last_start(csrv)
     held = st.setdefault("held", {})
     for k, c in (st.get("canary") or {}).items():
-        if c.get("server") != csrv.id or (c.get("health") or {}).get("status") in ("healthy", "failed"):
+        if c.get("server") != csrv.id or (c.get("health") or {}).get("status") in ("healthy", "warning", "failed"):
             continue
         if last_start < c["at"]:
             continue  # not restarted with it yet
@@ -232,7 +232,8 @@ def check_canary_health(st: dict, csrv: inventory.Server) -> None:
         res = health.plugin_health(csrv, health.read_runs(csrv, c["at"]), {**p, "version": version}, desc,
                                    since=c["at"])
         c["health"] = {**res, "checked_at": time.time()}
-        if res["status"] == "failed" and k not in held:
+        # A new error on the canary holds the rollout even while the plugin runs ("warning").
+        if res["status"] in ("failed", "warning") and k not in held:
             held[k] = {"key": key, "name": p["name"], "version": version, "server": csrv.id,
                        "at": time.time(), "reason": res["reason"], "excerpt": res["excerpt"]}
             audit.record(USER, "canary-failed", servers=[csrv.id], path=key,
