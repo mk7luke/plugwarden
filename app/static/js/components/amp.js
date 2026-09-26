@@ -20,9 +20,10 @@ export function useAmpStatus() {
     const t = setInterval(() => document.visibilityState === "visible" && invalidate("/amp/status"), 10000);
     return () => clearInterval(t);
   }, [on]);
-  const raw = q.data?.servers || ov?.amp?.servers || {};
+  const raw = on ? q.data?.servers || ov?.amp?.servers || {} : {};
   const servers = Object.fromEntries(Object.entries(raw).map(([id, a]) => [id, norm(a)]));
-  const err = q.error || (q.data?.error ? { message: q.data.error } : null);
+  const src = q.data || ov?.amp;
+  const err = q.error || (src?.reachable === false || (q.data && q.data.error) ? { message: src.error || "AMP is unreachable." } : null);
   return { on, readonly: !!(q.data?.readonly ?? ov?.amp?.readonly), reachable: !err, error: err, servers };
 }
 
@@ -106,7 +107,7 @@ export function AmpPanel({ server }) {
       : running || busy ? html`
         <${Btn} size="sm" icon="terminal" onClick=${() => openConsole(server)}>Console<//>
         <${Btn} size="sm" icon="rotate-ccw" disabled=${busy} onClick=${() => openRolling([server])}>Restart…<//>
-        <${Btn} size="sm" kind="ghost" icon="square" disabled=${busy} onClick=${() => power(server, "stop")} aria-label=${`Stop ${server}`}>Stop<//>`
+        <${Btn} size="sm" kind="ghost" icon="power" disabled=${busy} onClick=${() => power(server, "stop")} aria-label=${`Stop ${server}`}>Stop<//>`
       : html`<${Btn} size="sm" kind="primary" icon="play" onClick=${() => power(server, "start")}>Start<//>
         <${Btn} size="sm" icon="terminal" onClick=${() => openConsole(server)}>Console<//>`}
     </div>
@@ -141,7 +142,8 @@ function Rolling({ init }) {
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
   }, []);
-  const chosen = eligible.filter(s => sel.has(s.id));
+  const offline = (id) => amp.servers[id]?.state === "instance_offline";
+  const chosen = eligible.filter(s => sel.has(s.id) && !offline(s.id));
   const players = chosen.reduce((a, s) => a + (amp.servers[s.id]?.players?.online || 0), 0);
   const go = async () => {
     setBusy(true);
@@ -161,9 +163,9 @@ function Rolling({ init }) {
       <h2 id="rr-t" style="gap:8px"><${Icon} n="rotate-ccw" cls="i-sm" style="color:var(--fg-2)" />Rolling restart</h2>
       <p>Servers restart one at a time. The run stops at the first server whose plugins don't start cleanly; the rest are left running.</p>
       <div class="targets" role="group" aria-label="Servers to restart">
-        ${eligible.map(s => { const on = sel.has(s.id); const a = amp.servers[s.id]; return html`<button type="button" class="target" aria-pressed=${on ? "true" : "false"}
+        ${eligible.map(s => { const on = sel.has(s.id); const a = amp.servers[s.id]; return html`<button type="button" class="target" aria-pressed=${on && !offline(s.id) ? "true" : "false"} disabled=${offline(s.id)}
           onClick=${() => setSel(x => { const n = new Set(x); on ? n.delete(s.id) : n.add(s.id); return n; })}>
-          <span class="tick">${on && html`<${Icon} n="check" />`}</span>${s.id}${a?.state === "running" ? html`<span class="target-why">· ${a.players?.online || 0} on</span>` : html`<span class="target-why">· ${stateLabel(a?.state)}</span>`}</button>`; })}
+          <span class="tick">${on && !offline(s.id) && html`<${Icon} n="check" />`}</span>${s.id}${a?.state === "running" ? html`<span class="target-why">· ${a.players?.online ? `${a.players.online} online` : "empty"}</span>` : html`<span class="target-why">· ${stateLabel(a?.state)}</span>`}</button>`; })}
       </div>
       <div class="stack" style="gap:8px">
         <${Check} checked=${warn} onChange=${setWarn}>Warn players in-game at 60 s, 30 s and 10 s<//>
@@ -229,7 +231,7 @@ function Console({ server }) {
       setHist(h => [c, ...h.filter(x => x !== c)].slice(0, 50)); setHi(-1); setCmd("");
     } catch (err) {
       if (err.code === "confirm_required") {
-        const ok = await confirmDialog({ danger: true, title: `Run “${c}” on ${server}?`, body: err.message || "This command can disconnect players or change permissions.", confirmLabel: "Run command" });
+        const ok = await confirmDialog({ danger: true, title: `Run “${c}” on ${server}?`, body: `${err.matched ? `“${err.matched}” is on the protected-command list` : "This is a protected command"} — it can disconnect players, stop the server or change permissions. The command is logged in the audit trail.`, confirmLabel: "Run command" });
         if (ok) return send(null, true);
       } else toast({ kind: "err", title: "Command not sent", body: err.message });
     }

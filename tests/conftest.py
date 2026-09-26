@@ -99,6 +99,8 @@ def _loopback(asgi):
 
 def client_for(app, **kw):
     from fastapi.testclient import TestClient
+    from app import inventory as _inv
+    _inv.index_all()  # index synchronously so the app's startup indexer has nothing left to race with
     headers = {**CSRF, **kw.pop("headers", {})}
     return TestClient(_loopback(app), base_url="http://localhost", headers=headers, **kw)
 

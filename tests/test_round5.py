@@ -377,3 +377,93 @@ def test_read_paths_make_no_network_calls(env, monkeypatch):
                      "/api/v2/servers/M1-hub01", "/api/v2/servers/M1-hub01/health", "/api/v2/settings",
                      "/api/v2/jobs", "/api/v2/access-log"):
             assert c.get(path).status_code == 200, path
+
+
+# ---------------------------------------------------------------- round 6
+
+VC_BODY = [
+    L(T, "[voicechat] Enabling voicechat v2.6.6"),
+    L(T, "Done (90.041s)! For help, type \"help\"", "00:01:36"),
+    "[00:01:36] [Server thread/WARN]: [voicechat] Running in offline mode - Voice chat encryption is not secure!",
+    "[00:01:36] [VoiceChatServerThread/ERROR]: [voicechat] Failed to bind to address '192.168.4.1', binding to wildcard IP instead",
+    "[00:01:36] [VoiceChatServerThread/ERROR]: [voicechat] Failed to run voice chat at UDP port 24454, make sure no other application is running at that port",
+    "[00:01:36] [VoiceChatServerThread/ERROR]: [voicechat] Voice chat server error",
+    "[00:01:36] [Server thread/ERROR]: [voicechat] Disabling Simple Voice Chat",
+    "[00:01:36] [Server thread/INFO]: [voicechat] Disabling voicechat v2.6.6",
+]
+
+
+def _vc_run(when):
+    t = when.strftime("%H:%M:%S")
+    return [ln.replace("00:01:36", t).replace("00:01:20", t) for ln in VC_BODY]
+
+
+def test_plugin_disabling_itself_after_done_fails_and_is_not_running(env):
+    logs = env["src"].parent / "logs"
+    day = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=8)
+    write_log(logs, day, _vc_run(day), name=day.strftime("%Y-%m-%d-2.log.gz"))
+    now = datetime.now() - timedelta(hours=1)
+    write_log(logs, now, _vc_run(now))
+    make_jar(env["src"] / "voicechat-bukkit-2.6.6.jar", "voicechat", "2.6.6")
+    srv = inventory.get_server("elChapo01")
+    r = _check(srv, "voicechat", "2.6.6", "voicechat-bukkit-2.6.6.jar")
+    assert r["status"] == "failed" and r["running"] is False and r["preexisting"] is True
+    assert r["reason"] == "disabled itself after startup (on every start)"
+    assert "Disabling voicechat v2.6.6" in r["excerpt"][r["match_index"]]
+    levels = sorted({(k["level"], k["signature"][:30]) for k in r["preexisting_errors"]})
+    assert ("warning", "[voicechat] Running in offline") in levels
+    assert sum(1 for k in r["preexisting_errors"] if k["level"] == "error") == 4
+    # first time (no baseline): still failed, but not "on every start"
+    for f in logs.glob("*.gz"):
+        f.unlink()
+    r = _check(srv, "voicechat", "2.6.6", "voicechat-bukkit-2.6.6.jar")
+    assert r["reason"] == "disabled itself after startup" and r["preexisting"] is False
+
+
+def test_normal_shutdown_disable_is_not_a_failure(env):
+    now = datetime.now() - timedelta(hours=2)
+    body = [L(T, "[voicechat] Enabling voicechat v2.6.6", _at(now, 1)), L(T, "Done (60s)!", _at(now, 1)),
+            L(T, "Stopping server", _at(now, 50)), L(T, "[voicechat] Disabling voicechat v2.6.6", _at(now, 50))]
+    srv, _ = _setup(env, body, when=now)
+    r = _check(srv, "voicechat", "2.6.6", "v.jar")
+    assert r["status"] == "healthy" and r["running"] is True
+
+
+def test_overview_carries_cached_startup_summary(env):
+    now = datetime.now() - timedelta(hours=1)
+    make_jar(env["src"] / "voicechat-bukkit-2.6.6.jar", "voicechat", "2.6.6")
+    write_log(env["src"].parent / "logs", now, _vc_run(now))
+    srv = inventory.get_server("elChapo01")
+    health.refresh_summaries()
+    with client_for(app) as c:
+        tile = next(s for s in c.get("/api/v2/overview").json()["servers"] if s["id"] == "elChapo01")
+    st = tile["startup"]
+    assert st["failed_count"] == 1 and st["failed"][0]["name"] == "voicechat" and st["failed"][0]["running"] is False
+    m1 = next(s for s in c.get("/api/v2/overview").json()["servers"] if s["id"] == "M1-hub01")["startup"]
+    assert m1["failed_count"] == 0 and m1["run_started"] is None  # no logs for M1 in this fixture
+
+
+def test_failed_undo_marked_real_flow_and_backfilled(env):
+    from app import actions, engine, jobs
+    from test_security import _plan_deploy
+    job = _plan_deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"jars": ["Vault.jar"]}})
+    # make the real undo fail: its backup copy disappeared
+    for e in engine.Backup(job.id).entries:
+        if e.get("store"):
+            engine._remove(engine.Backup(job.id).store_path(e))
+    undo = jobs.wait(actions.start_undo("t", job.id), 30)
+    assert undo.status == "failed"
+    d = jobs.get(job.id).to_dict()
+    assert d["undo_failed_by"] == undo.id and d["status"] == "done"
+    # a record from before the field existed gets backfilled at startup
+    from app import config
+    from app.storage import read_json, write_json
+    f = config.state("jobs", f"{job.id}.json")
+    rec = read_json(f)
+    rec.pop("undo_failed_by", None)
+    write_json(f, rec)
+    jobs._live.pop(job.id, None)
+    assert jobs.get(job.id).to_dict()["undo_failed_by"] is None
+    assert jobs.backfill_undo_failures() == 1
+    assert jobs.get(job.id).to_dict()["undo_failed_by"] == undo.id
+    assert jobs.backfill_undo_failures() == 0

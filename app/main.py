@@ -28,16 +28,22 @@ from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
 HERE = Path(__file__).parent
+_bg_stop = threading.Event()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     auth.check_startup()
     config.ensure_dirs()
     jobs.recover_interrupted()
+    jobs.backfill_undo_failures()
     scheduler.start()
     amp.start_poller()
+    health.start_refresher(_bg_stop)
     # Index (hash + read) every jar in the background; read endpoints answer from the cache meanwhile.
     threading.Thread(target=inventory.index_all, name="indexer", daemon=True).start()
     yield
+    _bg_stop.set()
     amp.stop_poller()
     amp.CONSOLE.stop_all()
     scheduler.stop()
@@ -66,7 +72,7 @@ async def _cmd_refused(_: Request, exc: amp.CommandRefused):
 
 @app.exception_handler(amp.AmpError)
 async def _amp_error(_: Request, exc: amp.AmpError):
-    code = {503: "amp_unavailable", 403: "amp_readonly", 404: "amp_not_instance"}.get(exc.status, "amp_error")
+    code = {503: "amp_unreachable", 403: "amp_readonly", 404: "amp_not_instance"}.get(exc.status, "amp_error")
     if not amp.configured():
         code = "amp_unconfigured"
     return JSONResponse({"detail": str(exc), "code": code}, status_code=exc.status)
@@ -199,7 +205,9 @@ def snapshot() -> dict:
             r["versions_differ"] = r["key"] in drift_keys
             r["installed_on"] = list(per_key[r["key"]])
     pending = updates.pending_updates(servers, plugins)
-    return {"settings": st, "cache": cache, "servers": servers, "plugins": plugins, "drift": drift_keys,
+    ampc = amp.cached_status()
+    return {"amp": ampc["servers"] if ampc["configured"] else {},
+            "settings": st, "cache": cache, "servers": servers, "plugins": plugins, "drift": drift_keys,
             "expected": expected, "source": source, "pending": pending, "counts": updates.update_counts(pending)}
 
 
@@ -238,6 +246,8 @@ def server_view(srv: inventory.Server, snap: dict) -> dict:
         "is_source": bool(src and src.id == srv.id),
         "eligible_target": srv.family == src_family and srv.family != "fabric" and not (src and src.id == srv.id),
         "note": "Fabric server (no plugins)" if srv.family == "fabric" else None,
+        "startup": health.startup_summary(srv),  # cached plugin-start summary of the latest start
+        "amp": (snap.get("amp") or {}).get(srv.id),
     }
 
 

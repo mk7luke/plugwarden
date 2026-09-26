@@ -26,10 +26,13 @@ export async function api(path, { method = "GET", body, form } = {}) {
     // 409s carry {message, conflicts:[...]}.
     if (d && typeof d === "object") {
       const err = new ApiError(res.status, d.message || (d.fields ? "Some fields are invalid" : undefined), path, d.conflicts);
-      err.fields = d.fields; err.code = d.code;
+      err.fields = d.fields; err.code = d.code; err.matched = d.matched;
       throw err;
     }
-    throw new ApiError(res.status, typeof d === "string" ? d : `HTTP ${res.status}`, path);
+    // AMP errors put the code beside the string detail: {detail, code}.
+    const err = new ApiError(res.status, typeof d === "string" ? d : `HTTP ${res.status}`, path);
+    err.code = data?.code;
+    throw err;
   }
   return data;
 }

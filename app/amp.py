@@ -261,7 +261,8 @@ def cached_status() -> dict:
     """What /overview may show: the cache only, never a network call."""
     with _status_lock:
         servers = {k: dict(v) for k, v in _status.items()}
-    return {"configured": configured(), "readonly": config.AMP_READONLY, "servers": servers,
+    ok = configured() and bool(_last_refresh["at"]) and not _last_refresh["error"]
+    return {"configured": configured(), "reachable": ok, "readonly": config.AMP_READONLY, "servers": servers,
             "updated_at": _last_refresh["at"] or None, "error": _last_refresh["error"]}
 
 

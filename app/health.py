@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import gzip
 import re
+import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,7 @@ EXCERPT_BEFORE, EXCERPT_AFTER = 2, 12
 _START = re.compile(r"\[bootstrap\] Running Java|Starting minecraft server version|Booting up Velocity")
 _TIME = re.compile(r"^\[(\d{1,2}):(\d{2}):(\d{2})")
 _LEVEL = re.compile(r"^\[[^\]]*?\b(ERROR|SEVERE)\]|^\[[^\]]*\]\s*\[[^\]]*/(ERROR|SEVERE)\]")
+_WARN_LEVEL = re.compile(r"^\[[^\]]*?\b(WARN|WARNING)\]|^\[[^\]]*\]\s*\[[^\]]*/(WARN|WARNING)\]")
 _MSG = re.compile(r"^(?:\[[^\]]*\]\s*)+?(?:\[[^\]]*/[A-Z]+\](?:\s*\[[^\]]*\])?:?|[A-Z]+\]:)\s*")
 _GZ_NAME = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(\d+)\.log\.gz$")
 _PLAYER_LINES = [re.compile(r"UUID of player (\w{3,16})"), re.compile(r"\b(\w{3,16})\[/[\d.:]+\] logged in"),
@@ -193,11 +195,13 @@ def signature(message: str, players: set[str]) -> str:
     return re.sub(r"\s+", " ", s).strip()[:300]
 
 
-def _blocks(lines: list[tuple]) -> list[tuple[int, int]]:
-    """(start, end) index ranges of ERROR/SEVERE entries including their stack-trace lines."""
+def _blocks(lines: list[tuple], warnings: bool = False) -> list[tuple[int, int]]:
+    """(start, end) index ranges of ERROR/SEVERE (or, with warnings=True, WARN) entries including their
+    stack-trace lines."""
+    level = _WARN_LEVEL if warnings else _LEVEL
     out, i = [], 0
     while i < len(lines):
-        if _LEVEL.search(lines[i][1]):
+        if level.search(lines[i][1]):
             j = i + 1
             while j < len(lines) and not _TIME.match(lines[j][1]):
                 j += 1
@@ -258,10 +262,11 @@ class _Matcher:
 
 
 def baseline_signatures(baseline: list[dict], players: set[str]) -> dict[str, list[float | None]]:
-    """signature -> start times of the baseline runs in which it appeared."""
+    """signature -> start times of the baseline runs in which it appeared (errors and warnings)."""
     out: dict[str, list[float | None]] = {}
     for r in baseline:
-        for sig in {signature(h[1], players) for h in _error_heads(r)}:
+        heads = _error_heads(r) + _error_heads(r, warnings=True)
+        for sig in {signature(h[1], players) for h in heads}:
             out.setdefault(sig, []).append(r["start"])
     return out
 
@@ -279,45 +284,84 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
         for h in m.hard:
             if h.search(ln):
                 return {"status": "failed", "reason": "failed to load or enable", **_hit(run, lines, i),
-                        "preexisting": _in_baseline(baseline, h)}
+                        "preexisting": _in_baseline(baseline, h), "running": False}
         if m.disabled and m.disabled.search(ln) and done_i is not None and i < done_i:
             return {"status": "failed", "reason": "disabled during startup", **_hit(run, lines, i),
-                    "preexisting": False}
+                    "preexisting": False, "running": False}
     if base_sigs is None:
         base_sigs = baseline_signatures(baseline, players)
-    new, known, late = [], [], []
-    for a, b in _blocks(lines):
-        t, head = lines[a]
-        block = "\n".join(ln for _t, ln in lines[a:b])
-        if not m.references(head, block):
-            continue
-        item = {"signature": signature(head, players), **_hit(run, lines, a, min(b - a, 8))}
-        if start and t and t - start > GRACE_SECONDS:
-            late.append(item)  # runtime error long after start: not the update's startup, reported only
-        elif item["signature"] in base_sigs:
-            seen = [s for s in base_sigs[item["signature"]] if s]
-            known.append({**item, "seen_in_runs": len(base_sigs[item["signature"]]) + 1,
-                          "first_seen": min(seen) if seen else None})
+    new, known, late, new_warn = [], [], [], []
+    for level in ("error", "warning"):
+        for a, b in _blocks(lines, warnings=level == "warning"):
+            t, head = lines[a]
+            block = "\n".join(ln for _t, ln in lines[a:b])
+            if not m.references(head, block):
+                continue
+            item = {"signature": signature(head, players), "level": level, **_hit(run, lines, a, min(b - a, 8))}
+            if start and t and t - start > GRACE_SECONDS:
+                if level == "error":
+                    late.append(item)  # runtime error long after start: not the update's startup, reported only
+            elif item["signature"] in base_sigs:
+                seen = [s for s in base_sigs[item["signature"]] if s]
+                known.append({**item, "seen_in_runs": len(base_sigs[item["signature"]]) + 1,
+                              "first_seen": min(seen) if seen else None})
+            elif level == "error":
+                new.append(item)
+            else:
+                new_warn.append({**item, "reason": "new warning (not blocking)"})
+    known.sort(key=lambda k: k["line"])
+    dedup: dict[str, dict] = {}
+    for k in known:  # the same message several times in one start (banners, repeated warnings) = one entry
+        if k["signature"] in dedup:
+            dedup[k["signature"]]["repeats"] += 1
         else:
-            new.append(item)
-    res = {"preexisting_errors": known, "later_errors": late, "warnings": []}
+            dedup[k["signature"]] = {**k, "repeats": 1}
+    known = list(dedup.values())
+    res = {"preexisting_errors": known, "later_errors": late, "warnings": new_warn, "running": None}
+    off = _disabled_after_done(run, m)
+    if off is not None:
+        again = any(_disabled_after_done(r, m) is not None for r in baseline)
+        return {**res, "status": "failed", "running": False, "preexisting": again,
+                "reason": "disabled itself after startup" + (" (on every start)" if again else ""),
+                **_hit(run, lines, off)}
     if new and baseline:
         first = {k: new[0][k] for k in ("line", "log", "excerpt", "match_index")}
-        return {**res, "status": "failed", "reason": "new error after the update", **first, "new_errors": new}
+        return {**res, "status": "failed", "reason": "new error after the update", **first, "new_errors": new,
+                "running": True if enabled_i is not None else None}
     if new:
-        res["warnings"] = [{**n, "reason": "error with no earlier run to compare against"} for n in new]
+        res["warnings"] = [{**n, "reason": "error with no earlier run to compare against"} for n in new] + new_warn
     if enabled_i is None:
         return {**res, "status": "unknown", "reason": "no enable line for this plugin in the run", "excerpt": []}
     if version and _norm(enabled_version) != _norm(version) and not _norm(enabled_version).startswith(_norm(version)):
         return {**res, "status": "unknown", "reason": f"the server ran v{enabled_version}, not v{version}",
                 **_hit(run, lines, enabled_i, 0), "excerpt": [], "match_index": None}
-    return {**res, "status": "healthy", "reason": "enabled" + (" (with known issues)" if known or new else ""),
+    return {**res, "status": "healthy", "running": True,
+            "reason": "enabled" + (" (with known issues)" if known or new else ""),
             **_hit(run, lines, enabled_i, 0), "excerpt": [scrub_value(lines[enabled_i][1])[:500]], "match_index": 0}
 
 
-def _error_heads(run: dict) -> list[tuple]:
+def _error_heads(run: dict, warnings: bool = False) -> list[tuple]:
     lines = _cut_shutdown(run["lines"])
-    return [lines[a] for a, _b in _blocks(lines)]
+    return [lines[a] for a, _b in _blocks(lines, warnings)]
+
+
+def _disabled_after_done(run: dict, m: "_Matcher") -> int | None:
+    """Index of a "Disabling <Name>" line after "Done (" (and before shutdown, within the grace window):
+    the plugin shut itself down after the server finished starting."""
+    if not m.disabled:
+        return None
+    lines = _cut_shutdown(run["lines"])
+    done_i = next((i for i, (_t, ln) in enumerate(lines) if "Done (" in ln), None)
+    if done_i is None:
+        return None
+    start = run["start"] or (lines[0][0] if lines else None)
+    for i in range(done_i + 1, len(lines)):
+        t, ln = lines[i]
+        if start and t and t - start > GRACE_SECONDS:
+            return None
+        if m.disabled.search(ln):
+            return i
+    return None
 
 
 def _in_baseline(baseline: list[dict], pat: re.Pattern) -> bool:
@@ -389,7 +433,7 @@ def server_report(srv: Server, since: float | None) -> dict:
                           "reason": "also in earlier starts", **e})
     last_start = last_startup(srv) or None
     lines = target["lines"] if target else []
-    return {"server": srv.id, "since": since, "checked_at": time.time(),
+    report = {"server": srv.id, "since": since, "checked_at": time.time(),
             "run_started": target["start"] if target else None,
             "logs": sorted({r["file"] for r in runs}),
             "baseline_runs": len(baseline),
@@ -400,3 +444,70 @@ def server_report(srv: Server, since: float | None) -> dict:
             "preexisting_errors": known,
             "indexing": inventory.indexing_state(),
             "plugins": plugins}
+    if not cached_only:
+        remember(srv, report)
+    return report
+
+
+# ---------------------------------------------------------------- cached startup summary (dashboard)
+
+_summary: dict[str, dict] = {}
+_summary_lock = threading.Lock()
+REFRESH_EVERY = 60.0
+
+
+def _signature(srv: Server) -> tuple:
+    d = _logs_dir(srv)
+    logs = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p, _d, _n in (_files(d)[-4:] if d else []))
+    jars = tuple(sorted((p.name, p.stat().st_mtime_ns) for p in srv.plugins_dir.glob("*.jar"))) \
+        if srv.plugins_dir.is_dir() else ()
+    return logs, jars
+
+
+def _summarise(report: dict) -> dict:
+    failed = [{"key": p["key"], "name": p["name"], "reason": p["reason"], "preexisting": bool(p.get("preexisting")),
+               "running": p.get("running")} for p in report["plugins"] if p["status"] == "failed"]
+    known = report["preexisting_errors"]
+    return {"failed": failed, "failed_count": len(failed), "run_started": report["run_started"],
+            "known_errors": sum(1 for k in known if k.get("level") == "error"),
+            "known_warnings": sum(1 for k in known if k.get("level") == "warning"),
+            "checked_at": report["checked_at"]}
+
+
+def remember(srv: Server, report: dict, sig: tuple | None = None) -> None:
+    if report.get("since") is not None:
+        return  # only "latest start" reports describe the server's current state
+    with _summary_lock:
+        _summary[srv.id] = {"sig": sig or _signature(srv), "summary": _summarise(report)}
+
+
+def startup_summary(srv: Server) -> dict | None:
+    """Cached summary of the latest start (never computed on the request path)."""
+    with _summary_lock:
+        hit = _summary.get(srv.id)
+    return dict(hit["summary"]) if hit else None
+
+
+def refresh_summaries() -> None:
+    """Recompute reports whose logs or jars changed (background)."""
+    for srv in inventory.discover():
+        if srv.family == "fabric":
+            continue
+        try:
+            sig = _signature(srv)
+            with _summary_lock:
+                hit = _summary.get(srv.id)
+            if hit and hit["sig"] == sig:
+                continue
+            remember(srv, server_report(srv, None), sig)
+        except Exception:  # noqa: BLE001 - background; one bad server must not stop the others
+            continue
+
+
+def start_refresher(stop: threading.Event) -> None:
+    def loop():
+        while not stop.is_set():
+            if inventory.indexing_state() is None:
+                refresh_summaries()
+            stop.wait(REFRESH_EVERY if _summary else 5.0)
+    threading.Thread(target=loop, name="health-summary", daemon=True).start()

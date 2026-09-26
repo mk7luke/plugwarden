@@ -309,7 +309,15 @@ def restart_one(job: jobs.Job, c, srv, opts: dict) -> bool:
     from . import amp
     inst = amp.instance_id(srv.id)
     notes = []
+
+    def phase(name: str) -> None:
+        prog = dict(getattr(job, "progress", None) or {})
+        prog["current"] = {"server": srv.id, "phase": name}
+        job.progress = prog
+        job.save()
+
     if opts.get("wait_for_empty"):
+        phase("waiting_empty")
         deadline = time.monotonic() + opts.get("max_wait_min", 10) * 60
         while True:
             online = amp.parse_status(c.call("Core/GetStatus", {}, inst), None).get("players_online") or 0
@@ -321,6 +329,8 @@ def restart_one(job: jobs.Job, c, srv, opts: dict) -> bool:
             job.write(f"  {srv.id}: waiting for {online} player(s) to leave")
             amp.SLEEP(15)
     warns = sorted(set(opts.get("warn_seconds") or []), reverse=True)
+    if warns:
+        phase("warning")
     template = opts.get("message") or DEFAULT_WARN_MESSAGE
     for i, secs in enumerate(warns):
         text = template.replace("{seconds}", str(secs)).replace("{server}", srv.id)
@@ -328,6 +338,7 @@ def restart_one(job: jobs.Job, c, srv, opts: dict) -> bool:
         job.write(f"  {srv.id}: warned players ({secs}s)")
         amp.SLEEP(secs - (warns[i + 1] if i + 1 < len(warns) else 0))
     c.call("Core/GetUpdates", {}, inst)  # move this session's console cursor to "now"
+    phase("restarting")
     started = time.time()
     res = c.call("Core/Restart", {}, inst)
     if isinstance(res, dict) and res.get("Status") is False:
@@ -353,6 +364,7 @@ def restart_one(job: jobs.Job, c, srv, opts: dict) -> bool:
     job.write(f"  {srv.id}: running again after {took}s")
     ok = True
     if opts.get("run_health_check", True):
+        phase("health")
         rep = health.server_report(srv, since=started - 5)
         new_fail = [p for p in rep["plugins"] if p["status"] == "failed" and not p.get("preexisting")]
         if rep["run_started"] is None:
@@ -439,6 +451,7 @@ def start_rolling(user: str, body: dict) -> jobs.Job:
         c = amp.Client()
         try:
             for i, sid in enumerate(opts["servers"]):
+                job.progress = {"done": i, "total": len(opts["servers"]), "current": {"server": sid, "phase": "queued"}}
                 job.write(f"==> {sid} ({i + 1}/{len(opts['servers'])})")
                 try:
                     ok = restart_one(job, c, inventory.get_server(sid), opts)
@@ -452,6 +465,7 @@ def start_rolling(user: str, body: dict) -> jobs.Job:
                                        reason_code="stopped_after_failure")
                     job.write("Rollout stopped after a failure")
                     break
+            job.progress = {"done": len(opts["servers"]), "total": len(opts["servers"]), "current": None}
         finally:
             c.close()
         return None

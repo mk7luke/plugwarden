@@ -343,6 +343,25 @@ def prune_records(limit: int, keep: set[str] = frozenset()) -> int:
     return n
 
 
+def backfill_undo_failures() -> int:
+    """Mark originals of failed undo jobs recorded before `undo_failed_by` existed (idempotent)."""
+    latest: dict[str, str] = {}
+    for f in sorted(config.state("jobs").glob("*.json")):
+        d = read_json(f)
+        if d and d.get("kind") == "undo" and d.get("undo_of"):
+            latest[d["undo_of"]] = d["id"] if d.get("status") in ("failed", "interrupted") else ""
+    n = 0
+    for orig_id, undo_id in latest.items():
+        if not undo_id:
+            continue  # the most recent undo attempt succeeded (or is still pending)
+        j = get(orig_id)
+        if j and not j.undone_by and not getattr(j, "undo_failed_by", None):
+            j.undo_failed_by = undo_id
+            j.save()
+            n += 1
+    return n
+
+
 def recover_interrupted() -> None:
     """Jobs left queued/running by a previous process are marked interrupted."""
     for f in config.state("jobs").glob("*.json"):
