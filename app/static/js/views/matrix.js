@@ -1,17 +1,19 @@
 // Plugins matrix — rows = plugins, columns = servers, cells = installed version.
-import { html, useState, useMemo, useEffect } from "../lib.js";
-import { useQuery } from "../store.js";
+// Cells are selectable (click, shift-click for a range in a row); a floating bar acts on the selection.
+// A plugin's name opens a drawer with its per-server versions and actions.
+import { html, useState, useMemo, useEffect, useRef } from "../lib.js";
+import { useQuery, setState, useStore, getState } from "../store.js";
 import { openRemove } from "../components/removedialog.js";
-import { ineligible } from "./deploy.js";
-import { Icon, Btn, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
-import { applyUpdates } from "../actions.js";
+import { openChangeset } from "../components/changeset.js";
+import { Icon, Btn, Tag, StatusTag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
 import { navigate } from "../router.js";
 import { plural } from "../fmt.js";
+import { ineligible } from "./deploy.js";
 
 const FILTERS = [["all", "All"], ["outdated", "Updates"], ["drift", "Drift"], ["unknown", "Untracked"]];
 const LABEL = { current: "up to date", outdated: "update available", drift: "differs from other servers", unknown: "source unknown", pinned: "pinned", ignored: "ignored" };
-
-const shortVer = (v) => !v ? "?" : v.replace(/-SNAPSHOT-/i, "-S").replace(/-build-/i, "-b");
+const shortVer = (v) => !v ? "?" : v.replace(/-SNAPSHOT/i, "-S").replace(/\s*\(build (\d+)\)/i, " b$1").replace(/-build-?/i, "-b").replace(/\+[0-9a-f]{6,}$/i, "");
+const cid = (key, server) => `${key}\u0000${server}`;
 
 export function Matrix({ query }) {
   const q = useQuery("/matrix");
@@ -20,51 +22,52 @@ export function Matrix({ query }) {
   const [search, setSearch] = useState(query.q || "");
   const [filter, setFilter] = useState(query.status || "all");
   const [hideNA, setHideNA] = useState(true);
+  const [sel, setSel] = useState(new Set());
+  const anchor = useRef(null);
   useEffect(() => { if (query.q != null) setSearch(query.q); if (query.status) setFilter(query.status); }, [query.q, query.status]);
 
   const source = st.data?.default_source;
   const pf = Object.fromEntries((q.data?.server_info || srv.data || []).map(s => [s.id, s]));
   const cols = useMemo(() => (q.data?.servers || []).filter(id => !hideNA || (pf[id]?.plugin_count ?? 1) > 0), [q.data, hideNA, srv.data]);
 
+  const all = useMemo(() => (q.data?.plugins || []).map(p => {
+    const cells = Object.values(p.cells);
+    return { ...p, drift: p.drift ?? new Set(cells.map(c => c.version)).size > 1, outdated: cells.filter(c => c.status === "outdated").length, unknown: cells.every(c => c.status === "unknown") };
+  }), [q.data]);
   const rows = useMemo(() => {
-    let r = (q.data?.plugins || []).map(p => {
-      const cells = Object.values(p.cells);
-      const versions = new Set(cells.map(c => c.version));
-      return { ...p, drift: p.drift ?? (versions.size > 1 || cells.some(c => c.status === "drift")), outdated: cells.filter(c => c.status === "outdated").length, unknown: cells.every(c => c.status === "unknown") };
-    });
+    let r = all;
     if (filter === "outdated") r = r.filter(p => p.outdated);
     if (filter === "drift") r = r.filter(p => p.drift);
     if (filter === "unknown") r = r.filter(p => p.unknown);
     if (search) { const s = search.toLowerCase(); r = r.filter(p => p.name.toLowerCase().includes(s) || p.key.includes(s)); }
     return r;
-  }, [q.data, filter, search]);
+  }, [all, filter, search]);
+  const counts = { all: all.length, outdated: all.filter(p => p.outdated).length, drift: all.filter(p => p.drift).length, unknown: all.filter(p => p.unknown).length };
 
-  const counts = useMemo(() => {
-    const all = (q.data?.plugins || []);
-    return {
-      all: all.length,
-      outdated: all.filter(p => Object.values(p.cells).some(c => c.status === "outdated")).length,
-      drift: all.filter(p => p.drift ?? (new Set(Object.values(p.cells).map(c => c.version)).size > 1)).length,
-      unknown: all.filter(p => Object.values(p.cells).every(c => c.status === "unknown")).length,
-    };
-  }, [q.data]);
-
-  const updateEverywhere = (p) => applyUpdates([{ key: p.key, servers: Object.entries(p.cells).filter(([, c]) => c.status === "outdated").map(([s]) => s) }], { title: `Update ${p.name} everywhere` });
-  const align = (p) => {
-    const src = p.cells[source];
-    const targets = Object.entries(p.cells).filter(([s, c]) => s !== source && c.version !== src.version && pf[s] && !ineligible(pf[s], pf[source])).map(([s]) => s);
-    navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}&targets=${targets.map(encodeURIComponent).join(",")}`);
+  const clickCell = (p, id, e) => {
+    const k = cid(p.key, id);
+    setSel(s => {
+      const n = new Set(s);
+      if (e.shiftKey && anchor.current?.key === p.key) {
+        const a = cols.indexOf(anchor.current.server), b = cols.indexOf(id);
+        for (const c of cols.slice(Math.min(a, b), Math.max(a, b) + 1)) if (p.cells[c]) n.add(cid(p.key, c));
+      } else n.has(k) ? n.delete(k) : n.add(k);
+      return n;
+    });
+    anchor.current = { key: p.key, server: id };
   };
-  const remove = (p) => openRemove(p);
+  const byKey = Object.fromEntries(all.map(p => [p.key, p]));
+  const picked = [...sel].map(x => { const [key, server] = x.split("\u0000"); return { key, server, p: byKey[key], c: byKey[key]?.cells[server] }; }).filter(x => x.c);
 
   return html`
-    <${PageHead} title="Plugins matrix" sub="Every plugin on every server. Spot what's outdated or out of step at a glance.">
+    <${PageHead} title="Plugins matrix" sub="Every plugin on every server. Click cells to select them; click a plugin for its details.">
       <div class="legend" aria-label="Legend">
         <span><i class="lg-sw" style="background:var(--ok-soft);border-color:var(--ok-line)"></i>Current</span>
         <span><i class="lg-sw" style="background:var(--update-soft);border-color:var(--update-line)"></i>Update</span>
         <span><i class="lg-sw" style="background:var(--drift-soft);border-color:var(--drift-line)"></i>Drift</span>
         <span><i class="lg-sw" style="background:var(--surface-3);border-color:var(--line-strong)"></i>Untracked</span>
-        <span><i class="lg-sw" style="background:repeating-linear-gradient(135deg,transparent 0 2px,var(--fg-4) 2px 3px);border-color:var(--line-strong)"></i>Not installed</span>
+        <span><i class="lg-sw" style="background:repeating-linear-gradient(135deg,transparent 0 2px,var(--fg-3) 2px 3px);border-color:var(--line-strong)"></i>Not installed</span>
+        <span><i class="lg-sw" style="background:var(--bg-sunken);border-color:var(--line)"></i>N/A · other platform</span>
       </div>
     <//>
     <div class="toolbar">
@@ -81,30 +84,95 @@ export function Matrix({ query }) {
       : !rows.length ? html`<div class="panel"><${Empty} icon="filter" title="No plugins match" action=${html`<${Btn} size="sm" onClick=${() => { setFilter("all"); setSearch(""); }}>Clear filters<//>`}>Nothing matches “${search || filter}”.<//></div>`
       : html`<div class="matrix-wrap" tabindex="0" role="region" aria-label="Plugin version matrix (scrollable)">
         <table class="matrix">
-          <caption class="sr-only">Installed plugin versions by server. ${plural(rows.length, "plugin")}.</caption>
+          <caption class="sr-only">Installed plugin versions by server. ${plural(rows.length, "plugin")}. Cells are toggle buttons that select that plugin on that server.</caption>
           <thead><tr>
             <th class="corner" scope="col"><span class="small muted">${plural(rows.length, "plugin")} × ${plural(cols.length, "server")}</span></th>
-            ${cols.map(id => html`<th scope="col" class=${id === source ? "is-source" : ""}>
+            ${cols.map((id, i) => html`<th scope="col" class=${id === source ? "is-source" : ""} style=${`z-index:${4 + cols.length - i}`}>
               <a class="colhead" href=${`#/servers/${encodeURIComponent(id)}`} title=${`${id}${pf[id] ? ` · ${pf[id].platform}` : ""}${id === source ? " · source" : ""}`}>
-                ${id}${id === source && html`<${Icon} n="circle-dot" cls="i-xs" label="source" />`}</a></th>`)}
+                ${id === source && html`<${Icon} n="circle-dot" cls="i-xs" label="source" />`}${id}</a></th>`)}
+            <th class="mx-pad" aria-hidden="true"></th>
           </tr></thead>
           <tbody>${rows.map(p => html`<tr key=${p.key}>
             <th scope="row"><div class="mx-name">
-              <span title=${p.name}>${p.name}</span>
-              ${p.drift && html`<${Icon} n="git-compare-arrows" cls="i-xs" style="color:var(--drift)" label="versions differ" />`}
-              <span class="mx-count">${Object.keys(p.cells).length}/${cols.length}</span>
-              <span class="row-actions">
-                ${p.outdated > 0 && html`<${Btn} size="sm" kind="ghost" icon="circle-arrow-up" title="Update everywhere" aria-label=${`Update ${p.name} everywhere`} onClick=${() => updateEverywhere(p)} />`}
-                ${p.drift && source && p.cells[source] && html`<${Btn} size="sm" kind="ghost" icon="git-compare-arrows" title=${`Align all to ${source} version`} aria-label=${`Align ${p.name} to source version`} onClick=${() => align(p)} />`}
-                <${Btn} size="sm" kind="ghost" icon="trash-2" title="Remove…" aria-label=${`Remove ${p.name}`} onClick=${() => remove(p)} />
-              </span></div></th>
+              <button type="button" class="mx-open" onClick=${() => setState({ pluginDrawer: p.key })} aria-label=${`${p.name} details`}>
+                <span>${p.name}</span>${p.drift && html`<${Icon} n="git-compare-arrows" cls="i-xs" style="color:var(--drift)" label="versions differ" />`}</button>
+              <span class="mx-count" aria-label=${`on ${Object.keys(p.cells).length} of ${cols.length} servers`}>${Object.keys(p.cells).length}/${cols.length}</span>
+            </div></th>
             ${cols.map(id => {
               const c = p.cells[id];
               if (!c) { const na = p.family && pf[id]?.family && pf[id].family !== p.family; return html`<td class=${na ? "cell-na" : "cell-empty"} title=${na ? `${id} runs a different plugin ecosystem` : undefined}><span class="sr-only">${na ? "not applicable" : "not installed"}</span></td>`; }
               const s = p.drift && c.status === "unknown" ? "drift" : c.status;
-              return html`<td><a class=${"mcell st-" + s} href=${`#/servers/${encodeURIComponent(id)}`} title=${`${c.jar}\n${c.version} — ${LABEL[s] || s}`}>
-                ${s === "pinned" && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}<span class="sr-only"> (${LABEL[s] || s})</span></a></td>`;
+              const on = sel.has(cid(p.key, id));
+              return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "")} aria-pressed=${on ? "true" : "false"}
+                data-tip=${`${id}\n${c.jar}\n${c.version} — ${LABEL[s] || s}${p.latest_version && s === "outdated" ? ` (latest ${p.latest_version})` : ""}`}
+                aria-label=${`${p.name} on ${id}: ${c.version}, ${LABEL[s] || s}`} onClick=${e => clickCell(p, id, e)}>
+                <span class="mv">${s === "pinned" && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}</span></button></td>`;
             })}
+            <td class="mx-pad" aria-hidden="true"></td>
           </tr>`)}</tbody>
-        </table></div>`}`;
+        </table></div>`}
+    ${picked.length > 0 && html`<${SelectionBar} picked=${picked} source=${source} pf=${pf} clear=${() => setSel(new Set())} />`}
+    <${PluginDrawer} all=${all} source=${source} pf=${pf} />`;
+}
+
+function SelectionBar({ picked, source, pf, clear }) {
+  const keys = [...new Set(picked.map(x => x.key))];
+  const servers = [...new Set(picked.map(x => x.server))];
+  const outdated = picked.filter(x => x.c.status === "outdated");
+  const one = keys.length === 1 ? picked[0].p : null;
+  const src = one && one.cells[source];
+  const alignTargets = one && src ? servers.filter(s => s !== source && one.cells[s]?.version !== src.version && pf[s] && !ineligible(pf[s], pf[source])) : [];
+  const review = () => {
+    const items = keys.map(key => ({ key, servers: outdated.filter(x => x.key === key).map(x => x.server) })).filter(i => i.servers.length);
+    openChangeset({ items }, `Review ${plural(outdated.length, "selected update")}`);
+  };
+  return html`<div class="bulkbar mx-bar" role="region" aria-label="Selection actions">
+    <b>${plural(picked.length, "cell")}</b><span class="muted small">${one ? one.name : plural(keys.length, "plugin")} · ${plural(servers.length, "server")}</span>
+    <span class="spacer"></span>
+    <${Btn} kind="ghost" onClick=${clear}>Clear<//>
+    <div class="mx-bar-actions">
+    ${one && html`<${Btn} icon="trash-2" onClick=${() => openRemove({ ...one, cells: Object.fromEntries(servers.map(s => [s, one.cells[s]])) })} aria-label=${`Remove ${one.name} from ${plural(servers.length, "server")}`}>Remove<span class="hide-sm"> from ${plural(servers.length, "server")}</span>…<//>`}
+    ${alignTargets.length > 0 && html`<${Btn} icon="git-compare-arrows" onClick=${() => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}&targets=${alignTargets.map(encodeURIComponent).join(",")}`)} aria-label=${`Align to ${source} ${src.version}`}>Align<span class="hide-sm"> to ${source} (${shortVer(src.version)})</span><//>`}
+    <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${review} title=${outdated.length ? "" : "None of the selected cells has an update"}>Review ${plural(outdated.length, "update")}<//>
+    </div>
+  </div>`;
+}
+
+function PluginDrawer({ all, source, pf }) {
+  const key = useStore(s => s.pluginDrawer);
+  const ref = useRef();
+  const close = () => setState({ pluginDrawer: null });
+  useEffect(() => {
+    if (!key) return;
+    const prev = document.activeElement;
+    ref.current?.querySelector("[data-autofocus]")?.focus();
+    const k = (e) => e.key === "Escape" && !getState().confirm && close();
+    document.addEventListener("keydown", k);
+    return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
+  }, [key]);
+  const p = key && all.find(x => x.key === key);
+  if (!p) return null;
+  const cells = Object.entries(p.cells);
+  const src = p.cells[source];
+  const alignTargets = src ? cells.filter(([s, c]) => s !== source && c.version !== src.version && pf[s] && !ineligible(pf[s], pf[source])).map(([s]) => s) : [];
+  const go = (fn) => { close(); fn(); };
+  return html`<div class="scrim" onClick=${close}></div>
+  <aside class="sheet sheet-narrow" role="dialog" aria-modal="true" aria-labelledby="pd-t" ref=${ref}>
+    <header class="sheet-head"><div class="grow"><h2 id="pd-t">${p.name}</h2>
+      <p class="small muted mono">${p.key}${p.latest_version ? ` · latest ${p.latest_version}` : ""}${p.source ? ` · via ${p.source.kind}` : " · no update source"}</p></div>
+      <${Btn} kind="ghost" icon="x" aria-label="Close" onClick=${close} data-autofocus /></header>
+    <div class="sheet-body">
+      <div class="stack" style="padding:16px 20px;gap:8px">
+        ${p.outdated > 0 && html`<${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => go(() => openChangeset({ keys: [p.key] }, `Update ${p.name} everywhere`))}>Review update on ${plural(p.outdated, "server")}<//>`}
+        ${alignTargets.length > 0 && html`<${Btn} icon="git-compare-arrows" onClick=${() => go(() => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}&targets=${alignTargets.map(encodeURIComponent).join(",")}`))}>Align ${plural(alignTargets.length, "server")} to ${source} (${src.version})<//>`}
+        <${Btn} icon="trash-2" onClick=${() => go(() => openRemove(p))}>Remove from servers…<//>
+        ${!p.source && html`<a class="btn" href="#/settings/sources" onClick=${close}><${Icon} n="sliders-horizontal" cls="i-sm" />Map an update source</a>`}
+      </div>
+      <table class="tbl"><caption class="sr-only">${p.name} by server</caption>
+        <thead><tr><th scope="col">Server</th><th scope="col">Version</th><th scope="col">Status</th></tr></thead>
+        <tbody>${cells.map(([s, c]) => html`<tr><td><a class="strong" href=${`#/servers/${encodeURIComponent(s)}`} onClick=${close}>${s}</a>${s === source ? html` <${Tag}>source<//>` : ""}</td>
+          <td><div class="cell-name"><span class="ver">${c.version}</span><span class="jar">${c.jar}</span></div></td>
+          <td><${StatusTag} status=${p.drift && c.status === "unknown" ? "drift" : c.status} /></td></tr>`)}</tbody></table>
+    </div>
+  </aside>`;
 }

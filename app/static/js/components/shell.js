@@ -5,6 +5,7 @@ import { Icon, Btn, Kbd, modKey } from "./ui.js";
 import { checkUpdates } from "../actions.js";
 import { relTime, initials } from "../fmt.js";
 import { FIXTURES } from "../api.js";
+import { updateCounts } from "../summary.js";
 
 const ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: "layout-dashboard", href: "#/dashboard" },
@@ -24,7 +25,7 @@ export const Brand = () => html`<a class="brand" href="#/dashboard" aria-label="
 </a>`;
 
 function NavList({ route, ov, onNav }) {
-  const counts = { updates: ov?.totals?.update_plugins ?? ov?.totals?.updates };
+  const counts = { updates: ov ? updateCounts(ov).plugins : 0 };
   const link = (it) => {
     const n = it.count && counts[it.count];
     return html`<a class="nav-item" href=${it.href} aria-current=${route.name === it.id ? "page" : undefined} onClick=${onNav} title=${it.label}>
@@ -44,12 +45,12 @@ function SideFoot({ ov, route, onNav }) {
   return html`<div class="sidebar-foot">
     <a class="auto-chip" href="#/updates" onClick=${onNav} title="Auto-update policy">
       <span class=${"dot " + (mode === "apply" ? "dot-ok pulse" : mode === "notify" ? "dot-update" : "dot-muted")}></span>
-      <div>${mode ? html`<b>${MODE_LABEL[mode] || mode}</b>${ov.auto_update.next_run ? `Next run ${relTime(ov.auto_update.next_run)}` : "Not scheduled"}` : html`<b>Auto-update</b>…`}</div>
+      <div>${mode ? html`<b>${MODE_LABEL[mode] || mode}</b>${ov.auto_update.next_run ? `Next run ${relTime(ov.auto_update.next_run)}` : "Not scheduled"}` : html`<b>Auto-update</b>—`}</div>
     </a>
     <a class="nav-item" href="#/settings" aria-current=${route.name === "settings" ? "page" : undefined} onClick=${onNav} title="Settings"><${Icon} n="settings" /><span>Settings</span></a>
     <div class="user-row">
       <span class="avatar" aria-hidden="true">${initials(ov?.user)}</span>
-      <span title=${ov?.user && ov.user !== "local" ? `Signed in as ${ov.user}` : "No Cloudflare Access identity"}>${ov?.user && ov.user !== "local" ? ov.user : "Local session"}</span>
+      <span title=${ov?.user && ov.user !== "local" ? `Signed in as ${ov.user}` : "No Cloudflare Access identity"}>${!ov ? "—" : ov.user && ov.user !== "local" ? ov.user : "Local session"}</span>
       <${Btn} kind="ghost" size="sm" icon=${theme === "dark" ? "sun" : "moon"} aria-label=${`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
         onClick=${() => setTheme(theme === "dark" ? "light" : "dark")} cls="hide-rail" />
     </div>
@@ -102,10 +103,11 @@ export function Topbar({ crumbs }) {
 
 export function Tabbar({ route }) {
   const { data: ov } = useQuery("/overview");
-  const tabs = [ITEMS[0], ITEMS[2], ITEMS[3], ITEMS[4], ITEMS[5]];
+  // Servers is the #1 entry point on a phone; Deploy lives in the menu drawer.
+  const tabs = [ITEMS[0], ITEMS[1], ITEMS[2], ITEMS[3], ITEMS[5]];
   return html`<nav class="tabbar" aria-label="Primary">
     ${tabs.map(t => html`<a href=${t.href} aria-current=${route.name === t.id ? "page" : undefined}>
       <${Icon} n=${t.icon} cls="i-lg" />${t.label}
-      ${t.count && (ov?.totals?.update_plugins ?? ov?.totals?.updates) ? html`<span class="badge">${ov.totals.update_plugins ?? ov.totals.updates}</span>` : null}</a>`)}
+      ${t.count && ov && updateCounts(ov).plugins ? html`<span class="badge" aria-label=${`${updateCounts(ov).plugins} updates`}>${updateCounts(ov).plugins}</span>` : null}</a>`)}
   </nav>`;
 }

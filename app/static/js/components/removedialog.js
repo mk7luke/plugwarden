@@ -1,8 +1,8 @@
 // "Remove plugin" dialog for the matrix. Optional config-folder deletion is previewed with a
-// synchronous delete plan (file counts per server) and flags other installed plugins that
-// share the folder — those need an explicit acknowledgement and are sent with force:true.
+// synchronous delete plan (file counts, sizes, shared-folder warnings). If other installed plugins
+// share the folder, the user must acknowledge it and the removal is sent with force:true.
 import { html, useState, useEffect, useRef } from "../lib.js";
-import { useStore, setState, peek } from "../store.js";
+import { useStore, setState } from "../store.js";
 import { get, post } from "../api.js";
 import { runJob } from "../jobs.js";
 import { Icon, Btn, Skel } from "./ui.js";
@@ -13,14 +13,6 @@ export const openRemove = (row) => setState({ removePlugin: row });
 export function RemoveHost() {
   const row = useStore(s => s.removePlugin);
   return row ? html`<${RemoveDialog} key=${row.key} row=${row} />` : null;
-}
-
-// Other plugins on `server` that likely keep data in `folder` (e.g. EssentialsChat → Essentials/).
-function sharers(row, folder, server) {
-  const f = folder.toLowerCase();
-  return (peek("/matrix")?.plugins || [])
-    .filter(p => p.key !== row.key && p.cells[server] && p.name.toLowerCase().startsWith(f))
-    .map(p => p.name);
 }
 
 function RemoveDialog({ row }) {
@@ -56,12 +48,9 @@ function RemoveDialog({ row }) {
       // The plan counts the folder's owner as a sharer; for a removal only *other* plugins matter.
       const others = (names) => (names || []).filter(n => n !== row.name);
       const rows = (p.results || []).map(r => ({ server: r.server, outcome: r.outcome, size: r.size,
-        files: r.files ?? +((/\((\d+) file/.exec(r.detail || "") || [])[1] || 0), shared: others(r.shared_with) }));
+        files: r.files || 0 }));
       const shared = {};
-      for (const r of rows) if (r.shared.length) shared[r.server] = r.shared;
-      // Fallback heuristic for backends that don't report sharing.
-      if (!(p.results || []).some(r => "shared_with" in r))
-        for (const s of servers) { const n = sharers(row, folder, s); if (n.length) shared[s] = n; }
+      for (const w of p.warnings || []) { const n = others(w.shared_with); if (n.length) shared[w.server] = n; }
       setPlan({ rows, shared });
     }, setPlanErr);
   }, [withFolder, folder]);
@@ -88,7 +77,7 @@ function RemoveDialog({ row }) {
     <form onSubmit=${go}>
       <div class="dialog-body">
         <h2 id="rm-t"><${Icon} n="triangle-alert" />Remove ${row.name}?</h2>
-        <p>The jar is removed from ${plural(servers.length, "server")}. Everything is backed up first and can be restored from Activity.</p>
+        <p>The jar will be removed from ${plural(servers.length, "server")}. Everything is backed up first and can be restored from Activity.</p>
         <div class="confirm-list">${where.map(([s, c]) => html`<div>${s}: ${c.jar}</div>`)}</div>
         <label class="check"><input type="checkbox" checked=${withFolder} onChange=${e => { setWithFolder(e.currentTarget.checked); setAck(false); }} />
           Also delete its config folder${folder ? html` <span class="mono">${folder}/</span>` : ""}</label>

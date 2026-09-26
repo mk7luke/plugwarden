@@ -2,37 +2,37 @@
 import { html, useState, useEffect, useMemo } from "../lib.js";
 import { useQuery, invalidate, toast } from "../store.js";
 import { put } from "../api.js";
-import { Icon, Btn, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, ServerChip, Skel } from "../components/ui.js";
-import { applyUpdates, checkUpdates, openUpdateAll } from "../actions.js";
+import { Icon, Btn, Tag, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, ServerChip, Skel } from "../components/ui.js";
+import { checkUpdates, openUpdateAll } from "../actions.js";
+import { openChangeset, CompatChip } from "../components/changeset.js";
+import { updateCounts, checkLine, updatesOf, compatOf } from "../summary.js";
 import { relTime, absTime, plural } from "../fmt.js";
 
 export function Updates() {
   const q = useQuery("/updates");
   const ov = useQuery("/overview");
   const [sel, setSel] = useState(new Set());
-  const [dry, setDry] = useState(false);
-  const ups = q.data || [];
+  const ups = updatesOf(q.data);
+  const mcOf = Object.fromEntries((useQuery("/servers").data || []).map(s => [s.id, s.mc_version]));
   useEffect(() => setSel(s => new Set([...s].filter(k => ups.some(u => u.key === k)))), [q.data]);
 
   const all = ups.length > 0 && ups.every(u => sel.has(u.key));
   const chosen = ups.filter(u => sel.has(u.key));
   const installs = chosen.reduce((a, u) => a + u.servers.length, 0);
-  const apply = async (list) => {
-    await applyUpdates(list.map(u => ({ key: u.key, servers: u.servers })), { dryRun: dry, title: dry ? `Dry run: ${plural(list.length, "update")}` : `Apply ${plural(list.length, "update")}` });
-    if (!dry) setSel(new Set());
-  };
+  const c = updateCounts(ov.data, q.data);
+  const review = (list) => openChangeset(list.length === ups.length ? "all" : { keys: list.map(u => u.key) },
+    list.length === 1 ? `Update ${list[0].name}` : `Review ${plural(list.length, "plugin")}`);
 
   return html`
-    <${PageHead} title="Updates" sub=${ov.data ? `Last checked ${relTime(ov.data.last_check)} · Modrinth by hash, then Hangar / Spiget / GitHub for mapped plugins` : " "}>
-      <${Btn} icon="refresh-cw" onClick=${checkUpdates}>Check now<//>
-      <${Btn} kind="primary" icon="zap" disabled=${!ups.length} onClick=${openUpdateAll}>Update all<//>
+    <${PageHead} title="Updates" sub=${ov.data ? `${checkLine(ov.data)} · Modrinth by file hash, then mapped Hangar / Spiget / GitHub sources` : " "}>
+      <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!ups.length} onClick=${openUpdateAll}>Review & update all<//>
     <//>
     <div class="upd-layout">
       <section class="panel" aria-labelledby="q-h">
         <div class="panel-head">
           ${ups.length > 0 && html`<${Check} label="Select all" checked=${all} indeterminate=${!all && sel.size > 0} onChange=${v => setSel(v ? new Set(ups.map(u => u.key)) : new Set())} />`}
           <h2 id="q-h">Available updates</h2>
-          <span class="sub">${q.data ? `${plural(ups.length, "plugin")} · ${plural(ups.reduce((a, u) => a + u.servers.length, 0), "install")}` : ""}</span>
+          <span class="sub">${q.data ? `${plural(c.plugins, "plugin")} · ${plural(ups.reduce((a, u) => a + u.servers.length, 0), "install")} · ${plural(c.servers, "server")}` : ""}</span>
         </div>
         ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
           : q.loading ? html`<${SkelRows} n=${6} cols=${[4, 28, 20, 30]} />`
@@ -40,21 +40,34 @@ export function Updates() {
           : html`<div>${ups.map(u => html`<div class="upd-group" key=${u.key}><div class="upd-row">
               <${Check} label=${`Select ${u.name}`} checked=${sel.has(u.key)} onChange=${v => setSel(s => { const n = new Set(s); v ? n.add(u.key) : n.delete(u.key); return n; })} />
               <div style="min-width:0">
-                <div class="row" style="gap:8px"><b style="font-weight:620">${u.name}</b>
-                  ${u.changelog_url && html`<a class="link small row" style="gap:3px" href=${u.changelog_url} target="_blank" rel="noopener">Changelog<${Icon} n="external-link" cls="i-xs" /></a>`}</div>
+                <div class="row wrap" style="gap:8px"><b style="font-weight:620">${u.name}</b>
+                  ${u.changelog_url && html`<a class="link small" href=${u.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${u.name} (opens in new tab)</span></a>`}</div>
                 <${VerArrow} from=${u.from_versions} to=${u.to_version} />
+                <${CompatSummary} u=${u} mcOf=${mcOf} />
               </div>
               <${Chips} ids=${u.servers} />
-              <${Btn} size="sm" onClick=${() => apply([u])} aria-label=${`Update ${u.name} on ${u.servers.length} servers`}>Update<//>
+              <${Btn} size="sm" onClick=${() => review([u])} aria-label=${`Review ${u.name} update on ${plural(u.servers.length, "server")}`}>Review<//>
             </div></div>`)}</div>`}
         ${chosen.length > 0 && html`<div class="panel-foot" style="position:sticky;bottom:0;background:var(--surface-2);flex-wrap:wrap">
-          <b class="small">${plural(chosen.length, "plugin")} · ${plural(installs, "install")}</b><span class="grow"></span>
-          <label class="switch small"><input type="checkbox" checked=${dry} onChange=${e => setDry(e.currentTarget.checked)} />Dry run</label>
-          <${Btn} kind="primary" icon=${dry ? "eye" : "circle-arrow-up"} onClick=${() => apply(chosen)}>${dry ? "Preview" : "Apply selected"}<//>
+          <b class="small">${plural(chosen.length, "plugin")} · ${plural(installs, "install")} selected</b><span class="grow"></span>
+          <${Btn} kind="ghost" onClick=${() => setSel(new Set())}>Clear<//>
+          <${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => review(chosen)}>Review ${plural(chosen.length, "plugin")}<//>
         </div>`}
       </section>
       <${Policy} au=${ov.data?.auto_update} />
     </div>`;
+}
+
+// One chip when every target server is covered; otherwise name the servers that aren't.
+function CompatSummary({ u, mcOf }) {
+  const ts = (u.targets || []).filter(t => t.compat);
+  if (!ts.length) return null;
+  const bad = ts.filter(t => !compatOf(t.compat, mcOf[t.server]).ok);
+  const mcs = [...new Set(ts.map(t => mcOf[t.server]).filter(Boolean))];
+  if (!mcs.length) return null;
+  return html`<div style="margin-top:4px">${bad.length
+    ? html`<${Tag} kind="warn" icon="triangle-alert">not listed for MC ${[...new Set(bad.map(t => mcOf[t.server]))].join(", ")} (${bad.map(t => t.server).join(", ")})<//>`
+    : html`<${Tag} kind="ok" icon="check">supports MC ${mcs.join(", ")}<//>`}</div>`;
 }
 
 function Chips({ ids, max = 4 }) {
@@ -65,7 +78,7 @@ function Chips({ ids, max = 4 }) {
 }
 
 const MODES = [
-  ["off", "Off", "Never check automatically. Use “Check now”."],
+  ["off", "Off", "Never check automatically. Use “Check updates” in the top bar."],
   ["notify", "Check & notify", "Check on a schedule and list updates here. Nothing is installed."],
   ["apply", "Check & apply", "Install updates inside the maintenance window. Every change is backed up and undoable."],
 ];
@@ -91,7 +104,7 @@ export function Policy({ au }) {
         : html`<div class="policy">
           <div class="next-run"><${Icon} n="clock" cls="i-lg" />
             <div><b>${p.mode === "off" ? "No automatic runs" : next ? `Next run ${relTime(next)}` : "Scheduled after saving"}</b>${p.mode !== "off" && next ? absTime(next) : p.mode === "off" ? "Pick a mode below to schedule checks." : ""}
-              ${au?.last_run && html`<span style="display:block;margin-top:4px">Last run ${relTime(au.last_run)}${au.last_result ? ` — ${au.last_result}` : ""}</span>`}</div></div>
+              ${au?.last_run && html`<span style="display:block;margin-top:4px">Last automatic run ${relTime(au.last_run)}</span>`}</div></div>
           <div class="policy-mode" role="radiogroup" aria-label="Mode">
             ${MODES.map(([k, l, d]) => html`<label class="radio-card"><input type="radio" name="aumode" checked=${p.mode === k} onChange=${() => setP({ ...p, mode: k })} /><div><b>${l}</b><span>${d}</span></div></label>`)}
           </div>

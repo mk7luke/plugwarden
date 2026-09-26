@@ -1,147 +1,156 @@
-// Dashboard — "is anything out of date?" at a glance, per server, with one-click fixes.
-import { html, useMemo } from "../lib.js";
+// Dashboard — one headline ("is anything out of date?"), every server at a glance, recent real changes.
+import { html, useMemo, useState } from "../lib.js";
 import { useQuery } from "../store.js";
-import { Icon, Btn, Tag, Platform, VerArrow, Skel, ErrorState, PageHead } from "../components/ui.js";
-import { openUpdateAll, applyUpdates, checkUpdates } from "../actions.js";
+import { Icon, Btn, Tag, Platform, VerArrow, Skel, ErrorState, Empty } from "../components/ui.js";
+import { openChangeset } from "../components/changeset.js";
+import { checkUpdates } from "../actions.js";
 import { relTime, plural } from "../fmt.js";
-import { JOB_TITLES, KIND_ICON, jobTone, isActive } from "../jobs.js";
+import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary } from "../jobs.js";
+import { updateCounts, updateHeadline, updateDetail, restartList, checkLine, updatesOf } from "../summary.js";
 
 const MODE = { off: "Off", notify: "Notify only", apply: "Automatic" };
+const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
 export function Dashboard() {
   const ov = useQuery("/overview");
   const up = useQuery("/updates");
   const mx = useQuery("/matrix");
   const jobs = useQuery("/jobs");
+  const [view, setView] = useState(() => pref("amp.dash.view", "tiles"));
+  const setV = (v) => { setView(v); save("amp.dash.view", v); };
 
   const byServer = useMemo(() => {
     const m = {};
-    for (const u of up.data || []) for (const s of u.servers) (m[s] ||= []).push(u);
+    for (const u of updatesOf(up.data)) for (const t of u.targets || u.servers.map(s => ({ server: s }))) (m[t.server] ||= []).push({ ...u, from: t.from });
     return m;
   }, [up.data]);
-  const counts = useMemo(() => {
-    const c = {};
-    for (const p of mx.data?.plugins || []) for (const [s, cell] of Object.entries(p.cells)) {
-      const o = c[s] ||= { current: 0, outdated: 0, drift: 0, unknown: 0 };
-      const k = cell.status === "current" || cell.status === "outdated" || cell.status === "drift" ? cell.status : "unknown";
-      o[k]++;
-    }
-    return c;
-  }, [mx.data]);
-
   const versions = useMemo(() => {
     const v = {};
     for (const p of mx.data?.plugins || []) for (const [s, cell] of Object.entries(p.cells)) (v[s] ||= {})[p.key] = cell.version;
     return v;
   }, [mx.data]);
 
-  if (ov.error) return html`<${PageHead} title="Dashboard" /><${ErrorState} error=${ov.error} retry=${ov.reload} />`;
   const d = ov.data;
-  const t = d && { ...d.totals, updates: d.totals.update_plugins ?? d.totals.updates, installs: d.totals.update_plugins != null ? d.totals.updates : null };
-  const affected = new Set((up.data || []).flatMap(u => u.servers)).size;
+  const c = d && updateCounts(d, up.data);
+  const restarts = restartList(d);
 
   return html`
-    <${PageHead} title="Network overview" sub=${d ? `${plural(t.servers, "server")} · auto-update ${MODE[d.auto_update?.mode]?.toLowerCase() || "off"}` : "Loading network…"}>
-      <a class="btn" href="#/deploy"><${Icon} n="rocket" cls="i-sm" />New deploy</a>
-    <//>
-
-    <section class="kpis" aria-label="Key figures">
-      ${d ? html`
-        <a class="kpi" href="#/servers"><span class="label"><${Icon} n="server" cls="i-xs" />Servers</span><span class="value">${t.servers}</span>
-          <span class="foot">${t.pending_restart ? `${t.pending_restart} pending restart` : `${d.servers.filter(s => s.eligible_target).length} deploy targets`}</span></a>
-        <a class="kpi" href="#/plugins"><span class="label"><${Icon} n="package" cls="i-xs" />Plugins tracked</span><span class="value">${t.plugins}</span>
-          <span class="foot">unique across network</span></a>
-        <a class=${"kpi" + (t.updates ? " is-update" : "")} href="#/updates"><span class="label"><${Icon} n="circle-arrow-up" cls="i-xs" />Updates available</span><span class="value">${t.updates}</span>
-          <span class="foot">${t.updates ? `${t.installs ? plural(t.installs, "install") + " on " : "on "}${plural(affected, "server")}` : "all current"}</span></a>
-        <a class=${"kpi" + (t.drift ? " is-drift" : "")} href="#/plugins?status=drift"><span class="label"><${Icon} n="git-compare-arrows" cls="i-xs" />Version drift</span><span class="value">${t.drift}</span>
-          <span class="foot">${t.drift ? "plugins differ between servers" : "versions aligned"}</span></a>
-        <a class="kpi" href="#/activity"><span class="label"><${Icon} n="clock" cls="i-xs" />Last check</span><span class="value small">${relTime(d.last_check)}</span>
-          <span class="foot">${d.auto_update?.next_run ? `next ${relTime(d.auto_update.next_run)}` : "no schedule"}</span></a>`
-      : Array.from({ length: 5 }, () => html`<div class="kpi"><${Skel} w="50%" /><${Skel} w="36%" h=${26} style="margin:8px 0 6px" /><${Skel} w="70%" h=${8} /></div>`)}
-    </section>
-
-    ${d && html`<div class=${"update-bar" + (t.updates ? "" : " calm")}>
-      <span class="ub-icon"><${Icon} n=${t.updates ? "zap" : "circle-check"} cls="i-lg" /></span>
-      <div class="ub-text">
-        ${t.updates
-          ? html`<b>${plural(t.updates, "update")} ready across ${plural(affected, "server")}</b><span>Preview as a dry run, then apply. Old jars are backed up for one-click undo.</span>`
-          : html`<b>Everything is up to date</b><span>Last checked ${relTime(d.last_check)}. ${d.auto_update?.mode !== "off" ? `Next automatic check ${relTime(d.auto_update.next_run)}.` : "Automatic checks are off."}</span>`}
-      </div>
-      <div class="ub-actions">
-        <a class="btn" href="#/updates"><${Icon} n="calendar-clock" cls="i-sm" />Auto-update: ${MODE[d.auto_update?.mode] || "Off"}</a>
-        ${t.updates ? html`<${Btn} kind="primary" icon="zap" onClick=${openUpdateAll}>Update all<//>` : html`<${Btn} icon="refresh-cw" onClick=${checkUpdates}>Check now<//>`}
-      </div>
-    </div>`}
+    <h1 class="sr-only">Dashboard</h1>
+    ${ov.error ? html`<${ErrorState} error=${ov.error} retry=${ov.reload} />` : html`<${Headline} d=${d} c=${c} restarts=${restarts} />`}
 
     <div class="dash-grid">
       <section aria-labelledby="srv-h">
-        <h2 class="section-title" id="srv-h">Servers<span class="spacer"></span>
-          <span class="legend" style="text-transform:none;letter-spacing:0;font-weight:500">
-            <span><i class="dot dot-ok"></i>current</span><span><i class="dot dot-update"></i>update</span><span><i class="dot dot-drift"></i>drift</span></span></h2>
-        <div class="tiles">
-          ${d ? d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} c=${counts[s.id]} loadingUps=${up.loading} vers=${versions[s.id]} />`)
-            : Array.from({ length: 8 }, () => html`<div class="tile" style="padding:14px;gap:10px;min-height:196px"><${Skel} w="55%" h=${12} /><${Skel} w="35%" h=${8} /><${Skel} h=${4} style="margin:8px 0" /><${Skel} w="80%" h=${8} /><${Skel} w="70%" h=${8} /></div>`)}
-        </div>
+        <div class="section-title"><h2 id="srv-h" style="font:inherit">Servers</h2><span class="spacer"></span>
+          <span class="legend hide-sm" style="text-transform:none;letter-spacing:0;font-weight:500">
+            <span><i class="dot dot-update"></i>update</span><span><i class="dot dot-drift"></i>drift</span><span><i class="dot dot-warn"></i>restart</span></span>
+          <div class="seg" role="group" aria-label="Server layout" style="text-transform:none;letter-spacing:0">
+            <button type="button" aria-pressed=${view === "tiles" ? "true" : "false"} onClick=${() => setV("tiles")}><${Icon} n="layout-dashboard" cls="i-xs" />Tiles</button>
+            <button type="button" aria-pressed=${view === "list" ? "true" : "false"} onClick=${() => setV("list")}><${Icon} n="menu" cls="i-xs" />List</button>
+          </div></div>
+        ${!d ? html`<div class="tiles">${Array.from({ length: 9 }, () => html`<div class="tile tile-skel"><${Skel} w="55%" h=${12} /><${Skel} w="40%" h=${10} /><${Skel} w="80%" h=${8} /><${Skel} w="70%" h=${8} /><${Skel} w="60%" h=${8} /></div>`)}</div>`
+          : view === "list" ? html`<${ServerList} servers=${d.servers} byServer=${byServer} />`
+          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} />`)}</div>`}
       </section>
-      <aside class="stack" aria-label="Recent activity">
-        <h2 class="section-title">Recent activity<span class="spacer"></span><a class="link small" href="#/activity" style="text-transform:none;letter-spacing:0">View all</a></h2>
-        <div class="panel"><${Feed} q=${jobs} /></div>
-      </aside>
+      <aside aria-labelledby="feed-h"><${Feed} q=${jobs} /></aside>
     </div>`;
 }
 
-function ServerTile({ s, ups, c, loadingUps, vers }) {
-  const href = `#/servers/${encodeURIComponent(s.id)}`;
-  const proxy = s.platform === "velocity";
-  const empty = s.plugin_count === 0;
-  const total = c ? c.current + c.outdated + c.drift + c.unknown : 0;
-  const pct = (n) => `${(n / total) * 100}%`;
-  const updateServer = (e) => {
-    e.preventDefault();
-    applyUpdates(ups.map(u => ({ key: u.key, servers: [s.id] })), { title: `Update ${s.id}` });
-  };
-  return html`<article class=${"tile" + (proxy ? " is-proxy" : "") + (empty ? " is-empty" : "")} aria-labelledby=${`t-${s.id}`}>
-    <a class="tile-link" href=${href} aria-label=${`Open ${s.id}`}></a>
-    <div class="tile-head">
-      <div style="min-width:0">
-        <div class="tile-name" id=${`t-${s.id}`}>${s.id}</div>
-        <div class="tile-meta"><${Platform} p=${s.platform} mc=${s.mc_version} /></div>
-      </div>
-      <div class="tile-flags">
-        ${s.is_source && html`<${Tag} kind="accent" icon="circle-dot" title="Default deploy source">source<//>`}
-        ${s.pending_restart && html`<${Tag} kind="warn" icon="rotate-ccw" title="Files changed since the server last started">Restart<//>`}
-        ${s.updates > 0 && html`<${Tag} kind="update">${s.updates}<span class="sr-only"> updates</span><//>`}
-        ${s.drift > 0 && html`<${Tag} kind="drift" icon="git-compare-arrows" title="Plugins on a different version than other servers">${s.drift}<//>`}
-      </div>
+function Headline({ d, c, restarts }) {
+  if (!d) return html`<div class="headline" aria-busy="true"><span class="ub-icon skel"></span><div class="grow"><${Skel} w="40%" h=${14} /><${Skel} w="60%" h=${9} style="margin-top:8px" /></div><${Skel} w="160px" h=${32} /></div>`;
+  const has = c.plugins > 0;
+  return html`<section class=${"headline" + (has ? " has-updates" : "")} aria-label="Update status">
+    <span class="ub-icon"><${Icon} n=${has ? "circle-arrow-up" : "circle-check"} cls="i-lg" /></span>
+    <div class="grow" style="min-width:220px">
+      <p class="hl-title">${updateHeadline(c)}${has && html`<span class="hl-detail"> · ${updateDetail(c)}</span>`}</p>
+      <p class="hl-meta">${checkLine(d)} · auto-update <a class="link" href="#/updates">${(MODE[d.auto_update?.mode] || "off").toLowerCase()}</a>
+        ${d.auto_update?.next_run ? ` · next ${relTime(d.auto_update.next_run)}` : ""}</p>
+${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.map(j => j.summary || j.kind).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
+        <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
-    ${!empty && html`<div class="meter" role="img" aria-label=${c ? `${c.current} current, ${c.outdated} outdated, ${c.drift} drifted, ${c.unknown} untracked` : "loading"}>
-      ${c && total ? html`<span class="m-ok" style=${`width:${pct(c.current)}`}></span><span class="m-update" style=${`width:${pct(c.outdated)}`}></span><span class="m-drift" style=${`width:${pct(c.drift)}`}></span><span class="m-unknown" style=${`width:${pct(c.unknown)}`}></span>` : null}
-    </div>`}
+    <div class="row wrap" style="gap:8px">
+      ${has ? html`<${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => openChangeset("all", "Review: update everything")}>Review & update all<//>`
+        : html`<${Btn} icon="refresh-cw" onClick=${checkUpdates}>Check now<//>`}
+    </div>
+  </section>`;
+}
+
+function Flags({ s, n, restart = true }) {
+  const basis = s.drift_basis === "majority" ? "the network majority" : "the source server";
+  const driftTip = s.drift_plugins?.length ? `Differs from ${basis}: ${s.drift_plugins.map(p => p.name).join(", ")}` : `${plural(s.drift, "plugin")} on a different version than ${basis}`;
+  return html`<div class="tile-flags">
+    ${n > 0 && html`<span class="tag tag-update tip" tabindex="0" data-tip=${`${plural(n, "plugin")} can be updated on ${s.id}`}>${plural(n, "update")}</span>`}
+    ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip}><${Icon} n="git-compare-arrows" />${s.drift} drift</span>`}
+    ${restart && s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started"><${Icon} n="rotate-ccw" />Restart</span>`}
+    ${s.is_source && html`<span class="tag tag-plain tip" tabindex="0" data-tip="Default deploy source"><${Icon} n="circle-dot" />source</span>`}
+  </div>`;
+}
+
+function ServerTile({ s, ups, loadingUps, vers }) {
+  const href = `#/servers/${encodeURIComponent(s.id)}`;
+  const empty = s.plugin_count === 0;
+  const n = ups.length;
+  return html`<article class=${"tile" + (empty ? " is-empty" : "")} aria-labelledby=${`t-${s.id}`}>
+    <a class="tile-link" href=${href} aria-label=${`Open ${s.id}`} tabindex="-1"></a>
+    <div class="tile-head">
+      <a class="tile-name" id=${`t-${s.id}`} href=${href}>${s.id}</a>
+      <${Flags} s=${s} n=${n} restart=${false} />
+    </div>
     <div class="watch">
-      ${empty ? html`<div class="watch-empty"><${Icon} n="blocks" cls="i-sm" style="color:var(--fg-3)" />No plugins — ${s.note || (s.platform === "fabric" ? "Fabric modded server" : "empty plugins folder")}</div>`
-        : loadingUps ? html`<${Skel} w="80%" h=${8} /><${Skel} w="66%" h=${8} /><${Skel} w="72%" h=${8} />`
-        : ups.length ? html`${ups.slice(0, 4).map(u => html`<div class="watch-row"><i class="dot dot-update"></i><span class="n">${u.name}</span>
-            <${VerArrow} from=${vers?.[u.key] || u.from_versions[0]} to=${u.to_version} /></div>`)}
-            ${ups.length > 4 && html`<span class="watch-more">+${ups.length - 4} more</span>`}`
-        : html`<div class="watch-empty"><${Icon} n="circle-check" cls="i-sm" />All tracked plugins current</div>`}
+      ${empty ? html`<div class="watch-empty"><${Icon} n="blocks" cls="i-sm" />${s.note || (s.platform === "fabric" ? "Fabric server — no plugins" : "No plugins installed")}</div>`
+        : loadingUps ? html`<${Skel} w="80%" h=${8} /><${Skel} w="66%" h=${8} />`
+        : n ? ups.slice(0, 3).map(u => html`<div class="watch-row"><span class="n">${u.name}</span>
+            <${VerArrow} from=${u.from} to=${u.to_version} /></div>`).concat(n > 3 ? [html`<a class="watch-more link" href=${href} aria-label=${`${n - 3} more updates on ${s.id}`}>+${n - 3} more</a>`] : [])
+        : html`<div class="watch-empty ok"><${Icon} n="circle-check" cls="i-sm" />All tracked plugins current</div>`}
     </div>
     <div class="tile-foot">
-      <span>${plural(s.plugin_count, "plugin")}${proxy ? " · Velocity" : ""}</span>
-      ${ups.length > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${updateServer} aria-label=${`Update ${ups.length} plugins on ${s.id}`}>Update ${ups.length}<//>`}
+      ${s.pending_restart ? html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started — restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart needed</span>`
+        : html`<span class="ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} />`}</span>`}
+      ${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}
+        aria-label=${`Review ${plural(n, "update")} on ${s.id}`}>Review ${n}<//>`}
     </div>
   </article>`;
 }
 
+function ServerList({ servers, byServer }) {
+  return html`<div class="panel tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Server</th><th scope="col" class="hide-sm">Platform</th><th scope="col">Status</th><th scope="col" class="num hide-sm">Plugins</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
+    <tbody>${servers.map(s => { const n = (byServer[s.id] || []).length; return html`<tr>
+      <td><a class="strong" href=${`#/servers/${encodeURIComponent(s.id)}`}>${s.id}</a></td>
+      <td class="hide-sm"><${Platform} p=${s.platform} mc=${s.mc_version} /></td>
+      <td><${Flags} s=${s} n=${n} />${!n && !s.drift && !s.pending_restart && html`<span class="small muted">${s.plugin_count ? "Current" : s.note || "No plugins"}</span>`}</td>
+      <td class="num hide-sm">${s.plugin_count}</td>
+      <td class="col-actions">${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}>Review ${n}<//>`}</td>
+    </tr>`; })}</tbody></table></div>`;
+}
 
+// Real changes by default; checks and dry runs collapse behind a toggle.
 function Feed({ q }) {
-  if (q.error) return html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`;
-  if (q.loading) return html`<div class="feed">${Array.from({ length: 5 }, () => html`<div class="feed-item"><${Skel} w="22px" h=${22} r=${11} /><div><${Skel} w="85%" /><${Skel} w="50%" h=${8} /></div></div>`)}</div>`;
-  const list = (q.data || []).slice(0, 7);
-  if (!list.length) return html`<div class="empty" style="padding:28px"><p>No jobs yet. Deploys, update checks and undos will appear here.</p></div>`;
-  return html`<ol class="feed">${list.map(j => html`<li class="feed-item">
-    <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
-    <div style="min-width:0"><a class="feed-title" href=${`#/activity/${j.id}`}>${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? html` <span class="tag" style="vertical-align:1px">dry run</span>` : ""}</a>
-      ${j.summary && html`<div class="feed-sum">${j.summary}</div>`}
-      <div class="feed-meta"><span>${relTime(j.started || j.created)}</span><span>·</span><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
-  </li>`)}</ol>`;
+  const [all, setAll] = useState(() => pref("amp.feed.all", "0") === "1");
+  const toggle = (v) => { setAll(v); save("amp.feed.all", v ? "1" : "0"); };
+  const list = useMemo(() => {
+    const src = (q.data || []).filter(j => all || isActive(j.status) || (!j.dry_run && j.kind !== "update-check"));
+    const out = [];
+    for (const j of src) {
+      const prev = out[out.length - 1];
+      if (all && prev && j.kind === "update-check" && prev.kind === "update-check" && !isActive(j.status)) { prev.group = (prev.group || 1) + 1; continue; }
+      out.push({ ...j });
+    }
+    return out.slice(0, 8);
+  }, [q.data, all]);
+  return html`<div class="section-title"><h2 id="feed-h" style="font:inherit">Recent changes</h2><span class="spacer"></span>
+      <label class="switch small" style="text-transform:none;letter-spacing:0;font-weight:500"><input type="checkbox" checked=${all} onChange=${e => toggle(e.currentTarget.checked)} />Checks & dry runs</label></div>
+    <div class="panel">
+    ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
+      : q.loading ? html`<div class="feed">${Array.from({ length: 5 }, () => html`<div class="feed-item"><${Skel} w="22px" h=${22} r=${11} /><div><${Skel} w="85%" /><${Skel} w="50%" h=${8} /></div></div>`)}</div>`
+      : !list.length ? html`<div class="empty" style="padding:24px"><p>No changes yet. Updates, deploys and removals appear here.</p></div>`
+      : html`<ol class="feed">${list.map(j => { const undone = j.status === "undone" || j.undone_by; return html`<li class=${"feed-item" + (undone ? " is-undone" : "")}>
+        <span class=${"feed-icon " + (undone ? "" : jobTone(j))}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
+        <div style="min-width:0"><a class="feed-title" href=${`#/activity/${j.id}`}>${j.group ? `${j.group} update checks` : JOB_TITLES[j.kind] || j.kind}</a>
+          ${j.dry_run ? html` <${Tag}>dry run<//>` : ""}${undone ? html` <${Tag}>reverted<//>` : ""}
+          ${j.summary && !j.group && html`<div class="feed-sum">${jobSummary(j)}</div>`}
+          <div class="feed-meta"><span>${j.group ? "last " : ""}${relTime(j.started || j.created)}</span><span>·</span><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
+      </li>`; })}</ol>
+      <div class="panel-foot"><a class="link small" href="#/activity">All activity</a></div>`}
+  </div>`;
 }

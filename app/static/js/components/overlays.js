@@ -1,10 +1,13 @@
 // Toasts, confirm dialog, command palette and job dock.
 import { html, useState, useEffect, useRef, useMemo } from "../lib.js";
 import { useStore, setState, dismissToast, peek, prefetch, setTheme, getState } from "../store.js";
+import { get } from "../api.js";
+import { openChangeset } from "./changeset.js";
+import { openRemove } from "./removedialog.js";
 import { navigate } from "../router.js";
 import { Icon, Btn, Kbd, modKey } from "./ui.js";
 import { dismissJob, toggleJobMin, isActive, jobTone } from "../jobs.js";
-import { fuzzy } from "../fmt.js";
+import { plural } from "../fmt.js";
 
 // ---------- focus trap ----------
 function useTrap(ref, onEscape) {
@@ -94,29 +97,73 @@ export function Palette({ actions }) {
   const open = useStore(s => s.palette);
   return open ? html`<${PaletteInner} actions=${actions} />` : null;
 }
+
+// Prefix / word-start matching only: "core" finds CoreProtect, never "Switch to dark theme".
+function score(q, text) {
+  if (!q) return 1;
+  const t = text.toLowerCase();
+  if (t.startsWith(q)) return 100 - t.length / 100;
+  const words = t.split(/[\s/._-]+/);
+  if (words.some(w => w.startsWith(q))) return 70 - t.length / 100;
+  if (q.length >= 3 && t.includes(q)) return 40 - t.length / 100;
+  return -1;
+}
+const GROUPS = ["Actions", "Plugins", "Servers", "Files", "Go to"];
+
 function PaletteInner({ actions }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
+  const [files, setFiles] = useState([]);
   const ref = useRef(); const listRef = useRef();
   const close = () => setState({ palette: false });
   useTrap(ref, close);
   const [, force] = useState(0);
-  useEffect(() => { prefetch("/matrix").then(() => force(x => x + 1)); prefetch("/overview").then(() => force(x => x + 1)); }, []);
+  useEffect(() => { for (const p of ["/matrix", "/overview", "/settings"]) prefetch(p).then(() => force(x => x + 1)); }, []);
+  const qq = q.trim().toLowerCase();
+
+  // File results come from a recursive search of the default source server.
+  useEffect(() => {
+    const src = peek("/settings")?.default_source;
+    if (!src || qq.length < 3) { setFiles([]); return; }
+    let live = true;
+    const t = setTimeout(() => get(`/servers/${encodeURIComponent(src)}/search?q=${encodeURIComponent(qq)}&limit=6`)
+      .then(r => live && setFiles((r.results || []).filter(f => f.type !== "dir").slice(0, 5).map(f => ({ ...f, src }))), () => live && setFiles([])), 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [qq]);
 
   const items = useMemo(() => {
-    const ov = peek("/overview"); const mx = peek("/matrix");
-    const all = [
-      ...actions.map(a => ({ group: "Actions", label: a.label, icon: a.icon, run: a.run, hint: a.hint })),
-      { group: "Actions", label: `Switch to ${getState().theme === "dark" ? "light" : "dark"} theme`, icon: getState().theme === "dark" ? "sun" : "moon", run: () => setTheme(getState().theme === "dark" ? "light" : "dark") },
-      ...NAV.map(([label, href, icon, hint]) => ({ group: "Go to", label, icon, hint, run: () => navigate(href) })),
-      ...(ov?.servers || []).map(s => ({ group: "Servers", label: s.id, icon: "server", hint: s.platform, run: () => navigate(`#/servers/${encodeURIComponent(s.id)}`) })),
-      ...(mx?.plugins || []).map(p => ({ group: "Plugins", label: p.name, icon: "package", hint: `${Object.keys(p.cells).length} servers`, run: () => navigate(`#/plugins?q=${encodeURIComponent(p.name)}`) })),
-    ];
-    if (!q) return all.filter(i => i.group !== "Plugins").slice(0, 40);
-    return all.map(i => ({ ...i, score: fuzzy(q, i.label) })).filter(i => i.score >= 0).sort((a, b) => b.score - a.score).slice(0, 40);
-  }, [q, peek("/matrix"), peek("/overview")]);
+    const ov = peek("/overview"); const mx = peek("/matrix"); const st = peek("/settings");
+    const source = st?.default_source;
+    const theme = getState().theme;
+    const out = [];
+    const add = (group, label, icon, run, hint, base) => { const sc = score(qq, base ?? label); if (sc >= 0) out.push({ group, label, icon, run, hint, sc }); };
+    for (const a of actions) add("Actions", a.label, a.icon, a.run, a.hint);
+    add("Actions", `Switch to ${theme === "dark" ? "light" : "dark"} theme`, theme === "dark" ? "sun" : "moon", () => setTheme(theme === "dark" ? "light" : "dark"));
+    if (qq) {
+      for (const p of mx?.plugins || []) {
+        if (score(qq, p.name) < 0) continue;
+        const cells = Object.entries(p.cells);
+        const outd = cells.filter(([, c]) => c.status === "outdated").length;
+        const src = source && p.cells[source];
+        if (outd) add("Plugins", `Update ${p.name} on ${plural(outd, "server")}…`, "circle-arrow-up", () => openChangeset({ keys: [p.key] }, `Update ${p.name} everywhere`), null, p.name);
+        if (src) add("Plugins", `Replace ${p.name} jar on other servers…`, "arrow-up-down", () => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}`), null, p.name);
+        add("Plugins", `Remove ${p.name}…`, "trash-2", () => { navigate("#/plugins"); setTimeout(() => openRemove({ ...p }), 50); }, null, p.name);
+        add("Plugins", `Open ${p.name}`, "package", () => { navigate(`#/plugins?q=${encodeURIComponent(p.name)}`); setState({ pluginDrawer: p.key }); }, plural(cells.length, "server"), p.name);
+      }
+      for (const s of ov?.servers || []) {
+        add("Servers", `Go to ${s.id}`, "server", () => navigate(`#/servers/${encodeURIComponent(s.id)}`), s.platform, s.id);
+        if (s.updates) add("Servers", `Review ${plural(s.updates, "update")} on ${s.id}…`, "circle-arrow-up", () => openChangeset({ server: s.id }, `Review updates on ${s.id}`), null, s.id);
+        if (s.eligible_target) add("Servers", `Deploy to ${s.id}…`, "rocket", () => navigate(`#/deploy?targets=${encodeURIComponent(s.id)}`), null, s.id);
+      }
+      for (const f of files) out.push({ group: "Files", label: `Push ${f.path}…`, icon: "file-code", hint: `from ${f.src}`, sc: 50, run: () => navigate(`#/deploy?paths=${encodeURIComponent(f.path)}`) });
+    }
+    for (const [label, href, icon, hint] of NAV) add("Go to", label, icon, () => navigate(href), hint);
+    // Group first (fixed order), then best score within the group.
+    return out.sort((a, b) => (GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group)) || (b.sc - a.sc))
+      .filter((it, i, arr) => arr.slice(0, i).filter(x => x.group === it.group).length < (it.group === "Plugins" ? 8 : 6));
+  }, [qq, files, peek("/matrix"), peek("/overview")]);
 
-  useEffect(() => setSel(0), [q]);
+  useEffect(() => setSel(0), [qq]);
   useEffect(() => { listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }); }, [sel]);
   const run = (i) => { close(); setTimeout(() => i.run(), 0); };
   const onKey = (e) => {
@@ -124,25 +171,23 @@ function PaletteInner({ actions }) {
     else if (e.key === "ArrowUp") { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
     else if (e.key === "Enter" && items[sel]) { e.preventDefault(); run(items[sel]); }
   };
-  let lastGroup = null;
   return html`<div class="scrim" style="z-index:60" onClick=${close}></div>
   <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette" ref=${ref}>
     <div class="palette-input">
       <${Icon} n="search" cls="i-lg" />
-      <input data-autofocus placeholder="Search servers, plugins, actions…" value=${q} onInput=${e => setQ(e.currentTarget.value)} onKeyDown=${onKey}
+      <input data-autofocus placeholder="Search plugins, servers, files, actions…" value=${q} onInput=${e => setQ(e.currentTarget.value)} onKeyDown=${onKey}
         role="combobox" aria-expanded="true" aria-controls="pal-list" aria-activedescendant=${items[sel] ? `pal-${sel}` : undefined} aria-autocomplete="list" />
       <${Kbd}>Esc<//>
     </div>
     <div class="palette-list" id="pal-list" role="listbox" ref=${listRef}>
       ${!items.length && html`<div class="empty" style="padding:28px"><p>No matches for “${q}”.</p></div>`}
-      ${items.map((i, idx) => {
-        const head = i.group !== lastGroup ? (lastGroup = i.group, html`<div class="palette-group" role="presentation">${i.group}</div>`) : null;
-        return html`${head}<div class="palette-item" id=${`pal-${idx}`} role="option" aria-selected=${idx === sel ? "true" : "false"}
+      ${GROUPS.map(g => { const gi = items.map((it, idx) => [it, idx]).filter(([it]) => it.group === g); return gi.length ? html`<div role="group" aria-labelledby=${`pg-${g}`}>
+        <div class="palette-group" id=${`pg-${g}`}>${g}</div>
+        ${gi.map(([i, idx]) => html`<div class="palette-item" id=${`pal-${idx}`} role="option" aria-selected=${idx === sel ? "true" : "false"}
           onMouseMove=${() => idx !== sel && setSel(idx)} onClick=${() => run(i)}>
-          <${Icon} n=${i.icon} /><span>${i.label}</span>${i.hint && html`<span class="hint">${i.hint}</span>`}</div>`;
-      })}
+          <${Icon} n=${i.icon} /><span class="ellipsis">${i.label}</span>${i.hint && html`<span class="hint">${i.hint}</span>`}</div>`)}</div>` : null; })}
     </div>
-    <div class="palette-foot"><span><${Kbd}>↑<//><${Kbd}>↓<//> navigate</span><span><${Kbd}>↵<//> open</span><span><${Kbd}>${modKey}<//><${Kbd}>K<//> toggle</span></div>
+    <div class="palette-foot"><span><${Kbd}>↑<//><${Kbd}>↓<//> navigate</span><span><${Kbd}>↵<//> run</span><span><${Kbd}>${modKey}<//><${Kbd}>K<//> toggle</span></div>
   </div>`;
 }
 

@@ -47,6 +47,8 @@ export function useQuery(path) {
     const f = () => force(x => x + 1);
     qsubs.add(f);
     const e = cache.get(path);
+    // A failed entry is not shown again on remount: drop the error and refetch (skeleton meanwhile).
+    if (e?.error && !e.loading) { e.error = null; e.data = undefined; }
     // Refetch on mount when missing, stale, failed, or older than 15s (cached data shows meanwhile).
     if (!e || (!e.loading && (e.stale || e.error || Date.now() - (e.ts || 0) > 15000))) load(path, true);
     return () => qsubs.delete(f);

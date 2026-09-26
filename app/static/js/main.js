@@ -1,11 +1,11 @@
 // Entry: shell + router + global shortcuts.
 import { html, render, useEffect } from "./lib.js";
 import { useRoute, navigate } from "./router.js";
-import { setState, getState, prefetch, peek, invalidate } from "./store.js";
+import { setState, getState, prefetch, peek, invalidate, useQuery } from "./store.js";
 import { trackJob, JOB_TITLES } from "./jobs.js";
 import { Sidebar, Topbar, Tabbar, Drawer } from "./components/shell.js";
 import { Toasts, ConfirmHost, Palette, Dock, NAV } from "./components/overlays.js";
-import { UpdateAllHost } from "./components/updateall.js";
+import { ChangesetHost } from "./components/changeset.js";
 import { RemoveHost } from "./components/removedialog.js";
 import { checkUpdates, openUpdateAll } from "./actions.js";
 import { Dashboard } from "./views/dashboard.js";
@@ -16,8 +16,15 @@ import { Deploy } from "./views/deploy.js";
 import { Activity } from "./views/activity.js";
 import { Settings } from "./views/settings.js";
 import { Empty } from "./components/ui.js";
+import { relTime } from "./fmt.js";
 
 const TITLES = { dashboard: "Dashboard", servers: "Servers", plugins: "Plugins", updates: "Updates", deploy: "Deploy", activity: "Activity", settings: "Settings" };
+
+// "Deploy · 5m ago" for a job id, when the job list is cached.
+function jobCrumb(id) {
+  const j = (peek("/jobs") || []).find(x => x.id === id);
+  return j ? `${JOB_TITLES[j.kind] || j.kind} · ${relTime(j.started || j.created)}` : "Job";
+}
 
 function view(r) {
   switch (r.name) {
@@ -28,7 +35,7 @@ function view(r) {
     case "plugins": return [html`<${Matrix} query=${r.query} />`, null, true];
     case "updates": return [html`<${Updates} />`];
     case "deploy": return [html`<${Deploy} query=${r.query} />`, null, true];
-    case "activity": return [html`<${Activity} id=${r.parts[1]} />`, r.parts[1] ? [{ label: "Activity", href: "#/activity" }, { label: r.parts[1] }] : null];
+    case "activity": return [html`<${Activity} id=${r.parts[1]} />`, r.parts[1] ? [{ label: "Activity", href: "#/activity" }, { label: jobCrumb(r.parts[1]) }] : null];
     case "settings": return [html`<${Settings} tab=${r.parts[1] || "general"} />`];
     default: return [html`<${Empty} icon="triangle-alert" title="Page not found" action=${html`<a class="btn" href="#/dashboard">Back to dashboard</a>`}>Nothing lives at <code>#/${r.parts.join("/")}</code>.<//>`, [{ label: "Not found" }]];
   }
@@ -36,13 +43,15 @@ function view(r) {
 
 const PALETTE_ACTIONS = [
   { label: "Check for updates now", icon: "refresh-cw", run: checkUpdates },
-  { label: "Update all…", icon: "zap", run: openUpdateAll },
-  { label: "New deploy", icon: "rocket", run: () => navigate("#/deploy") },
-  { label: "Upload a jar", icon: "upload", run: () => navigate("#/deploy?upload=1") },
+  { label: "Review & update all…", icon: "circle-arrow-up", run: openUpdateAll },
+  { label: "Push a file to servers…", icon: "rocket", run: () => navigate("#/deploy") },
+  { label: "Upload and roll out a jar…", icon: "upload", run: () => navigate("#/deploy?upload=1") },
 ];
 
 function App() {
   const route = useRoute();
+  // The job list feeds the Activity breadcrumb ("Deploy · 5m ago").
+  useQuery(route.name === "activity" && route.parts[1] ? "/jobs" : null);
   const [content, crumbs, wide] = view(route);
   useEffect(() => {
     document.title = `${crumbs ? crumbs[crumbs.length - 1].label : TITLES[route.name] || "Not found"} · AMP Sync`;
@@ -78,7 +87,7 @@ function App() {
     <${Tabbar} route=${route} />
     <${Drawer} route=${route} />
     <${Palette} actions=${PALETTE_ACTIONS} />
-    <${UpdateAllHost} />
+    <${ChangesetHost} />
     <${RemoveHost} />
     <${ConfirmHost} />
     <${Dock} />

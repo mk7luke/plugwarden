@@ -17,6 +17,13 @@ export function jobTone(j) {
   return "ok";
 }
 
+export function jobVerb(j) {
+  const t = jobTone(j);
+  return t === "ok" ? (j.status === "undone" ? "was reverted" : "finished") : t === "warn" ? "finished with errors" : j.status === "interrupted" ? "was interrupted" : "failed";
+}
+// Human summary: dry runs say "would change", never "changed".
+export const jobSummary = (j) => !j?.summary ? "" : j.dry_run ? j.summary.replace(/\bchanged\b/g, "would change") : j.summary;
+
 export async function runJob(request, { title, onDone } = {}) {
   let res;
   try { res = await request; }
@@ -39,9 +46,11 @@ export function trackJob(id, { title, onDone, quiet } = {}) {
         const st = job?.status || "done";
         patch(id, { status: st, job });
         const tone = jobTone(job || st);
-        if (!quiet || tone !== "ok") toast({
+        // The dock (or the inline execution panel) already shows the result; toast only when neither is visible.
+        const shown = getState().jobs.some(j => j.id === id);
+        if (!shown && (!quiet || tone !== "ok")) toast({
           kind: tone === "ok" ? "ok" : "err",
-          title: `${title || JOB_TITLES[job?.kind] || "Job"}${job?.dry_run ? " (dry run)" : ""} ${tone === "ok" ? "finished" : tone === "warn" ? "finished with errors" : st === "interrupted" ? "was interrupted" : "failed"}`,
+          title: `${title || JOB_TITLES[job?.kind] || "Job"}${job?.dry_run ? " (dry run)" : ""} ${jobVerb(job || { status: st })}`,
           body: job?.summary,
           href: `#/activity/${id}`,
         });

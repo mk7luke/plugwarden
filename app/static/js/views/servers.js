@@ -1,15 +1,14 @@
-// Servers list + server detail (plugin table with per-row update / pin / ignore).
-import { html, useState, useMemo } from "../lib.js";
-import { useQuery, invalidate, toast } from "../store.js";
-import { post } from "../api.js";
+// Servers list + server detail (plugin table; per-row review, pin/ignore with explicit scope, source mapping).
+import { html, useState, useMemo, useEffect, useRef } from "../lib.js";
+import { useQuery, invalidate, toast, setState, useStore, getState } from "../store.js";
+import { post, put } from "../api.js";
 import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check } from "../components/ui.js";
-import { applyUpdates } from "../actions.js";
+import { openChangeset } from "../components/changeset.js";
 import { relTime, bytes, plural } from "../fmt.js";
 import { navigate } from "../router.js";
 
 export function ServersList() {
   const q = useQuery("/servers");
-  const st = useQuery("/settings");
   return html`<${PageHead} title="Servers" sub="Every AMP instance with a plugins folder under the datastore." />
     <div class="panel">
       ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
@@ -23,62 +22,47 @@ export function ServersList() {
             <td class="hide-sm"><${Platform} p=${s.platform} mc=${s.mc_version} /></td>
             <td class="num hide-sm">${s.plugin_count}</td>
             <td><div class="row wrap" style="gap:4px">
-              ${s.updates ? html`<${Tag} kind="update" icon="circle-arrow-up">${s.updates} updates<//>` : s.plugin_count ? html`<${Tag} kind="ok" icon="check">Current<//>` : html`<${Tag}>Empty<//>`}
-              ${s.drift > 0 && html`<${Tag} kind="drift" icon="git-compare-arrows">${s.drift} drift<//>`}
-              ${s.pending_restart && html`<${Tag} kind="warn" icon="rotate-ccw">Restart pending<//>`}</div></td>
-            <td class="hide-md muted small">${s.is_source || st.data?.default_source === s.id ? html`<${Tag} kind="accent" icon="circle-dot">Default source<//>` : s.note || (s.platform === "velocity" ? "Proxy — separate plugin ecosystem" : s.eligible_target ? "Deploy target" : "Not a target")}</td>
+              ${s.updates ? html`<${Tag} kind="update" icon="circle-arrow-up">${plural(s.updates, "update")}<//>` : s.plugin_count ? html`<${Tag} kind="ok" icon="check">Current<//>` : html`<${Tag}>No plugins<//>`}
+              ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip(s)}><${Icon} n="git-compare-arrows" />${s.drift} drift</span>`}
+              ${s.pending_restart && html`<${Tag} kind="warn" icon="rotate-ccw">Restart needed<//>`}</div></td>
+            <td class="hide-md muted small">${s.is_source ? html`<${Tag} kind="plain" icon="circle-dot">Default source<//>` : s.note || (s.platform === "velocity" ? "Proxy — separate plugin ecosystem" : s.eligible_target ? "Deploy target" : "Not a target")}</td>
             <td class="col-actions"><${Icon} n="chevron-right" cls="i-sm muted" /></td>
           </tr>`)}</tbody></table></div>`}
     </div>`;
 }
 
-const FILTERS = [["all", "All"], ["outdated", "Updates"], ["unknown", "Untracked"], ["held", "Pinned & ignored"]];
+export const driftTip = (s) => s.drift_plugins?.length
+  ? `Differs from the ${s.drift_basis === "source" ? "source server" : "network majority"}: ${s.drift_plugins.map(p => `${p.name} ${p.version} (expected ${p.expected ?? p.basis_version})`).join(", ")}`
+  : `${plural(s.drift, "plugin")} on a different version than the rest of the network`;
+
+const FILTERS = [["all", "All"], ["outdated", "Updates"], ["unknown", "Untracked"], ["held", "Held"]];
+const held = (p) => p.status === "pinned" || p.status === "ignored";
 
 export function ServerDetail({ id }) {
   const servers = useQuery("/servers");
   // Resolve the id against the server list first so unknown ids show "not found" without a failing request.
   const known = servers.data ? servers.data.some(s => s.id === id) : null;
   const plugins = useQuery(known === false ? null : `/servers/${encodeURIComponent(id)}/plugins`);
-  const settings = useQuery("/settings");
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sel, setSel] = useState(new Set());
-  const [busyKey, setBusyKey] = useState(null);
   const srv = servers.data?.find(s => s.id === id);
+  const total = servers.data?.filter(s => s.plugin_count > 0).length || 0;
 
   const rows = useMemo(() => {
     let r = plugins.data || [];
     if (filter === "outdated") r = r.filter(p => p.status === "outdated");
     else if (filter === "unknown") r = r.filter(p => p.status === "unknown");
-    else if (filter === "held") r = r.filter(p => p.status === "pinned" || p.status === "ignored");
+    else if (filter === "held") r = r.filter(held);
     if (search) { const s = search.toLowerCase(); r = r.filter(p => p.name.toLowerCase().includes(s) || p.jar.toLowerCase().includes(s)); }
     const order = { outdated: 0, unknown: 1, pinned: 2, ignored: 3, current: 4 };
     return [...r].sort((a, b) => (order[a.status] - order[b.status]) || a.name.localeCompare(b.name));
   }, [plugins.data, filter, search]);
   const outdated = (plugins.data || []).filter(p => p.status === "outdated");
-  const counts = { all: plugins.data?.length, outdated: outdated.length, unknown: plugins.data?.filter(p => p.status === "unknown").length, held: plugins.data?.filter(p => p.status === "pinned" || p.status === "ignored").length };
+  const counts = { all: plugins.data?.length, outdated: outdated.length, unknown: plugins.data?.filter(p => p.status === "unknown").length, held: plugins.data?.filter(held).length };
 
-  const update = (list, title) => applyUpdates(list.map(p => ({ key: p.key, servers: [id] })), { title }).then(() => setSel(new Set()));
+  const review = (list, title) => openChangeset(list.length === outdated.length ? { server: id } : { items: list.map(p => ({ key: p.key, servers: [id] })) }, title);
 
-  async function hold(p, kind) {
-    setBusyKey(p.key + kind);
-    const k = encodeURIComponent(p.key);
-    let msg;
-    try {
-      if (kind === "pin") {
-        const on = p.status === "pinned";
-        await post(`/plugins/${k}/pin`, { version: on ? null : p.version });
-        msg = on ? `Unpinned ${p.name}` : `Pinned ${p.name} at ${p.version}`;
-      } else {
-        const on = p.status === "ignored";
-        await post(`/plugins/${k}/ignore`, { ignored: !on });
-        msg = on ? `${p.name} is tracked again` : `Ignoring updates for ${p.name}`;
-      }
-      toast({ kind: "ok", title: msg });
-      invalidate("/settings", "/servers", "/matrix", "/updates", "/overview");
-    } catch (e) { toast({ kind: "err", title: "Couldn't save", body: e.message }); }
-    setBusyKey(null);
-  }
   async function markRestarted() {
     try { await post(`/servers/${encodeURIComponent(id)}/restarted`); toast({ kind: "ok", title: `${id} marked as restarted` }); invalidate("/servers", "/overview"); }
     catch (e) { toast({ kind: "err", title: "Couldn't update", body: e.message }); }
@@ -91,17 +75,19 @@ export function ServerDetail({ id }) {
   const toggle = (k, v) => setSel(s => { const n = new Set(s); v ? n.add(k) : n.delete(k); return n; });
 
   return html`
-    <${PageHead} title=${id} sub=${srv ? html`<span class="row wrap" style="gap:10px"><${Platform} p=${srv.platform} mc=${srv.mc_version} /> · ${plural(srv.plugin_count, "plugin")}${srv.pending_restart ? html` · <${Tag} kind="warn" icon="rotate-ccw">Restart pending<//>` : ""}</span>` : " "}>
-      ${srv?.pending_restart && html`<${Btn} icon="rotate-ccw" onClick=${markRestarted} title="Files changed since the last restart. Click once the server has been restarted.">Mark restarted<//>`}
-      <a class="btn" href=${`#/deploy?targets=${encodeURIComponent(id)}`}><${Icon} n="rocket" cls="i-sm" />Deploy to this server</a>
-      <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${() => update(outdated, `Update ${id}`)}>
-        ${outdated.length ? `Update all ${outdated.length}` : "Nothing to update"}<//>
+    <${PageHead} title=${id} sub=${srv ? html`<span class="row wrap" style="gap:10px"><${Platform} p=${srv.platform} mc=${srv.mc_version} /> · ${plural(srv.plugin_count, "plugin")}
+        ${srv.drift > 0 && html` · <span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip(srv)}><${Icon} n="git-compare-arrows" />${srv.drift} drift</span>`}</span>` : " "}>
+      <a class="btn" href=${`#/deploy?targets=${encodeURIComponent(id)}`}><${Icon} n="rocket" cls="i-sm" />Deploy to ${id}</a>
+      <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${() => review(outdated, `Review updates on ${id}`)}>
+        ${outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>
     <//>
+    ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed</b> — files changed since ${id} last started.</div>
+      <${Btn} size="sm" icon="check" onClick=${markRestarted}>Mark restarted<//></div>`}
     ${srv?.platform === "velocity" && html`<div class="plan-warn" style="border:1px solid var(--warn-line);border-radius:var(--r-md);margin-bottom:var(--s-4)"><${Icon} n="shield" cls="i-sm" />Velocity proxy — it uses a different plugin ecosystem, and Bukkit/Paper plugins are never pushed here.</div>`}
 
     <div class="toolbar">
       <div class="seg" role="group" aria-label="Filter plugins">
-        ${FILTERS.map(([k, l]) => html`<button type="button" aria-pressed=${filter === k ? "true" : "false"} onClick=${() => setFilter(k)}>${l}${counts[k] != null ? html` <span class="muted num">${counts[k]}</span>` : ""}</button>`)}
+        ${FILTERS.map(([k, l]) => html`<button type="button" aria-pressed=${filter === k ? "true" : "false"} onClick=${() => setFilter(k)} title=${k === "held" ? "Pinned or ignored" : undefined}>${l}${counts[k] != null ? html` <span class="muted num">${counts[k]}</span>` : ""}</button>`)}
       </div>
       <span class="spacer"></span>
       <div class="input-wrap"><${Icon} n="search" cls="i-sm" /><input class="input" type="search" placeholder="Filter by name or jar" aria-label="Filter plugins" value=${search} onInput=${e => setSearch(e.currentTarget.value)} /></div>
@@ -112,30 +98,145 @@ export function ServerDetail({ id }) {
         : plugins.loading ? html`<${SkelRows} n=${10} cols=${[4, 22, 26, 12, 12]} />`
         : !plugins.data.length ? html`<${Empty} icon="blocks" title="No plugins on this server">${srv?.platform === "fabric" ? "This is a Fabric modded server — mods are managed outside the plugins folder." : "The plugins folder is empty."}<//>`
         : !rows.length ? html`<${Empty} icon="filter" title="Nothing matches" action=${html`<${Btn} size="sm" onClick=${() => { setFilter("all"); setSearch(""); }}>Clear filters<//>`}>Try another filter.<//>`
-        : html`<div class="tbl-wrap"><table class="tbl">
+        : html`<div class="tbl-wrap"><table class="tbl tbl-plugins">
           <thead><tr>
             <th class="col-check"><${Check} label="Select all updatable" checked=${allSel} indeterminate=${!allSel && selectable.some(p => sel.has(p.key))} onChange=${v => setSel(v ? new Set(selectable.map(p => p.key)) : new Set())} /></th>
-            <th scope="col">Plugin</th><th scope="col" class="hide-sm">Installed</th><th scope="col" class="hide-sm">Latest compatible</th><th scope="col" class="hide-md">Source</th><th scope="col" class="hide-sm">Status</th>
+            <th scope="col">Plugin</th><th scope="col" class="hide-sm">Installed</th><th scope="col" class="hide-sm">Latest compatible</th><th scope="col" class="hide-sm">Status</th>
             <th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody>${rows.map(p => html`<tr key=${p.key} class=${sel.has(p.key) ? "is-selected" : ""}>
             <td class="col-check">${p.status === "outdated" ? html`<${Check} label=${`Select ${p.name}`} checked=${sel.has(p.key)} onChange=${v => toggle(p.key, v)} />` : null}</td>
             <td><div class="cell-name"><b>${p.name}</b><span class="jar" title=${`${p.jar} · ${bytes(p.size)} · modified ${relTime(p.mtime)}`}>${p.jar}</span>
-              <span class="only-sm" style="margin-top:4px;flex-wrap:wrap">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${StatusTag} status=${p.status} /></span>`}</span></div></td>
+              <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${Status} p=${p} id=${id} total=${total} /></span>`}</span></div></td>
             <td class="hide-sm"><span class="ver">${p.version || "—"}</span></td>
-            <td class="hide-sm">${p.latest ? (p.status === "outdated" ? html`<span class="ver" style="color:var(--update);font-weight:600">${p.latest.version}</span>` : html`<span class="ver muted">${p.latest.version}</span>`) : html`<span class="muted small">—</span>`}
-              ${p.latest?.changelog_url && p.status === "outdated" && html` <a class="link small" href=${p.latest.changelog_url} target="_blank" rel="noopener" aria-label=${`${p.name} changelog`}><${Icon} n="external-link" cls="i-xs" /></a>`}</td>
-            <td class="hide-md">${p.source ? html`<span class="small muted">${p.source.kind}</span>` : html`<a class="link small" href="#/settings/sources">Map source</a>`}</td>
-            <td class="hide-sm"><${StatusTag} status=${p.status} /></td>
+            <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
+                ${p.latest.changelog_url && p.status === "outdated" && html` <a class="link small" href=${p.latest.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
+              : html`<span class="muted small">—</span>`}</td>
+            <td class="hide-sm"><${Status} p=${p} id=${id} total=${total} /></td>
             <td class="col-actions"><div class="row-actions">
-              ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => update([p], `Update ${p.name} on ${id}`)} aria-label=${`Update ${p.name}`}><span class="hide-sm">Update</span><//>`}
-              <${Btn} size="sm" kind="ghost" icon="pin" busy=${busyKey === p.key + "pin"} aria-pressed=${p.status === "pinned" ? "true" : "false"} title=${p.status === "pinned" ? `Pinned at ${p.pinned_version || p.version} — click to unpin` : "Pin at this version"} aria-label=${`${p.status === "pinned" ? "Unpin" : "Pin"} ${p.name}`} onClick=${() => hold(p, "pin")} />
-              <${Btn} size="sm" kind="ghost" icon=${p.status === "ignored" ? "eye" : "eye-off"} busy=${busyKey === p.key + "ignore"} title=${p.status === "ignored" ? "Track updates again" : "Ignore updates"} aria-label=${`${p.status === "ignored" ? "Track" : "Ignore"} ${p.name}`} onClick=${() => hold(p, "ignore")} />
+              ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => review([p], `Update ${p.name} on ${id}`)} aria-label=${`Review ${p.name} update`}><span class="hide-sm">Review</span><//>`}
+              <${RowMenu} p=${p} id=${id} total=${total} />
             </div></td>
           </tr>`)}</tbody></table></div>`}
     </div>
     ${sel.size > 0 && html`<div class="bulkbar" role="region" aria-label="Selection actions">
       <b>${plural(sel.size, "plugin")} selected</b><span class="spacer"></span>
       <${Btn} kind="ghost" onClick=${() => setSel(new Set())}>Clear<//>
-      <${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => update(outdated.filter(p => sel.has(p.key)), `Update ${sel.size} on ${id}`)}>Update selected<//>
-    </div>`}`;
+      <${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => review(outdated.filter(p => sel.has(p.key)), `Review ${plural(sel.size, "update")} on ${id}`)}>Review selected<//>
+    </div>`}
+    <${SourceDialog} />`;
+}
+
+// Status chip; says where a pin/ignore applies. Untracked rows get one "No source · Map…" action.
+function Status({ p, id }) {
+  const where = (scope) => scope === "*" ? "network-wide" : Array.isArray(scope) && scope.length > 1 ? `on ${plural(scope.length, "server")}` : "this server";
+  if (p.status === "pinned") return html`<${Tag} kind="plain" icon="pin" title=${`Pinned ${where(p.pin_scope)}`}>Pinned ${p.pinned_version || p.version} · ${where(p.pin_scope)}<//>`;
+  if (p.status === "ignored") return html`<${Tag} kind="plain" icon="eye-off">Ignored · ${where(p.ignore_scope)}<//>`;
+  if (p.status === "unknown") return html`<button type="button" class="tag tag-btn" onClick=${() => setState({ mapSource: p })} aria-label=${`No update source for ${p.name}. Map one`}><${Icon} n="circle-dashed" />No source · Map…</button>`;
+  return html`<${StatusTag} status=${p.status} />`;
+}
+
+async function hold(p, kind, on, servers, label) {
+  const k = encodeURIComponent(p.key);
+  try {
+    if (kind === "pin") await post(`/plugins/${k}/pin`, { version: on ? p.version : null, servers });
+    else await post(`/plugins/${k}/ignore`, { ignored: on, servers });
+    toast({ kind: "ok", title: label });
+    invalidate("/settings", "/servers", "/matrix", "/updates", "/overview");
+  } catch (e) { toast({ kind: "err", title: "Couldn't save", body: e.message }); }
+}
+
+function RowMenu({ p, id, total }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef();
+  useEffect(() => {
+    if (!open) return;
+    const first = ref.current?.querySelector('[role="menuitem"]'); first?.focus();
+    const out = (e) => !ref.current?.contains(e.target) && setOpen(false);
+    const key = (e) => {
+      const items = [...(ref.current?.querySelectorAll('[role="menuitem"]') || [])];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === "Escape") { setOpen(false); ref.current?.querySelector("button")?.focus(); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+    };
+    document.addEventListener("pointerdown", out); document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", out); document.removeEventListener("keydown", key); };
+  }, [open]);
+  const pinnedHere = p.status === "pinned";
+  const ignoredHere = p.status === "ignored";
+  const net = (scope) => scope === "*";
+  const items = [
+    pinnedHere
+      ? [`Unpin on ${id}`, "pin", () => hold(p, "pin", false, [id], `Unpinned ${p.name} on ${id}`)]
+      : [`Pin at ${p.version} on ${id}`, "pin", () => hold(p, "pin", true, [id], `Pinned ${p.name} at ${p.version} on ${id}`)],
+    pinnedHere && net(p.pin_scope)
+      ? [`Unpin on all servers`, "pin", () => hold(p, "pin", false, "*", `Unpinned ${p.name} network-wide`)]
+      : !pinnedHere && [`Pin at ${p.version} on all ${total} servers`, "pin", () => hold(p, "pin", true, "*", `Pinned ${p.name} at ${p.version} network-wide`)],
+    ignoredHere
+      ? [`Track updates again on ${id}`, "eye", () => hold(p, "ignore", false, [id], `Tracking ${p.name} on ${id} again`)]
+      : [`Ignore updates on ${id}`, "eye-off", () => hold(p, "ignore", true, [id], `Ignoring updates for ${p.name} on ${id}`)],
+    ignoredHere && net(p.ignore_scope)
+      ? [`Track updates again everywhere`, "eye", () => hold(p, "ignore", false, "*", `Tracking ${p.name} everywhere again`)]
+      : !ignoredHere && [`Ignore updates network-wide`, "eye-off", () => hold(p, "ignore", true, "*", `Ignoring updates for ${p.name} network-wide`)],
+    [p.source ? "Change update source…" : "Map update source…", "sliders-horizontal", () => setState({ mapSource: p })],
+  ].filter(Boolean);
+  return html`<div class="menu-wrap" ref=${ref}>
+    <${Btn} size="sm" kind="ghost" icon="ellipsis" aria-haspopup="menu" aria-expanded=${open ? "true" : "false"} aria-label=${`More actions for ${p.name}`} onClick=${() => setOpen(!open)} />
+    ${open && html`<div class="menu" role="menu" aria-label=${`${p.name} actions`}>
+      ${items.map(([label, icon, run]) => html`<button type="button" role="menuitem" class="menu-item" onClick=${() => { setOpen(false); run(); }}><${Icon} n=${icon} cls="i-sm" />${label}</button>`)}
+    </div>`}
+  </div>`;
+}
+
+const KINDS = [["modrinth", "Modrinth", "project slug, e.g. coreprotect"], ["hangar", "Hangar", "owner/slug"], ["spiget", "Spiget", "numeric resource id"], ["github", "GitHub", "owner/repo"]];
+
+// Inline source mapping for one plugin (writes settings.source_map[key]).
+function SourceDialog() {
+  const p = useStore(s => s.mapSource);
+  const st = useQuery(p ? "/settings" : null);
+  const [kind, setKind] = useState("modrinth");
+  const [id, setId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef();
+  useEffect(() => {
+    if (!p) return;
+    const cur = getState().mapSource && st.data?.source_map?.[p.key];
+    setKind(cur?.kind || "modrinth");
+    setId(cur?.id || p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const prev = document.activeElement;
+    setTimeout(() => ref.current?.querySelector("select")?.focus(), 0);
+    const k = (e) => e.key === "Escape" && setState({ mapSource: null });
+    document.addEventListener("keydown", k);
+    return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
+  }, [p?.key, st.data]);
+  if (!p) return null;
+  const close = () => setState({ mapSource: null });
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await put("/settings", { source_map: { ...(st.data?.source_map || {}), [p.key]: { kind, id: id.trim() } } });
+      toast({ kind: "ok", title: `${p.name} mapped to ${KINDS.find(k => k[0] === kind)[1]}`, body: "Run an update check to fetch its latest version." });
+      invalidate("/settings", "/servers", "/matrix", "/updates");
+      close();
+    } catch (err) { toast({ kind: "err", title: "Couldn't save mapping", body: err.message }); }
+    setBusy(false);
+  };
+  return html`<div class="scrim" onClick=${close}></div>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ms-t" ref=${ref}>
+    <form onSubmit=${save}>
+      <div class="dialog-body">
+        <h2 id="ms-t" style="gap:8px"><${Icon} n="sliders-horizontal" cls="i-sm" style="color:var(--fg-2)" />Update source for ${p.name}</h2>
+        <p>Applies to ${p.name} on every server. Modrinth matches most jars automatically by file hash; map the rest here.</p>
+        <div class="row wrap" style="gap:10px;align-items:flex-end">
+          <div class="field" style="width:140px"><label for="ms-k">Source</label>
+            <select id="ms-k" class="select" value=${kind} onChange=${e => setKind(e.currentTarget.value)}>${KINDS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></div>
+          <div class="field grow"><label for="ms-i">Id</label>
+            <input id="ms-i" class="input mono" required value=${id} placeholder=${KINDS.find(k => k[0] === kind)[2]} onInput=${e => setId(e.currentTarget.value)} /></div>
+        </div>
+        <p class="small muted">${KINDS.find(k => k[0] === kind)[2]}</p>
+      </div>
+      <div class="dialog-foot"><button type="button" class="btn" onClick=${close}>Cancel</button><${Btn} type="submit" kind="primary" busy=${busy}>Save mapping<//></div>
+    </form>
+  </div>`;
 }

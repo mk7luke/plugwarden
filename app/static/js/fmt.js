@@ -39,23 +39,8 @@ export function bytes(n) {
 export const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 export function initials(email) {
-  if (!email) return "?";
+  if (!email) return "—";
   const name = email.split("@")[0];
   const parts = name.split(/[._-]/).filter(Boolean);
   return ((parts[0] || "?")[0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
-}
-
-// Loose fuzzy match; returns score (higher is better) or -1.
-export function fuzzy(q, text) {
-  if (!q) return 0;
-  q = q.toLowerCase(); const t = text.toLowerCase();
-  const idx = t.indexOf(q);
-  if (idx >= 0) return 100 - idx;
-  let ti = 0, score = 0;
-  for (const c of q) {
-    const f = t.indexOf(c, ti);
-    if (f < 0) return -1;
-    score += f === ti ? 2 : 1; ti = f + 1;
-  }
-  return score;
 }

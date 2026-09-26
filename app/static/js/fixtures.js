@@ -132,16 +132,17 @@ const settings = {
   },
   default_source: "elChapo01",
   auto_update: { mode: "notify", interval_hours: 6, window: "04:00-06:00", dry_run_first: true },
-  pins: { worldguard: "7.0.14" },
-  ignores: ["jarvis"],
+  pins: { worldguard: { servers: "*", version: "7.0.14" } },
+  ignores: { jarvis: { servers: "*" } },
   source_map: { chestsort: { kind: "spiget", id: "59773" }, interactivechat: { kind: "spiget", id: "75870" } },
 };
 
 function hash(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return (h >>> 0).toString(16).padStart(8, "0"); }
 
-function statusOf(key, version) {
-  if (settings.ignores.includes(key)) return "ignored";
-  if (settings.pins[key]) return "pinned";
+const holds = (h, server) => !!h && (h.servers === "*" || h.servers.includes(server));
+function statusOf(key, version, server) {
+  if (holds(settings.ignores[key], server)) return "ignored";
+  if (holds(settings.pins[key], server)) return "pinned";
   const c = CATALOG[key];
   if (!c || !c[1]) return "unknown";
   return c[1] === version ? "current" : "outdated";
@@ -150,14 +151,15 @@ function statusOf(key, version) {
 function pluginsFor(id) {
   return (INSTALLED[id] || []).map(([key, jar, version]) => {
     const c = CATALOG[key] || [key, null];
-    const st = statusOf(key, version);
+    const st = statusOf(key, version, id);
     return {
       key, name: c[0], jar, version, sha1: hash(jar) + hash(jar + "x") + hash(jar + "y"),
       folder: c[0].replace(/\s/g, ""), size: 40000 + (parseInt(hash(jar), 16) % 9000000),
       mtime: iso((parseInt(hash(jar), 16) % 90) * DAY),
       source: c[2] ? { kind: c[2], id: c[3], url: `https://${c[2]}.example/${c[3]}` } : null,
       latest: c[1] ? { version: c[1], url: "#", download_url: "#", published: iso(3 * DAY), changelog_url: `https://example.org/${key}/changelog` } : null,
-      status: st,
+      status: st, pin_scope: settings.pins[key]?.servers ?? null, ignore_scope: settings.ignores[key]?.servers ?? null,
+      pinned_version: holds(settings.pins[key], id) ? settings.pins[key].version : null,
     };
   });
 }
@@ -174,7 +176,7 @@ function server(id, platform, mc) {
     id, platform, mc_version: mc, plugin_count: ps.length,
     updates: ps.filter(p => p.status === "outdated").length,
     drift: ps.filter(p => dk.has(p.key)).length,
-    pending_restart: ["M1-hub01", "M4-skyblock01"].includes(id),
+    pending_restart: pendingRestart.has(id),
     eligible_target: !["velocity", "fabric"].includes(platform),
   };
 }
@@ -184,9 +186,10 @@ function updates() {
   const by = {};
   for (const [id] of SERVERS) for (const p of pluginsFor(id)) {
     if (p.status !== "outdated") continue;
-    const u = by[p.key] ||= { key: p.key, name: p.name, from_versions: [], to_version: p.latest.version, servers: [], changelog_url: p.latest.changelog_url, download_url: "#" };
+    const u = by[p.key] ||= { key: p.key, name: p.name, from_versions: [], to_version: p.latest.version, servers: [], targets: [], changelog_url: p.latest.changelog_url, download_url: "#" };
     if (!u.from_versions.includes(p.version)) u.from_versions.push(p.version);
     u.servers.push(id);
+    u.targets.push({ server: id, jar: p.jar, from: p.version, to: p.latest.version, compat: { mc_versions: p.key === "plugmanx" ? ["1.21.4", "1.21.5"] : ["1.21.4", "1.21.5", "1.21.6", "1.21.8"] } });
   }
   return Object.values(by).sort((a, b) => b.servers.length - a.servers.length);
 }
@@ -257,6 +260,38 @@ function plan(body) {
 }
 
 const uploads = {};
+const plans = {};
+const pendingRestart = new Set(["M1-hub01", "M4-skyblock01"]);
+
+function updatePlan(items) {
+  const want = (key, server) => items === "all" || !items || items.some(i => i.key === key && (!i.servers || i.servers.includes(server)));
+  const rows = [];
+  for (const [id, , mc] of SERVERS) for (const p of pluginsFor(id)) {
+    if (p.status !== "outdated" || !want(p.key, id)) continue;
+    const to = p.latest.version;
+    rows.push({
+      row: rows.length, server: id, key: p.key, name: p.name, action: "update", from_version: p.version, to_version: to,
+      from_jar: p.jar, to_jar: p.jar.includes(p.version) ? p.jar.replace(p.version, to) : `${p.name.replace(/\s/g, "")}-${to}.jar`,
+      size: p.size, verified: true, changelog_url: p.latest.changelog_url, published: p.latest.published,
+      compat: { mc_versions: p.key === "plugmanx" ? ["1.21.4", "1.21.5"] : ["1.21.4", "1.21.5", "1.21.6", "1.21.8"], loaders: ["paper", "purpur"] },
+    });
+  }
+  const plan_id = "pl" + (++jobSeq);
+  plans[plan_id] = { rows };
+  return { plan_id, created: new Date().toISOString(), expires: new Date(Date.now() + 30 * MIN).toISOString(), rows, skipped: [],
+    summary: { rows: rows.length, plugins: new Set(rows.map(r => r.key)).size, servers: new Set(rows.map(r => r.server)).size, download_bytes: rows.reduce((a, r) => a + r.size, 0), unverified: 0 } };
+}
+
+function search(q) {
+  q = q.toLowerCase();
+  const out = [];
+  for (const [dir, entries] of Object.entries(TREE)) for (const e of entries) {
+    const path = dir ? `${dir}/${e.name}` : e.name;
+    if (path.toLowerCase().includes(q)) out.push({ path, name: e.name, type: e.type, jar: e.jar, size: e.size });
+  }
+  for (const d of ["DiscordSRV", "WorldGuard", "PlaceholderAPI", "CoreProtect", "GSit", "Plan"]) if (`${d}/config.yml`.toLowerCase().includes(q)) out.push({ path: `${d}/config.yml`, name: "config.yml", type: "file", size: 9000 });
+  return { results: out.slice(0, 100) };
+}
 
 export async function handle(method, path, body) {
   const [p, qs = ""] = path.split("?");
@@ -265,8 +300,10 @@ export async function handle(method, path, body) {
   if (method === "GET") {
     if (p === "/overview") {
       const ss = servers(); const m = matrix();
-      return delay({ servers: ss, totals: { servers: ss.length, plugins: m.plugins.length, updates: updates().length, drift: [...driftKeys()].length },
-        last_check: iso(26 * HOUR), auto_update: { mode: settings.auto_update.mode, next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString() }, user: "luke@interactep.com" });
+      const u = updates();
+      return delay({ servers: ss, totals: { servers: ss.length, plugins: m.plugins.length, updates: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, drift: [...driftKeys()].length },
+        last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · 46 of 78 jars identified`,
+        restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), auto_update: { mode: settings.auto_update.mode, next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString() }, user: "luke@interactep.com" });
     }
     if (p === "/servers") return delay(servers());
     if ((m = p.match(/^\/servers\/([^/]+)\/plugins$/))) {
@@ -279,14 +316,28 @@ export async function handle(method, path, body) {
       return delay({ path, entries: TREE[path] || [{ name: "config.yml", type: "file", size: 1200, mtime: iso(DAY) }] }, 160);
     }
     if (p === "/matrix") return delay(matrix());
-    if (p === "/updates") return delay(updates());
+    if ((m = p.match(/^\/servers\/([^/]+)\/search$/))) return delay(search(q.get("q") || ""), 200);
+    if (p === "/diff") return delay({ path: q.get("path"), source: q.get("source"), target: q.get("target"), source_exists: true, target_exists: true, identical: false, binary: false, too_large: false,
+      diff: "--- a\n+++ b\n@@ -12,5 +12,5 @@\n # Essentials config\n ops-name-color: '4'\n-nickname-prefix: '~'\n+nickname-prefix: ''\n max-nick-length: 15\n@@ -88,3 +88,4 @@\n teleport-cooldown: 0\n-teleport-delay: 3\n+teleport-delay: 0\n+teleport-safety: true" }, 250);
+    if (p === "/updates") { const u = updates(); return delay({ updates: u, counts: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · 46 of 78 jars identified` }); }
     if (p === "/jobs") return delay(jobs.map(({ log, results, ...j }) => ({ ...j, servers: [...new Set(results.map(r => r.server))], counts: results.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {}) })));
     if ((m = p.match(/^\/jobs\/([^/]+)$/))) return delay(jobs.find(j => j.id === m[1]), 120);
     if (p === "/settings") return delay(settings);
   }
   if (method === "PUT" && p === "/settings") { Object.assign(settings, body); return delay(settings); }
   if (method === "POST") {
-    if (p === "/deploy/plan") return delay(plan(body), 420);
+    if (p === "/deploy/plan") { const pl = plan(body); const plan_id = "dp" + (++jobSeq); plans[plan_id] = { deploy: body, pl }; return delay({ plan_id, ...pl }, 420); }
+    if (p === "/updates/plan") return delay(updatePlan(body.items), 500);
+    if (p === "/updates/apply" && body.plan_id) {
+      const pl = plans[body.plan_id];
+      if (!pl) throw Object.assign(new Error("plan expired — build a new one"), { status: 409 });
+      const ex = new Set((body.exclude || []).map(([sv, k]) => `${sv}|${k}`));
+      const rows = pl.rows.filter(r => !ex.has(`${r.server}|${r.key}`));
+      const j = newJob("update-apply", `${rows.length} changed`, rows.map(r => ({ server: r.server, key: r.key, item: r.to_jar, action: "update", outcome: "changed", detail: `${r.from_jar} → ${r.to_jar}` })));
+      j.restart_servers = [...new Set(rows.map(r => r.server))];
+      j.restart_servers.forEach(sv => pendingRestart.add(sv));
+      return delay({ job_id: j.id });
+    }
     if (p === "/updates/check") return delay({ job_id: newJob("update-check", "Checking for updates…").id });
     if (p === "/updates/apply") {
       const items = body.items === "all" ? updates().map(u => ({ key: u.key, servers: u.servers })) : body.items;
@@ -297,6 +348,8 @@ export async function handle(method, path, body) {
       return delay({ job_id: j.id });
     }
     if (p === "/deploy") {
+      if (!plans[body.plan_id]?.deploy) throw Object.assign(new Error("plan expired — preview again"), { status: 409 });
+      body = plans[body.plan_id].deploy;
       const pl = plan(body);
       const j = newJob("deploy", `${pl.summary.changed} changed, ${pl.summary.unchanged} unchanged`,
         pl.results.map(r => ({ ...r, detail: r.detail.replace(/^would /, "") })));
@@ -312,7 +365,7 @@ export async function handle(method, path, body) {
     if ((m = p.match(/^\/plugins\/([^/]+)\/pin$/))) { const k = decodeURIComponent(m[1]); body.version ? settings.pins[k] = body.version : delete settings.pins[k]; return delay(settings); }
     if ((m = p.match(/^\/plugins\/([^/]+)\/ignore$/))) { const k = decodeURIComponent(m[1]); settings.ignores = body.ignored ? [...new Set([...settings.ignores, k])] : settings.ignores.filter(x => x !== k); return delay(settings); }
     if ((m = p.match(/^\/plugins\/([^/]+)\/remove$/))) return delay({ job_id: newJob("remove", `Remove ${decodeURIComponent(m[1])}`, (body.servers || []).map(sv => ({ server: sv, item: decodeURIComponent(m[1]), action: "delete", outcome: "changed", detail: "removed" }))).id });
-    if ((m = p.match(/^\/servers\/([^/]+)\/restarted$/))) return delay({ ok: true });
+    if ((m = p.match(/^\/servers\/([^/]+)\/restarted$/))) { pendingRestart.delete(decodeURIComponent(m[1])); return delay({ ok: true }); }
     if ((m = p.match(/^\/jobs\/([^/]+)\/undo$/))) return delay({ job_id: newJob("undo", `Undo ${m[1]}`).id });
   }
   const e = new Error(`Fixture: no handler for ${method} ${path}`); e.status = 404; throw e;

@@ -1,7 +1,7 @@
 // Settings — datastore, default source, server groups, update source mapping, auto-update policy.
 import { html, useState, useEffect, useMemo } from "../lib.js";
 import { useQuery, invalidate, toast, confirmDialog } from "../store.js";
-import { put } from "../api.js";
+import { put, post } from "../api.js";
 import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
 import { Policy } from "./updates.js";
 import { plural } from "../fmt.js";
@@ -22,7 +22,7 @@ export function Settings({ tab }) {
     setSaving(true);
     // Only send the editable sections that changed; the server merges them.
     const body = {};
-    for (const k of ["groups", "default_source", "pins", "ignores", "source_map"]) if (JSON.stringify(draft[k]) !== JSON.stringify(q.data[k])) body[k] = draft[k];
+    for (const k of ["groups", "default_source", "source_map"]) if (JSON.stringify(draft[k]) !== JSON.stringify(q.data[k])) body[k] = draft[k];
     if (body.groups) body.groups = Object.fromEntries(Object.entries(body.groups).filter(([g]) => !(draft.builtin_groups || []).includes(g)));
     try { await put("/settings", body); toast({ kind: "ok", title: "Settings saved" }); invalidate("/settings", "/overview", "/servers", "/matrix", "/updates"); }
     catch (e) { toast({ kind: "err", title: "Couldn't save settings", body: e.message }); }
@@ -51,7 +51,8 @@ export function Settings({ tab }) {
 function General({ d, set, servers }) {
   return html`
     <div class="field-row"><div class="field-label">Datastore base<small>Where AMP instances live. Each instance's <span class="mono">Minecraft/plugins</span> is managed.</small></div>
-      <div class="stack" style="gap:6px"><div class="readonly"><${Icon} n="folder-open" cls="i-sm" />${d.base || "Configured on the server"}</div>
+      <div class="stack" style="gap:6px"><div class="readonly"><${Icon} n="folder-open" cls="i-sm" /><span class="path-scroll">${d.base || "Configured on the server"}</span>
+        ${d.base && html`<${Btn} size="sm" kind="ghost" icon="copy" aria-label="Copy datastore path" onClick=${() => { navigator.clipboard?.writeText(d.base); toast({ kind: "ok", title: "Path copied" }); }} />`}</div>
         ${(d.base_overridden || d.base_readonly) && html`<span class="small muted row" style="gap:6px">${d.base_overridden && html`<${Tag} kind="warn">override<//>`}Set by the server environment — read-only here.</span>`}</div></div>
     <div class="field-row"><label class="field-label" for="def-src">Default source<small>Pre-selected in Deploy. Usually the staging server.</small></label>
       <div><select id="def-src" class="select" style="max-width:320px" value=${d.default_source || ""} onChange=${e => set({ ...d, default_source: e.currentTarget.value })}>
@@ -98,12 +99,20 @@ function Sources({ d, set }) {
   }, [mx.data, filter]);
   const sm = d.source_map || {};
   const setMap = (key, v) => { const n = { ...sm }; if (!v.kind && !v.id) delete n[key]; else n[key] = v; set({ ...d, source_map: n }); };
-  const unpin = (k) => { const p = { ...d.pins }; delete p[k]; set({ ...d, pins: p }); };
+  // Pins and ignores are released immediately through their endpoints (network-wide).
+  const release = async (kind, k) => {
+    try {
+      await post(`/plugins/${encodeURIComponent(k)}/${kind}`, kind === "pin" ? { version: null, servers: "*" } : { ignored: false, servers: "*" });
+      toast({ kind: "ok", title: kind === "pin" ? `Unpinned ${k}` : `Tracking ${k} again` });
+      invalidate("/settings", "/servers", "/matrix", "/updates", "/overview");
+    } catch (e) { toast({ kind: "err", title: "Couldn't update", body: e.message }); }
+  };
+  const where = (h) => h?.servers === "*" ? "all servers" : plural(h?.servers?.length || 0, "server");
   return html`<div class="stack">
     <p class="small muted">Plugins are matched on Modrinth by file hash automatically. For anything shown as <b>untracked</b>, map it to a Modrinth slug, Hangar <span class="mono">owner/slug</span>, Spiget resource id, or GitHub <span class="mono">owner/repo</span>.</p>
-    ${(Object.keys(d.pins || {}).length > 0 || (d.ignores || []).length > 0) && html`<div class="row wrap" style="gap:6px">
-      ${Object.entries(d.pins || {}).map(([k, v]) => html`<span class="pick-chip"><${Icon} n="pin" cls="i-xs" /><span>${k} @ ${v}</span><button type="button" aria-label=${`Unpin ${k}`} onClick=${() => unpin(k)}><${Icon} n="x" cls="i-xs" /></button></span>`)}
-      ${(d.ignores || []).map(k => html`<span class="pick-chip"><${Icon} n="eye-off" cls="i-xs" /><span>${k}</span><button type="button" aria-label=${`Stop ignoring ${k}`} onClick=${() => set({ ...d, ignores: d.ignores.filter(x => x !== k) })}><${Icon} n="x" cls="i-xs" /></button></span>`)}
+    ${(Object.keys(d.pins || {}).length > 0 || Object.keys(d.ignores || {}).length > 0) && html`<div class="field-label">Held plugins</div><div class="row wrap" style="gap:6px">
+      ${Object.entries(d.pins || {}).map(([k, h]) => html`<span class="pick-chip"><${Icon} n="pin" cls="i-xs" /><span>${k} @ ${h.version} · ${where(h)}</span><button type="button" aria-label=${`Unpin ${k} everywhere`} onClick=${() => release("pin", k)}><${Icon} n="x" cls="i-xs" /></button></span>`)}
+      ${Object.entries(d.ignores || {}).map(([k, h]) => html`<span class="pick-chip"><${Icon} n="eye-off" cls="i-xs" /><span>${k} ignored · ${where(h)}</span><button type="button" aria-label=${`Stop ignoring ${k} everywhere`} onClick=${() => release("ignore", k)}><${Icon} n="x" cls="i-xs" /></button></span>`)}
     </div>`}
     <div class="input-wrap" style="max-width:300px"><${Icon} n="search" cls="i-sm" /><input class="input" type="search" placeholder="Filter plugins" aria-label="Filter plugins" value=${filter} onInput=${e => setFilter(e.currentTarget.value)} /></div>
     ${mx.error ? html`<${ErrorState} error=${mx.error} retry=${mx.reload} />` : mx.loading ? html`<${SkelRows} n=${6} />` : html`<div class="panel tbl-wrap" style="max-height:520px">

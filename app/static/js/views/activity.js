@@ -2,25 +2,33 @@
 import { html, useState, useMemo, useEffect } from "../lib.js";
 import { useQuery, useStore, confirmDialog } from "../store.js";
 import { post } from "../api.js";
-import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive } from "../jobs.js";
+import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary } from "../jobs.js";
 import { navigate } from "../router.js";
 import { LogView } from "../components/overlays.js";
 import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
 import { relTime, absTime, duration, plural } from "../fmt.js";
 
 const KINDS = [["all", "All"], ["update-apply", "Updates"], ["deploy", "Deploys"], ["remove", "Removals"], ["update-check", "Checks"], ["undo", "Undos"]];
-const STATUS_TAG = { done: ["ok", "Done"], failed: ["danger", "Failed"], interrupted: ["danger", "Interrupted"], running: ["accent", "Running"], queued: ["", "Queued"] };
+const STATUS_TAG = { done: ["ok", "Done"], failed: ["danger", "Failed"], interrupted: ["danger", "Interrupted"], running: ["accent", "Running"], queued: ["", "Queued"], undone: ["", "Reverted"] };
+const reverted = (j) => j.status === "undone" || !!j.undone_by;
+const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const OUTCOME_TAG = { changed: "ok", error: "danger", skipped: "", unchanged: "" };
 
 export function Activity({ id }) {
   const q = useQuery("/jobs");
   const [kind, setKind] = useState("all");
-  const list = useMemo(() => (q.data || []).filter(j => kind === "all" || j.kind === kind), [q.data, kind]);
+  const [hideDry, setHideDry] = useState(() => pref("amp.act.hidedry", "1") === "1");
+  const setHD = (v) => { setHideDry(v); try { localStorage.setItem("amp.act.hidedry", v ? "1" : "0"); } catch {} };
+  const base = useMemo(() => (q.data || []).filter(j => !hideDry || !j.dry_run), [q.data, hideDry]);
+  const list = useMemo(() => base.filter(j => kind === "all" || j.kind === kind), [base, kind]);
+  const count = (k) => k === "all" ? base.length : base.filter(j => j.kind === k).length;
   const selected = id || null;
 
   return html`<${PageHead} title="Activity" sub="Every update, deploy and undo — who ran it, what changed, and the full log." />
     <div class="toolbar"><div class="seg" role="group" aria-label="Filter by kind">
-      ${KINDS.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}</button>`)}</div></div>
+      ${KINDS.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}</div>
+      <span class="spacer"></span>
+      <label class="switch small"><input type="checkbox" checked=${hideDry} onChange=${e => setHD(e.currentTarget.checked)} />Hide dry runs</label></div>
     <div class=${"act-layout" + (selected ? " has-detail" : "")}>
       <section class="panel job-list-panel" aria-label="Job history">
         ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
@@ -28,9 +36,9 @@ export function Activity({ id }) {
           : !list.length ? html`<${Empty} icon="history" title=${kind === "all" ? "No activity yet" : "Nothing of this kind"}>Jobs appear here as soon as someone checks for updates, deploys, or undoes a change.<//>`
           : html`<div class="job-list" role="list">${list.map(j => html`<a class="job-row" role="listitem" href=${`#/activity/${j.id}`} aria-current=${selected === j.id ? "true" : undefined}>
               <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
-              <div style="min-width:0"><div class="t">${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? html` <span class="tag" style="vertical-align:1px">dry run</span>` : ""}${j.undone_by ? html` <span class="tag" style="vertical-align:1px">undone</span>` : ""}</div>
-                <div class="m"><span class="ellipsis">${j.summary || (isActive(j.status) ? "In progress…" : "—")}</span></div>
-                <div class="m"><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`·<span>${plural(j.servers.length, "server")}</span>` : ""}${j.status !== "done" ? html`·<span class=${jobTone(j) === "danger" ? "outcome-error" : ""}>${j.status}</span>` : ""}</div></div>
+              <div style="min-width:0"><div class=${"t" + (reverted(j) ? " is-reverted" : "")}>${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? html` <span class="tag" style="vertical-align:1px">dry run</span>` : ""}${reverted(j) ? html` <span class="tag" style="vertical-align:1px">Reverted</span>` : ""}</div>
+                <div class="m"><span class="ellipsis">${jobSummary(j) || (isActive(j.status) ? "In progress…" : "—")}</span></div>
+                <div class="m"><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`·<span>${plural(j.servers.length, "server")}</span>` : ""}${!["done", "undone"].includes(j.status) ? html`·<span class=${jobTone(j) === "danger" ? "outcome-error" : ""}>${j.status}</span>` : ""}</div></div>
               <span class="when" title=${absTime(j.started || j.created)}>${relTime(j.started || j.created)}</span>
             </a>`)}</div>`}
       </section>
@@ -48,7 +56,7 @@ function JobDetail({ id }) {
   if (q.loading) return html`<div class="panel"><div class="panel-body stack"><${Skel} w="60%" h=${16} /><${Skel} w="40%" /><${Skel} w="50%" /><${Skel} h=${120} /></div></div>`;
   const j = q.data;
   if (!j) return html`<div class="panel"><${Empty} icon="scroll-text" title="Job not found">It may have been pruned from history.<//></div>`;
-  const [tk, tl] = STATUS_TAG[j.status] || ["", j.status];
+  const [tk, tl] = reverted(j) ? STATUS_TAG.undone : STATUS_TAG[j.status] || ["", j.status];
   const res = j.results || [];
   const tally = res.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {});
   const servers = [...new Set(res.map(r => r.server))];
@@ -69,16 +77,18 @@ function JobDetail({ id }) {
     if (r?.id) navigate(`#/activity/${r.id}`);
   };
 
-  return html`<article class="panel" aria-labelledby="jd-h">
+  return html`<article class=${"panel" + (reverted(j) ? " is-reverted" : "")} aria-labelledby="jd-h">
+    ${reverted(j) && html`<div class="reverted-banner" role="status"><${Icon} n="undo-2" cls="i-sm" /><span>Reverted${j.undone_at ? ` ${relTime(j.undone_at)}` : ""} — the changes below were rolled back.</span>
+      ${j.undone_by && html`<a class="link" href=${`#/activity/${j.undone_by}`}>View undo job</a>`}</div>`}
     <div class="panel-head" style="flex-wrap:wrap">
       <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${KIND_ICON[j.kind] || "terminal"} cls="i-xs" /></span>
-      <h2 id="jd-h" class="grow" style="min-width:160px">${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? " · dry run" : ""}<span class="sub" style="display:block;font-weight:400;margin-top:1px">${j.summary || (running ? "In progress…" : "")}</span></h2>
+      <h2 id="jd-h" class="grow" style="min-width:160px">${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? " · dry run" : ""}<span class="sub" style="display:block;font-weight:400;margin-top:1px">${jobSummary(j) || (running ? "In progress…" : "")}</span></h2>
       ${canUndo && html`<${Btn} size="sm" icon="undo-2" busy=${busy} onClick=${undo}>Undo<//>`}
     </div>
     <div class="panel-body">
       <dl class="kv">
         <dt>Status</dt><dd><${Tag} kind=${tk}>${tl}<//></dd>
-        <dt>Job</dt><dd class="mono small">${j.id} · ${JOB_TITLES[j.kind] || j.kind}</dd>
+        <dt>Job</dt><dd class="row" style="gap:6px"><span class="mono small">${j.id}</span><${Btn} size="sm" kind="ghost" icon="copy" aria-label="Copy job id" onClick=${() => navigator.clipboard?.writeText(j.id)} /></dd>
         <dt>Run by</dt><dd>${j.user || "system"}</dd>
         <dt>Started</dt><dd>${absTime(j.started || j.created)} <span class="muted">(${relTime(j.started || j.created)})</span></dd>
         ${j.undo_of && html`<dt>Undo of</dt><dd><a class="link mono small" href=${`#/activity/${j.undo_of}`}>${j.undo_of}</a></dd>`}

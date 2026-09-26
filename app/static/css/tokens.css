@@ -14,7 +14,7 @@
   /* type */
   --font-sans: "Inter Var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-  --fs-2xs: 10.5px;
+  --fs-2xs: 11px;
   --fs-xs: 11.5px;
   --fs-sm: 12.5px;
   --fs-md: 13.5px;
@@ -55,7 +55,7 @@
   --line-strong: #33363e;
   --fg: #e9eaee;
   --fg-2: #b3b6bf;
-  --fg-3: #80848f;
+  --fg-3: #8b8f9a;
   --fg-4: #5b5f69;
 
   --accent: #ff7a3d;          /* ember — the one accent */
@@ -94,20 +94,20 @@
   --line-strong: #d3d3ce;
   --fg: #16171a;
   --fg-2: #464a52;
-  --fg-3: #6c707a;
+  --fg-3: #5f636c;
   --fg-4: #9a9ea6;
 
-  --accent: #e0551a;
-  --accent-hover: #c94a13;
+  --accent: #b53c0b;
+  --accent-hover: #a8380a;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(224, 85, 26, .1);
-  --accent-line: rgba(224, 85, 26, .35);
+  --accent-soft: rgba(194, 65, 12, .09);
+  --accent-line: rgba(194, 65, 12, .35);
 
-  --ok: #13894a;       --ok-soft: rgba(19, 137, 74, .1);        --ok-line: rgba(19, 137, 74, .3);
-  --update: #1f6fe0;   --update-soft: rgba(31, 111, 224, .09);  --update-line: rgba(31, 111, 224, .32);
-  --drift: #8a3fdc;    --drift-soft: rgba(138, 63, 220, .09);   --drift-line: rgba(138, 63, 220, .32);
-  --warn: #a66b00;     --warn-soft: rgba(196, 132, 0, .12);     --warn-line: rgba(196, 132, 0, .35);
-  --danger: #d52b2b;   --danger-soft: rgba(213, 43, 43, .08);   --danger-line: rgba(213, 43, 43, .32);
+  --ok: #0f7a41;       --ok-soft: rgba(19, 137, 74, .1);        --ok-line: rgba(19, 137, 74, .3);
+  --update: #1a5fc4;   --update-soft: rgba(31, 111, 224, .09);  --update-line: rgba(31, 111, 224, .32);
+  --drift: #7e36cc;    --drift-soft: rgba(138, 63, 220, .09);   --drift-line: rgba(138, 63, 220, .32);
+  --warn: #8f5c00;     --warn-soft: rgba(196, 132, 0, .12);     --warn-line: rgba(196, 132, 0, .35);
+  --danger: #c02424;   --danger-soft: rgba(213, 43, 43, .08);   --danger-line: rgba(213, 43, 43, .32);
   --muted: #6c707a;    --muted-soft: rgba(108, 112, 122, .1);   --muted-line: rgba(108, 112, 122, .28);
 
   --shadow-1: 0 1px 2px rgba(16, 18, 24, .06);
