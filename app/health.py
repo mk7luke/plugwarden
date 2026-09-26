@@ -48,6 +48,8 @@ _BANNER = re.compile(r"discord\.gg/|discord(?:app)?\.com/invite|github\.com/|pat
 _NAG = re.compile(r"\bnew(?:er)? (?:plugin )?(?:version|release|update)|\bupdate (?:for .+ )?(?:is )?available|"
                   r"\bupdates? available|\b(?:is|seems to be|are|you're) (?:running an )?out(?:dated| of date)|"
                   r"\bplease update\b|\bnewest version\b", re.I)
+# A library logging through slf4j-simple to stderr: the server logs it as WARN, but it carries its own level.
+_EMBEDDED = re.compile(r"^\d+ \[[^\]]*\] (TRACE|DEBUG|INFO|WARN|ERROR) \S+ - ")
 _GZ_NAME = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(\d+)\.log\.gz$")
 _PLAYER_LINES = [re.compile(r"UUID of player (\w{3,16})"), re.compile(r"\b(\w{3,16})\[/[\d.:]+\] logged in"),
                  re.compile(r"\b(\w{3,16}) (?:joined|left) the game"),
@@ -224,11 +226,18 @@ def _message(line: str) -> str:
     return _MSG.sub("", line, count=1)
 
 
+def _title(line: str) -> str:
+    """The message of a log line, without the embedded "12 [thread] LEVEL logger - " prefix."""
+    return _EMBEDDED.sub("", _message(line), count=1)
+
+
 def _noise(line: str) -> bool:
-    """Banner decoration (no letters or digits once the [tags] are gone) or a support/discord/GitHub link."""
+    """Banner decoration (no letters or digits once the [tags] are gone), a support/discord/GitHub link, or
+    an INFO/DEBUG line that a library printed to stderr (logged as WARN by the server)."""
     msg = _message(line)
     rest = _TAGS.sub("", msg)
-    return not _ALNUM.search(rest) or bool(_BANNER.search(msg))
+    emb = _EMBEDDED.match(msg)
+    return not _ALNUM.search(rest) or bool(_BANNER.search(msg)) or bool(emb and emb.group(1) not in ("WARN", "ERROR"))
 
 
 def _groups(lines: list[tuple], warnings: bool = False) -> list[dict]:
@@ -352,9 +361,9 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
             if not m.references(head, block):
                 continue
             item = {"signature": signature(head, players), "level": level,
-                    "title": scrub_value(_message(head))[:300], "group_size": g["size"],
+                    "title": scrub_value(_title(head))[:300], "group_size": g["size"],
                     **_hit(run, lines, i, min(g["end"] - i, 8))}
-            if _NAG.search(_message(head)):
+            if _NAG.search(_title(head)):
                 notices.append(item)  # "a new version is available": not a problem, listed separately
             elif start and t and t - start > GRACE_SECONDS:
                 if level == "error":

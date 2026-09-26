@@ -628,3 +628,21 @@ def test_failure_also_with_old_version_is_preexisting_but_still_holds_the_canary
     c = st["canary"]["bukkit:coreprotect|24.1"]
     assert c["health"]["status"] == "failed" and c["health"]["preexisting"] is True
     assert "bukkit:coreprotect|24.1" in st["held"]  # never "healthy": the updated plugin does not run
+
+
+def test_library_stderr_lines_logged_as_warn(env):
+    """slf4j-simple output ("3 [Server thread] INFO logger - msg") logged at WARN: INFO is not an issue,
+    WARN/ERROR ones are titled without the embedded prefix."""
+    now = datetime.now() - timedelta(hours=1)
+    t = _at(now, 1)
+    w = "[" + t + "] [Server thread/WARN]: "
+    body = [L(T, "[PhoenixCratesLite] Enabling PhoenixCratesLite v1.0", t),
+            w + "3 [Server thread] INFO com.phoenixplugins.phoenixcrates.lib.hikari.HikariDataSource - CyberSQLitePool - Starting...",
+            w + "29 [Server thread] INFO com.phoenixplugins.phoenixcrates.lib.hikari.HikariDataSource - CyberSQLitePool - Start completed.",
+            L(T, "Loading menus...", t),
+            w + "41 [Server thread] WARN com.phoenixplugins.phoenixcrates.lib.hikari.pool.HikariPool - CyberSQLitePool - Connection is not available",
+            L(T, "Done (60s)!", _at(now, 2))]
+    srv, _ = _setup(env, body, when=now)
+    r = _check(srv, "PhoenixCratesLite", "1.0", "PhoenixCratesLite-1.0.jar", main="com.phoenixplugins.phoenixcrates.Main")
+    titles = [x["title"] for x in r["warnings"] + r["preexisting_errors"]]
+    assert titles == ["CyberSQLitePool - Connection is not available"]
