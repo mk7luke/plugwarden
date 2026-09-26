@@ -8,6 +8,7 @@ import json
 import os
 import re
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -353,29 +354,83 @@ def read_descriptors(path: Path) -> dict[str, dict]:
     return out
 
 
-def jar_meta(path: Path) -> dict:
-    """sha1 + descriptors, cached by (path, size, mtime_ns)."""
-    global _meta_dirty
+DESC_VERSION = 4  # bump when descriptor fields change: only descriptors are re-read, sha1 is kept
+_path_locks: dict[str, threading.Lock] = {}
+
+
+def _cached(path: Path) -> tuple[dict | None, str, dict | None]:
+    """(fresh cache entry or None, current content key, stale entry for the same content or None)."""
     st = path.stat()
-    ck = f"v4:{st.st_size}:{st.st_mtime_ns}"  # bump the prefix when descriptor fields change
+    ck = f"{st.st_size}:{st.st_mtime_ns}"
+    with _meta_lock:
+        cached = _load_cache().get(str(path))
+    if cached and cached.get("ck") == ck and cached.get("dv") == DESC_VERSION:
+        return cached, ck, None
+    return None, ck, cached if cached and cached.get("ck") == ck else None
+
+
+def jar_meta(path: Path, cached_only: bool = False) -> dict | None:
+    """sha1 + descriptors, cached by (path, size, mtime_ns). With cached_only, never reads the jar:
+    returns None when it isn't indexed yet (read endpoints stay fast during a cold start)."""
+    global _meta_dirty
+    hit, ck, stale = _cached(path)
+    if hit or cached_only:
+        return hit
     key = str(path)
     with _meta_lock:
-        cached = _load_cache().get(key)
-        if cached and cached.get("ck") == ck:
-            return cached
-    sha1 = file_hash(path)
-    error = None
+        lock = _path_locks.setdefault(key, threading.Lock())
+    with lock:  # single-flight: concurrent callers wait for one hash instead of hashing again
+        hit, ck, stale = _cached(path)
+        if hit:
+            return hit
+        sha1 = stale["sha1"] if stale and stale.get("sha1") else file_hash(path)
+        error = None
+        try:
+            desc = read_descriptors(path)
+            valid = True
+        except Exception as e:  # noqa: BLE001 - one hostile jar must never break listings; cached below
+            desc, valid = {}, False
+            error = f"unreadable descriptor ({type(e).__name__})"
+        entry = {"ck": ck, "dv": DESC_VERSION, "sha1": sha1, "valid_zip": valid, "descriptors": desc,
+                 "error": error}
+        with _meta_lock:
+            _load_cache()[key] = entry
+            _meta_dirty = True
+        return entry
+
+
+# ---------------------------------------------------------------- background indexing
+
+INDEX = {"running": False, "done": 0, "total": 0, "started": None, "finished": None}
+
+
+def indexing_state() -> dict | None:
+    """{done, total} while the background indexer runs, else None."""
+    return {"done": INDEX["done"], "total": INDEX["total"]} if INDEX["running"] else None
+
+
+def index_all() -> None:
+    """Hash + read every jar once (at startup) so later requests only hit the cache."""
+    jars = []
+    for srv in discover():
+        if srv.family == "fabric" or not srv.plugins_dir.is_dir():
+            continue
+        jars += [p for p in srv.plugins_dir.iterdir()
+                 if p.name.lower().endswith(".jar") and p.is_file() and not p.is_symlink()]
+    todo = [p for p in jars if _cached(p)[0] is None]
+    INDEX.update(running=bool(todo), done=0, total=len(todo), started=time.time(), finished=None)
     try:
-        desc = read_descriptors(path)
-        valid = True
-    except Exception as e:  # noqa: BLE001 - one hostile jar must never break listings; cached below
-        desc, valid = {}, False
-        error = f"unreadable descriptor ({type(e).__name__})"
-    entry = {"ck": ck, "sha1": sha1, "valid_zip": valid, "descriptors": desc, "error": error}
-    with _meta_lock:
-        _load_cache()[key] = entry
-        _meta_dirty = True
-    return entry
+        for p in todo:
+            try:
+                jar_meta(p)
+            except OSError:
+                pass
+            INDEX["done"] += 1
+            if INDEX["done"] % 20 == 0:
+                flush_cache()
+    finally:
+        flush_cache()
+        INDEX.update(running=False, finished=time.time())
 
 
 def norm_name(name: str) -> str:
@@ -397,9 +452,14 @@ def plugin_key(family: str, name: str) -> str:
     return f"{family}:{norm_name(name) or 'unnamed'}"
 
 
-def describe_jar(path: Path, family: str) -> dict:
-    """Identity + version of a jar as seen by a server of the given family."""
-    meta = jar_meta(path)
+def describe_jar(path: Path, family: str, cached_only: bool = False) -> dict:
+    """Identity + version of a jar as seen by a server of the given family. With cached_only and a jar
+    not indexed yet, a provisional identity from the file name (indexing: True)."""
+    meta = jar_meta(path, cached_only=cached_only)
+    if meta is None:
+        name, version = guess_from_filename(path.name)
+        return {"key": plugin_key(family, name), "name": name, "version": version, "sha1": None,
+                "descriptor": None, "valid_zip": True, "foreign": False, "error": None, "indexing": True}
     descs = meta["descriptors"]
     desc = descs.get(family)
     if desc is not None:
@@ -420,8 +480,8 @@ def describe_jar(path: Path, family: str) -> dict:
     }
 
 
-def list_plugins(server: Server) -> list[dict]:
-    """All top-level *.jar files in a server's plugins dir, with metadata."""
+def list_plugins(server: Server, cached_only: bool = False) -> list[dict]:
+    """All top-level *.jar files in a server's plugins dir, with metadata. cached_only: see jar_meta."""
     pdir = server.plugins_dir
     if not pdir.is_dir() or server.family == "fabric":
         return []
@@ -432,7 +492,7 @@ def list_plugins(server: Server) -> list[dict]:
         if not (p.is_file() and not p.is_symlink() and p.name.lower().endswith(".jar")) or _bad_name(p.name):
             continue
         st = p.stat()
-        info = describe_jar(p, server.family)
+        info = describe_jar(p, server.family, cached_only=cached_only)
         desc = info["descriptor"] or {}
         folder = None
         for cand in (desc.get("name"), desc.get("id"), info["name"]):
@@ -454,6 +514,7 @@ def list_plugins(server: Server) -> list[dict]:
             "depends": desc.get("depends") or [],
             "valid": info["valid_zip"] and not info["foreign"],
             "descriptor_error": info["error"],
+            "indexing": bool(info.get("indexing")),
         })
     keys: dict[str, int] = {}
     for pl in out:

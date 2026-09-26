@@ -33,8 +33,8 @@ async def lifespan(_: FastAPI):
     config.ensure_dirs()
     jobs.recover_interrupted()
     scheduler.start()
-    # Warm the jar hash/metadata cache so the first page load is fast.
-    threading.Thread(target=snapshot, name="warm-cache", daemon=True).start()
+    # Index (hash + read) every jar in the background; read endpoints answer from the cache meanwhile.
+    threading.Thread(target=inventory.index_all, name="indexer", daemon=True).start()
     yield
     scheduler.stop()
     inventory.flush_cache()
@@ -140,11 +140,13 @@ def snapshot() -> dict:
     servers = inventory.discover()
     source = next((s for s in servers if s.id == st["default_source"]), None)
     plugins: dict[str, list[dict]] = {}
+    # While the startup indexer hashes jars, answer from the cache instead of hashing in the request.
+    cached_only = inventory.indexing_state() is not None
     per_key: dict[str, dict[str, str]] = {}  # key -> {server: version}
     pinned_at: dict[str, set[str]] = {}      # key -> servers where a pin applies
     for srv in servers:
         rows = []
-        for p in inventory.list_plugins(srv):
+        for p in inventory.list_plugins(srv, cached_only=cached_only):
             status, src, latest = updates.status_for(p, srv, st, cache)
             pin, ign = st["pins"].get(p["key"]), st["ignores"].get(p["key"])
             pub = updates.public_latest(latest)
@@ -272,6 +274,7 @@ def overview(request: Request):
         "user": user_of(request),
         "default_source": snap["settings"]["default_source"],
         "version": config.VERSION,
+        "indexing": inventory.indexing_state(),
     }
 
 
@@ -285,7 +288,7 @@ def servers_list():
 def server_detail(server_id: str):
     srv = inventory.get_server(server_id)
     snap = snapshot()
-    return {**server_view(srv, snap), "plugins": snap["plugins"][srv.id]}
+    return {**server_view(srv, snap), "plugins": snap["plugins"][srv.id], "indexing": inventory.indexing_state()}
 
 
 @app.get("/api/v2/servers/{server_id}/plugins")
@@ -352,6 +355,7 @@ def matrix():
             cell = row["cells"].get(src.id)
             row["source_version"] = cell["version"] if cell else None
     return {"servers": [s.id for s in snap["servers"]], "counts": snap["counts"], "drift_basis": DRIFT_BASIS,
+            "indexing": inventory.indexing_state(),
             "server_info": [server_view(s, snap) for s in snap["servers"]],
             "plugins": sorted(rows.values(), key=lambda r: (r["family"] != "bukkit", r["name"].lower()))}
 
@@ -362,6 +366,7 @@ def updates_list():
     for u in snap["pending"]:
         u["canary_health"] = scheduler.canary_health_for(u["key"], u["to_version"])
     return {"updates": snap["pending"], "counts": snap["counts"], "last_check": snap["cache"].get("checked_at"),
+            "indexing": inventory.indexing_state(),
             "check_summary": _check_summary(snap)}
 
 

@@ -374,8 +374,10 @@ def server_report(srv: Server, since: float | None) -> dict:
     ctx = context(runs, since)
     target, baseline = ctx["target"], ctx["baseline"]
     plugins = []
-    for p in inventory.list_plugins(srv):
-        desc = inventory.jar_meta(srv.plugins_dir / p["jar"])["descriptors"].get(srv.family)
+    cached_only = inventory.indexing_state() is not None
+    for p in inventory.list_plugins(srv, cached_only=cached_only):
+        meta = inventory.jar_meta(srv.plugins_dir / p["jar"], cached_only=cached_only)
+        desc = (meta or {}).get("descriptors", {}).get(srv.family)
         r = plugin_health(srv, runs, p, desc, since, _ctx=ctx)
         plugins.append({"key": p["key"], "name": p["name"], "jar": p["jar"], "version": p["version"], **r})
     order = {"failed": 0, "unknown": 1, "healthy": 2}
@@ -396,4 +398,5 @@ def server_report(srv: Server, since: float | None) -> dict:
             "restarted": bool(last_start and (since is None or last_start >= since)),
             "counts": {s: sum(1 for r in plugins if r["status"] == s) for s in ("healthy", "failed", "unknown")},
             "preexisting_errors": known,
+            "indexing": inventory.indexing_state(),
             "plugins": plugins}
