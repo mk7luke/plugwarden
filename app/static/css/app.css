@@ -955,3 +955,4 @@ body:has(.mx-bar) .toasts, body:has(.bulkbar) .toasts { bottom: 88px; }
 .startup .known { margin: 4px 0 0; background: transparent; }
 .known.is-failing { border-color: var(--danger-line); }
 .known.is-failing > .row > .i { color: var(--danger); }
+.log .l-hit { display: inline-block; min-width: 100%; background: var(--warn-soft); color: var(--fg); }

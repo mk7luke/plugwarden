@@ -22,9 +22,16 @@ export function HealthTag({ h }) {
   return html`<${Tag} kind=${k} icon=${i} title=${h?.reason || undefined}>${l}<//>`;
 }
 
-// Redacted log lines, collapsed by default.
-export const Excerpt = ({ text, label = "Log excerpt", open }) => lines(text) ? html`<details class="excerpt" open=${open}>
-  <summary>${label}</summary><pre class="log">${lines(text)}</pre></details>` : null;
+// Redacted log lines, collapsed by default; excerpt[hl] (the backend's match_index) is the matching line.
+export const Excerpt = ({ text, label = "Log excerpt", open, hl, log, line }) => {
+  if (!lines(text)) return null;
+  const ls = Array.isArray(text) ? text : String(text).split("\n");
+  return html`<details class="excerpt" open=${open}>
+    <summary>${label}${log && html`<span class="muted mono"> · ${log}${line ? `:${line}` : ""}</span>`}</summary>
+    <pre class="log">${ls.map((l, i) => html`<span class=${i === hl ? "l-hit" : ""}>${l + "\n"}</span>`)}</pre></details>`;
+};
+// The props an excerpt-bearing item passes to <Excerpt>.
+const ex = (e) => ({ text: e?.excerpt, hl: e?.match_index, log: e?.log, line: e?.line });
 
 const pname = (r) => r.name || (r.key || "").split(":").pop();
 
@@ -45,12 +52,12 @@ export function CanaryStatus({ au, compact }) {
       <span class="grow"><b>${pname(r)} ${r.version}</b> <span class="muted">on ${r.server}</span></span>
       <${HealthTag} h=${r.canary_health} />
       ${st === "healthy" && r.soak_hours_left > 0 && html`<span class="small muted">${Math.ceil(r.soak_hours_left)} h soak left</span>`}
-      ${st === "failed" && html`<div class="canary-ex"><${Excerpt} text=${r.canary_health?.excerpt} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
+      ${st === "failed" && html`<div class="canary-ex"><${Excerpt} ...${ex(r.canary_health)} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
     </li>`; })}</ul>`}
     ${held.length > 0 && html`<div class="field-label" style="margin-top:8px">Held — never auto-applied</div>
     <ul>${held.map(h => html`<li><span class="grow"><b>${pname(h)} ${h.version}</b> <span class="muted">failed on ${h.server} ${relTime(h.at)}</span></span>
       <${Tag} kind="danger" icon="circle-x">held<//>
-      <div class="canary-ex"><${Excerpt} text=${h.excerpt} label=${h.reason || "Log excerpt"} /></div></li>`)}</ul>`}
+      <div class="canary-ex"><${Excerpt} ...${ex(h)} label=${h.reason || "Log excerpt"} /></div></li>`)}</ul>`}
   </div>`;
 }
 
@@ -58,14 +65,14 @@ export function CanaryStatus({ au, compact }) {
 // errors that can't be judged yet because there's no earlier run to compare with.
 export function knownIssues(report) {
   if (!report) return [];
-  const first = (e) => (Array.isArray(e.excerpt) ? e.excerpt.find(l => /ERROR|SEVERE|WARN|Exception/i.test(l)) || e.excerpt[0] : e.excerpt) || "";
+  const first = (e) => (Array.isArray(e.excerpt) ? (e.match_index != null ? e.excerpt[e.match_index] : e.excerpt.find(l => /ERROR|SEVERE|WARN|Exception/i.test(l)) || e.excerpt[0]) : e.excerpt) || "";
   const brief = (l) => l.replace(/^\[[^\]]*\]\s*(\[[^\]]*\]:?\s*)*/, "").slice(0, 160);
   // Top-level list when the backend sends it; its `reason` is generic, so show the log line itself.
   const known = Array.isArray(report.preexisting_errors)
-    ? report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, seen_in_runs: e.seen_in_runs }))
-    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, seen_in_runs: e.seen_in_runs })));
+    ? report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs }))
+    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs })));
   // Errors that can't be judged yet (no earlier start to compare with) are only listed per plugin.
-  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ name: pname(p), reason: `${brief(first(e))} (no earlier start to compare)`, excerpt: e.excerpt })));
+  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ name: pname(p), reason: `${brief(first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
   return [...known, ...warn];
 }
 
@@ -80,7 +87,7 @@ export function KnownIssues({ issues, title = "Known issues on this server", sub
       <span class="small muted">${plural(issues.length, "warning")} ${sub}</span></div>
     <ul>${issues.map(i => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
       ${i.seen_in_runs > 1 && html`<span class="small muted"> · in the last ${i.seen_in_runs} starts</span>`}
-      <${Excerpt} text=${i.excerpt} /></li>`)}</ul>
+      <${Excerpt} ...${ex(i)} /></li>`)}</ul>
   </section>`;
 }
 
@@ -91,7 +98,7 @@ export function ServerKnownIssues({ server }) {
   return html`${failing.length > 0 && html`<section class="known is-failing" aria-label="Plugins failing at startup">
       <div class="row" style="gap:8px"><${Icon} n="circle-x" cls="i-sm" /><b class="small">${plural(failing.length, "plugin")} failed to start in the last run</b>
         <span class="small muted">${q.data.restarted_at ? `started ${relTime(q.data.restarted_at)}` : ""}</span></div>
-      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting ? " (on every start)" : ""}</span><${Excerpt} text=${p.excerpt} /></li>`)}</ul>
+      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting ? " (on every start)" : ""}</span><${Excerpt} ...${ex(p)} /></li>`)}</ul>
     </section>`}
     <${KnownIssues} issues=${knownIssues(q.data)} sub="that also appeared in earlier starts — informational, not failures" />`;
 }
@@ -126,7 +133,7 @@ export function StartupCheck({ server, since, auto }) {
     ${plugins.length > 0 && html`<ul class="startup-list">${plugins.map(p => html`<li><span class="grow">${pname(p)} ${p.version || ""}</span>
       <${HealthTag} h=${p} />${p.status === "failed" && p.preexisting && html`<${Tag} title="This failure also happened on earlier starts — not caused by this change">on every start<//>`}
       ${p.status === "healthy" && (p.preexisting_errors || []).length > 0 && html`<span class="small muted">known issues</span>`}
-      ${lines(p.excerpt) && p.status !== "healthy" && html`<div class="canary-ex"><${Excerpt} text=${p.excerpt} label=${p.reason || "Log excerpt"} /></div>`}</li>`)}</ul>`}
+      ${lines(p.excerpt) && p.status !== "healthy" && html`<div class="canary-ex"><${Excerpt} ...${ex(p)} label=${p.reason || "Log excerpt"} /></div>`}</li>`)}</ul>`}
     <${KnownIssues} issues=${knownIssues(st)} title="Known issues (already there before)" />
   </div>`;
 }
