@@ -198,3 +198,15 @@ def test_canary_gate_fails_on_self_disable(ads, env):
     h = st["canary"]["bukkit:voicechat|2.6.7"]["health"]
     assert h["status"] == "failed" and h["reason"].startswith("disabled itself after startup")
     assert "bukkit:voicechat|2.6.7" in st["held"]
+
+
+def test_real_ads_shapes():
+    # shapes observed on the real ADS (AMP 2.x): "d:hh:mm:ss" uptime, ISO timestamps, level in Source
+    st = amp.parse_status({"State": 20, "Uptime": "4:22:33:44", "Metrics": {
+        "CPU Usage": {"RawValue": 10, "MaxValue": 100}, "Memory Usage": {"RawValue": 6714, "MaxValue": 8192},
+        "Active Users": {"RawValue": 0, "MaxValue": 50}}, "Ports": []}, {})
+    assert st["uptime_seconds"] == 4 * 86400 + 22 * 3600 + 33 * 60 + 44 and st["memory_mb"] == 6714
+    assert amp._uptime_seconds("0:00:35:41") == 35 * 60 + 41 and amp._uptime_seconds("1.02:03:04") == 93784
+    line = amp.console_lines({"ConsoleEntries": [{"Contents": "Done (12.3s)! For help, type \"help\"", "Source": "INFO",
+                                                  "Timestamp": "2026-09-26T07:31:44.1634023Z", "Type": "Console"}]})[0]
+    assert line.endswith('INFO]: Done (12.3s)! For help, type "help"') and line.startswith("[")

@@ -7,6 +7,7 @@ import { checkUpdates, openUpdateAll } from "../actions.js";
 import { openChangeset, CompatChip } from "../components/changeset.js";
 import { updateCounts, checkLine, updatesOf, compatOf } from "../summary.js";
 import { CanaryStatus, HealthTag } from "../components/health.js";
+import { useAmpStatus } from "../components/amp.js";
 import { relTime, absTime, plural, safeUrl } from "../fmt.js";
 
 export function Updates() {
@@ -106,6 +107,7 @@ export function Policy({ au }) {
   const next = au?.next_run;
   const servers = (useQuery("/servers").data || []).filter(x => x.plugin_count > 0 && x.family !== "velocity").map(x => x.id);
   const q = useQuery("/settings");
+  const amp = useAmpStatus();
   const defSrc = q.data?.default_source;
   const [p, setP] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -188,6 +190,10 @@ export function Policy({ au }) {
                   ${[[1, "1 hour"], [2, "2 hours"], [6, "6 hours"], [12, "12 hours"], [24, "1 day"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
             </div>
             <p class="small muted">Automatic updates go to ${p.canary_server || defSrc || "the canary"} first. The rest follow only after ${p.canary_server || defSrc || "it"} restarts, its log shows each updated plugin enabling cleanly, and ${p.canary_soak_hours ?? 24} h pass. A plugin that fails to enable there is held back. Manual sources are only auto-applied when their mapping allows it.</p>
+            ${amp.on && !amp.readonly && html`<div class="stack" style="gap:8px">
+              <label class="switch"><input type="checkbox" checked=${!!p.auto_restart_canary} disabled=${p.mode !== "apply"} onChange=${e => setP({ ...p, auto_restart_canary: e.currentTarget.checked })} />Restart ${p.canary_server || defSrc || "the canary"} right after it updates, so its startup check runs straight away</label>
+              <label class="switch"><input type="checkbox" checked=${!!p.auto_restart_rest} disabled=${p.mode !== "apply"} onChange=${e => setP({ ...p, auto_restart_rest: e.currentTarget.checked })} />Roll-restart the other updated servers in the window, one at a time with in-game warnings</label>
+            </div>`}
           </fieldset>
           <${LastRun} au=${au} />
           <p class="small muted">Pinned and ignored plugins are always skipped. Manage them per server or in <a class="link" href="#/settings/sources">Settings → Update sources</a>.</p>

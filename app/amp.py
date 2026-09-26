@@ -205,7 +205,8 @@ def _metric(metrics: dict, name: str) -> dict:
 
 
 def _uptime_seconds(s: str | None) -> int | None:
-    m = re.fullmatch(r"(?:(\d+)\.)?(\d+):(\d+):(\d+)(?:\.\d+)?", str(s or ""))
+    # AMP 2.x sends "d:hh:mm:ss" (e.g. "4:22:33:44"); .NET TimeSpan style "d.hh:mm:ss" is accepted too
+    m = re.fullmatch(r"(?:(\d+)[.:])?(\d+):(\d+):(\d+)(?:\.\d+)?", str(s or ""))
     if not m:
         return None
     d, h, mi, se = (int(x or 0) for x in m.groups())
@@ -292,8 +293,28 @@ def redact_console(line: str) -> str:
     return scrub_value(out[0] if out else "")[:2000]
 
 
+def _entry_line(e: dict) -> str:
+    """AMP console entries carry the message in Contents, the level in Source and an ISO UTC Timestamp;
+    render them like a server log line: "[HH:MM:SS LEVEL]: message" (local time)."""
+    text = str(e.get("Contents", ""))
+    if text.startswith("["):
+        return text
+    ts = str(e.get("Timestamp") or "")
+    hhmmss = ""
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", ts).replace("Z", "+00:00"))
+        hhmmss = dt.astimezone().strftime("%H:%M:%S")
+    except ValueError:
+        m = re.search(r"/Date\((\d+)\)/", ts)
+        if m:
+            hhmmss = time.strftime("%H:%M:%S", time.localtime(int(m.group(1)) / 1000))
+    level = str(e.get("Source") or e.get("Type") or "").upper()
+    return f"[{hhmmss} {level}]: {text}".replace("[ ", "[").replace(" ]", "]")
+
+
 def console_lines(updates: dict) -> list[str]:
-    return [redact_console(str(e.get("Contents", ""))) for e in (updates or {}).get("ConsoleEntries") or []
+    return [redact_console(_entry_line(e)) for e in (updates or {}).get("ConsoleEntries") or []
             if isinstance(e, dict)]
 
 

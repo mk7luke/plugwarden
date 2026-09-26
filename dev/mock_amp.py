@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request  # module level: route annotations must resolve (future annotations)
@@ -61,9 +61,14 @@ class Instance:
         self.disable_after_done: str | None = None  # plugin that shuts itself down right after "Done ("
         self.commands: list[str] = []
 
-    def say(self, text: str, source: str = "Console") -> None:
-        self.console.append({"Timestamp": _ms(), "Source": source, "SourceId": "", "Type": "Console",
-                             "Contents": text})
+    def say(self, text: str, source: str = "INFO") -> None:
+        # Real AMP 2.x: message without the log prefix in Contents, level in Source, ISO UTC Timestamp.
+        m = re.match(r"^\[[^\]]*?(INFO|WARN|ERROR|SEVERE)\]:\s*(.*)$", text) or \
+            re.match(r"^\[[^\]]*\]\s*\[[^\]]*/(INFO|WARN|ERROR|SEVERE)\]:\s*(.*)$", text)
+        if m:
+            source, text = m.group(1), m.group(2)
+        self.console.append({"Timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                             "Source": source, "SourceId": "", "Type": "Console", "Contents": text})
         del self.console[:-2000]
 
 

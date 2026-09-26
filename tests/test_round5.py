@@ -451,8 +451,10 @@ def test_failed_undo_marked_real_flow_and_backfilled(env):
     for e in engine.Backup(job.id).entries:
         if e.get("store"):
             engine._remove(engine.Backup(job.id).store_path(e))
+    before = sorted(p.name for p in env["a"].iterdir())
     undo = jobs.wait(actions.start_undo("t", job.id), 30)
-    assert undo.status == "failed"
+    assert undo.status == "failed" and all(r["reason_code"] == "backup_missing" for r in undo.results)
+    assert sorted(p.name for p in env["a"].iterdir()) == before  # nothing half-undone
     d = jobs.get(job.id).to_dict()
     assert d["undo_failed_by"] == undo.id and d["status"] == "done"
     # a record from before the field existed gets backfilled at startup

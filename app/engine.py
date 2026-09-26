@@ -1123,6 +1123,13 @@ def run_undo(ctx: Ctx, original_job_id: str) -> None:
     if not src.entries:
         raise DeployError("that job has no backups to restore")
     known = inventory.servers_by_id()
+    # Preflight: if any saved copy is gone, change nothing (half an undo can leave a plugin with no jar).
+    missing = [e for e in src.entries if e["existed"] and e.get("store") and not _exists(src.store_path(e))]
+    if missing:
+        for e in missing:
+            ctx.result(e["server"], e["rel"], "restore", "error",
+                       "backup copy is missing; nothing was restored", reason_code="backup_missing")
+        return
     for e in reversed(src.entries):
         srv = known.get(e["server"])
         if srv is None:
