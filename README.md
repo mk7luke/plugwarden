@@ -120,6 +120,27 @@ PlugWarden never restarts servers. It tells you which ones need a restart, and y
 
 You'll need a Linux host running AMP and Docker with the Compose plugin. I also recommend putting it behind a Cloudflare Tunnel with Cloudflare Access, since that's how PlugWarden handles logins.
 
+### Quick setup
+
+Run this on the machine that runs AMP:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mk7luke/plugwarden/main/install.sh | sudo bash
+```
+
+It downloads PlugWarden to `/opt/plugwarden` and starts the setup script, which:
+
+- finds your AMP user and asks AMP where your instances live, so custom datastore locations work too
+- lists the Minecraft servers it found, including your proxy
+- asks whether you use Cloudflare Access or want local access only over SSH
+- writes `.env`, creates the data folder and starts the container
+
+If you want to see what it would do first, run `./setup.sh --dry-run` from `/opt/plugwarden`. It prints everything it found and the `.env` it would write, and changes nothing. You can run `./setup.sh` again later to change your answers. `./setup.sh --help` lists every option.
+
+### Manual setup
+
+If you'd rather do it by hand:
+
 ```bash
 git clone https://github.com/mk7luke/plugwarden.git /opt/plugwarden
 cd /opt/plugwarden
