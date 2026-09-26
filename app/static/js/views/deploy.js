@@ -68,6 +68,12 @@ export function Deploy({ query }) {
   const sv = servers.data || [];
   const srcObj = sv.find(x => x.id === source);
   const tgt = [...targets].filter(t => t !== source && sv.some(x => x.id === t && !ineligible(x, srcObj)));
+  // Drop ineligible targets (e.g. from a #/deploy?targets= link) once servers are known, so no chip shows as picked.
+  useEffect(() => {
+    if (!sv.length || !srcObj) return;
+    const keep = [...targets].filter(t => sv.some(x => x.id === t && x.id !== source && !ineligible(x, srcObj)));
+    if (keep.length !== targets.size) setTargets(new Set(keep));
+  }, [sv.length, source, [...targets].join(",")]);
   const body = useMemo(() => ({
     source, targets: tgt, action,
     items: { jars: items.jars, folders: items.folders, paths: items.paths, uploads: items.uploads.map(u => u.upload_id) },
@@ -427,7 +433,7 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
   };
   loadDiffRef.current = loadDiff;
   return html`<div class=${"plan-op-wrap" + (idKeys.length ? " has-identity" : "")}>
-    ${idKeys.length > 0 && !refused && r.outcome !== "skipped" && html`<div class="id-chip"><${Icon} n="triangle-alert" cls="i-xs" />${identity === "overwrite" ? "Overwrites" : identity ? "Keeps" : "Changes"} ${(() => { const all = idKeys.flatMap(w => w.keys.map(k => `${k.key}: ${midTrunc(String(k.target_value), 18)}`)); return all.slice(0, 3).join(", ") + (all.length > 3 ? ` +${all.length - 3} more` : ""); })()}</div>`}
+    ${idKeys.length > 0 && !refused && r.outcome !== "skipped" && html`<div class=${"id-chip" + (identity && identity !== "overwrite" ? " is-kept" : "")}><${Icon} n=${identity && identity !== "overwrite" ? "shield" : "triangle-alert"} cls="i-xs" />${identity === "overwrite" ? "Overwrites" : identity ? "Keeps" : "Changes"} ${(() => { const all = idKeys.flatMap(w => w.keys.map(k => `${k.key}: ${midTrunc(String(k.target_value), 18)}`)); return all.slice(0, 3).join(", ") + (all.length > 3 ? ` +${all.length - 3} more` : ""); })()}</div>`}
 
     <div class="plan-op"><${Icon} n=${i} cls=${"i-xs " + cl} />
       ${swap ? html`<div class="jar-swap">${(r.old_jars || []).map((j, k) => html`<span class="old">${j}${r.old_versions?.[k] ? ` (${r.old_versions[k]})` : ""}</span>`)}

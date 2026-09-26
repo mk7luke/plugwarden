@@ -35,7 +35,10 @@ function view(r) {
     case "plugins": return [html`<${Matrix} query=${r.query} />`, null, true];
     case "updates": return [html`<${Updates} />`];
     case "deploy": return [html`<${Deploy} query=${r.query} />`, null, true];
-    case "activity": return [html`<${Activity} id=${r.parts[1]} tab=${r.query.tab} />`, r.parts[1] ? [{ label: "Activity", href: "#/activity" }, { label: jobCrumb(r.parts[1]) }] : null];
+    case "activity":
+      // Old/guessable links to the audit tab redirect instead of being treated as a job id.
+      if (["access", "audit"].includes(r.parts[1])) { navigate("#/activity?tab=audit", { replace: true }); return [html``]; }
+      return [html`<${Activity} id=${r.parts[1]} tab=${r.query.tab} />`, r.parts[1] ? [{ label: "Activity", href: "#/activity" }, { label: jobCrumb(r.parts[1]) }] : null];
     case "settings": return [html`<${Settings} tab=${r.parts[1] || "general"} />`];
     default: return [html`<${Empty} icon="triangle-alert" title="Page not found" action=${html`<a class="btn" href="#/dashboard">Back to dashboard</a>`}>Nothing lives at <code>#/${r.parts.join("/")}</code>.<//>`, [{ label: "Not found" }]];
   }

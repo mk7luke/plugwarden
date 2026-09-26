@@ -7,6 +7,7 @@ import { get, post } from "../api.js";
 import { updatesOf, compatOf } from "../summary.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "./overlays.js";
+import { StartupCheck } from "./health.js";
 import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow } from "./ui.js";
 import { plural, bytes, safeUrl } from "../fmt.js";
 
@@ -133,13 +134,13 @@ function Changeset({ cs }) {
       ${applyErr && html`<div class="error-box" style="width:100%;padding:10px 12px" role="alert"><${Icon} n="triangle-alert" />
         <div class="grow"><b>${applyErr.status === 409 ? "This plan is out of date" : "Couldn't apply"}</b><p>${applyErr.message}</p>
           ${applyErr.conflicts?.length > 0 && html`<ul class="small" style="margin:-4px 0 8px">${applyErr.conflicts.map(c => html`<li>${c.server} · ${c.from_jar || c.key}: ${c.reason}</li>`)}</ul>`}
-          <${Btn} size="sm" icon="refresh-cw" onClick=${() => setN(n + 1)}>Re-plan<//></div></div>`}
+          <${Btn} size="sm" kind=${applyErr.status === 409 ? "primary" : ""} icon="refresh-cw" onClick=${() => setN(n + 1)}>Re-plan<//></div></div>`}
       <div class="grow small">${plan && rows.length ? html`<b>${plural(tot.changes, "change")}</b><span class="muted"> · ${plural(tot.plugins, "plugin")} · ${plural(tot.servers, "server")}${tot.bytes ? ` · ${bytes(tot.bytes)} download` : ""}</span>
         <div class=${"cs-status " + (tot.compatWarn || tot.unverified ? "" : "cs-allok")}>${tot.compatWarn || tot.unverified
           ? html`<span style="color:var(--warn)">${[tot.compatWarn && `${plural(tot.compatWarn, "change")} not listed for its server's MC version`, tot.unverified && `${tot.unverified} without a verified hash`].filter(Boolean).join(" · ")}</span>`
           : html`<${Icon} n="check" cls="i-xs" />All compatible · all hashes verified`}</div>` : ""}</div>
       <${Btn} onClick=${close}>Cancel<//>
-      <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!plan || !tot.changes} onClick=${apply} data-autofocus>Apply ${plural(tot.changes, "change")}<//>
+      <${Btn} kind=${applyErr?.status === 409 ? "" : "primary"} icon="circle-arrow-up" disabled=${!plan || !tot.changes || applyErr?.status === 409} title=${applyErr?.status === 409 ? "Re-plan first — this plan is out of date" : undefined} onClick=${apply} data-autofocus>Apply ${plural(tot.changes, "change")}<//>
     </footer>`}
   </aside>`;
 }
@@ -224,7 +225,8 @@ function Result({ live, job, running, rows, onClose }) {
         <ul>${restart.map(s => { const d = restarted.has(s); return html`<li class=${d ? "is-done" : ""}>
           <span class="tick">${d ? html`<${Icon} n="check" cls="i-xs" />` : ""}</span><b>${s}</b>
           <span class="small muted grow">${res.filter(r => r.server === s && r.outcome === "changed").map(nameOf).join(", ")}</span>
-          ${d ? html`<span class="small muted">Marked restarted</span>` : html`<${Btn} size="sm" onClick=${() => mark(s)}>Mark restarted<//>`}</li>`; })}</ul>
+          ${d ? html`<span class="small muted">Marked restarted</span>` : html`<${Btn} size="sm" onClick=${() => mark(s)}>Mark restarted<//>`}
+          <div class="startup-slot"><${StartupCheck} server=${s} since=${job.finished} /></div></li>`; })}</ul>
       </section>`}
       ${res.length > 0 && html`<table class="tbl"><caption class="sr-only">Per-change results</caption><thead><tr><th scope="col">Server</th><th scope="col">Plugin</th><th scope="col">Outcome</th><th scope="col" class="hide-sm">Detail</th></tr></thead>
         <tbody>${res.map(r => html`<tr><td class="strong">${r.server}</td><td>${nameOf(r)}</td><td class=${"small outcome-" + r.outcome} style="font-weight:600">${r.outcome === "changed" ? "updated" : r.outcome}</td><td class="hide-sm small muted">${r.detail}</td></tr>`)}</tbody></table>`}

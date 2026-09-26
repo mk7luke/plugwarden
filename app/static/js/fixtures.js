@@ -303,7 +303,10 @@ export async function handle(method, path, body) {
       const u = updates();
       return delay({ servers: ss, totals: { servers: ss.length, plugins: m.plugins.length, updates: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, drift: [...driftKeys()].length },
         last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · 46 of 78 jars identified`,
-        restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), auto_update: { mode: settings.auto_update.mode, next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString() }, user: "luke@interactep.com" });
+        ...{},
+      restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), auto_update: { mode: "apply", next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString(), effective_canary: "elChapo01",
+          canary: [{ key: "bukkit:coreprotect", name: "CoreProtect", version: "23.4", server: "elChapo01", canary_health: "healthy", soak_hours_left: 9 },
+            { key: "bukkit:plugmanx", name: "PlugManX", version: "3.0.3", server: "elChapo01", canary_health: "failed", health_detail: { reason: "Error while enabling PlugManX v3.0.3", excerpt: "[12:04:11 ERROR]: Error occurred while enabling PlugManX v3.0.3 (Is it up to date?)\njava.lang.NoClassDefFoundError: com/…/PaperPluginManager" } }] }, user: "luke@interactep.com" });
     }
     if (p === "/servers") return delay(servers());
     if ((m = p.match(/^\/servers\/([^/]+)\/plugins$/))) {
@@ -323,6 +326,9 @@ export async function handle(method, path, body) {
     if (p === "/jobs") return delay(jobs.map(({ log, results, ...j }) => ({ ...j, servers: [...new Set(results.map(r => r.server))], counts: results.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {}) })));
     if ((m = p.match(/^\/jobs\/([^/]+)$/))) return delay(jobs.find(j => j.id === m[1]), 120);
     if (p === "/settings") return delay(settings);
+    if ((m = p.match(/^\/servers\/([^/]+)\/health$/))) return delay({ server: decodeURIComponent(m[1]), restarted: true, restarted_at: iso(20 * MIN), done: true,
+      plugins: [{ name: "CoreProtect", version: "24.1", status: "enabled" }, { name: "PlugManX", version: "3.2.1", status: "failed", excerpt: "[ERROR] Error occurred while enabling PlugManX v3.2.1 (Is it up to date?)\njava.lang.NoSuchMethodError: 'void org.bukkit…'" }],
+      errors: [] }, 400);
     if (p === "/access-log") return delay({ entries: [{ at: iso(3 * MIN), user: "luke@interactep.com", action: "diff", servers: ["elChapo01", "M1-hub01"], path: "LuckPerms/config.yml", detail: "2 value(s) redacted" }] });
   }
   if (method === "PUT" && p === "/settings") { Object.assign(settings, body); return delay(settings); }

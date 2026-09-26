@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config, engine, inventory, jobs, plans, settings, updates
+from . import config, engine, health, inventory, jobs, plans, settings, updates
 from .storage import read_json, write_json
 
 
@@ -57,12 +57,8 @@ def clear_pending(server_id: str) -> None:
 
 
 def _last_start(srv: inventory.Server) -> float:
-    """Best-effort server start time: newest rotated log (Minecraft gzips latest.log on startup)."""
-    logs = srv.root / "Minecraft" / "logs"
-    try:
-        return max((p.stat().st_mtime for p in logs.glob("*.log.gz")), default=0.0)
-    except OSError:
-        return 0.0
+    """When the server last started, from its log content (daily log rollover is not a restart)."""
+    return health.last_startup(srv)
 
 
 def pending_restart(srv: inventory.Server) -> bool:

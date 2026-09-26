@@ -6,6 +6,7 @@ import { Icon, Btn, Tag, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check,
 import { checkUpdates, openUpdateAll } from "../actions.js";
 import { openChangeset, CompatChip } from "../components/changeset.js";
 import { updateCounts, checkLine, updatesOf, compatOf } from "../summary.js";
+import { CanaryStatus } from "../components/health.js";
 import { relTime, absTime, plural, safeUrl } from "../fmt.js";
 
 export function Updates() {
@@ -77,11 +78,11 @@ function CompatSummary({ u, mcOf }) {
 function LastRun({ au }) {
   const ls = au?.last_selection;
   const canary = au?.canary || [];
-  if (!ls && !canary.length) return null;
+  if (!ls && !canary.length && !(au?.held || []).length) return null;
   const waiting = ls?.waiting || [];
   const reasons = [...waiting.reduce((m, w) => m.set(w.reason, (m.get(w.reason) || 0) + 1), new Map())];
   return html`<div class="last-run small">
-    ${canary.length > 0 && html`<p><b>Canary:</b> ${canary.map(c => `${c.key.split(":").pop()} ${c.version} on ${c.server}${c.soak_hours_left ? ` · ${Math.ceil(c.soak_hours_left)} h left` : ""}`).join("; ")}</p>`}
+    <${CanaryStatus} au=${au} />
     ${ls && html`<p><b>Last automatic run ${relTime(ls.at)}:</b> ${plural((ls.applied || []).length, "update")} applied${waiting.length ? `, ${waiting.length} waiting` : ""}.</p>`}
     ${reasons.length > 0 && html`<ul>${reasons.map(([r, n]) => html`<li>${n} × ${r}</li>`)}</ul>`}
   </div>`;
@@ -107,8 +108,20 @@ export function Policy({ au }) {
   const defSrc = q.data?.default_source;
   const [p, setP] = useState(null);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (q.data) setP({ ...q.data.auto_update }); }, [q.data]);
+  const [maxRaw, setMaxRaw] = useState("");        // text in the limit field, validated before it becomes a number
+  const [serverErr, setServerErr] = useState({});  // 422 field errors from the API, keyed by field name
+  useEffect(() => { if (q.data) { setP({ ...q.data.auto_update }); setMaxRaw(q.data.auto_update.max_changes_per_run ? String(q.data.auto_update.max_changes_per_run) : ""); setServerErr({}); } }, [q.data]);
   const dirty = p && q.data && JSON.stringify(p) !== JSON.stringify(q.data.auto_update);
+  // Client-side checks mirror the API: limit is a whole number 1–500 (or off = no limit); window is HH:MM-HH:MM.
+  const limitOn = p?.max_changes_per_run != null;
+  const errs = !p ? {} : {
+    max_changes_per_run: limitOn && !/^\d+$/.test(maxRaw) ? "Enter a whole number from 1 to 500"
+      : limitOn && (+maxRaw < 1 || +maxRaw > 500) ? "Enter a number from 1 to 500" : null,
+    window: p.window && !/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(p.window) ? "Use HH:MM-HH:MM, e.g. 04:00-06:00" : null,
+  };
+  const errOf = (k) => errs[k] || serverErr[k] || serverErr[`auto_update.${k}`];
+  const invalid = Object.values(errs).some(Boolean);
+  const FieldErr = ({ k }) => errOf(k) ? html`<span class="field-err" id=${`err-${k}`} role="alert">${errOf(k)}</span>` : null;
   const save = async () => {
     // Turning on automatic installs needs an explicit confirmation (the API requires confirm_apply).
     const enablingApply = p.mode === "apply" && q.data.auto_update.mode !== "apply";
@@ -120,9 +133,12 @@ export function Policy({ au }) {
       });
       if (!ok) return;
     }
-    setSaving(true);
-    try { await put("/settings", { auto_update: { ...p, window: p.window || null, max_changes_per_run: p.max_changes_per_run || null }, ...(enablingApply ? { confirm_apply: true } : {}) }); toast({ kind: "ok", title: "Auto-update policy saved" }); invalidate("/settings", "/overview"); }
-    catch (e) { toast({ kind: "err", title: "Couldn't save policy", body: e.message }); }
+    setSaving(true); setServerErr({});
+    try { await put("/settings", { auto_update: { ...p, window: p.window || null, max_changes_per_run: limitOn ? +maxRaw : null }, ...(enablingApply ? { confirm_apply: true } : {}) }); toast({ kind: "ok", title: "Auto-update policy saved" }); invalidate("/settings", "/overview"); }
+    catch (e) {
+      if (e.fields) setServerErr(e.fields);
+      else toast({ kind: "err", title: "Couldn't save policy", body: e.message });
+    }
     setSaving(false);
   };
   return html`<section class="panel" aria-labelledby="pol-h">
@@ -142,7 +158,8 @@ export function Policy({ au }) {
               <select id="au-int" class="select" disabled=${p.mode === "off"} value=${p.interval_hours} onChange=${e => setP({ ...p, interval_hours: +e.currentTarget.value })}>
                 ${[1, 3, 6, 12, 24, 48].map(h => html`<option value=${h}>${h === 1 ? "hour" : h < 24 ? `${h} hours` : h === 24 ? "day" : "2 days"}</option>`)}</select></div>
             <div class="field grow" style="min-width:120px"><label for="au-win">Apply window</label>
-              <input id="au-win" class="input mono" placeholder="04:00-06:00" disabled=${p.mode !== "apply"} value=${p.window || ""} onInput=${e => setP({ ...p, window: e.currentTarget.value })} /></div>
+              <input id="au-win" class=${"input mono" + (errOf("window") ? " is-invalid" : "")} placeholder="04:00-06:00" disabled=${p.mode !== "apply"} value=${p.window || ""}
+                aria-invalid=${errOf("window") ? "true" : undefined} aria-describedby=${errOf("window") ? "err-window" : undefined} onInput=${e => setP({ ...p, window: e.currentTarget.value })} /><${FieldErr} k="window" /></div>
           </div>
           <label class="switch"><input type="checkbox" checked=${!!p.dry_run_first} disabled=${p.mode !== "apply"} onChange=${e => setP({ ...p, dry_run_first: e.currentTarget.checked })} />Dry run first, apply only if it succeeds</label>
           <fieldset class="policy-safety" disabled=${p.mode === "off"}>
@@ -152,8 +169,14 @@ export function Policy({ au }) {
               <div class="field grow" style="min-width:130px"><label for="au-age">Minimum release age</label>
                 <select id="au-age" class="select" value=${p.min_release_age_hours ?? 0} onChange=${e => setP({ ...p, min_release_age_hours: +e.currentTarget.value })}>
                   ${[[0, "No minimum"], [12, "12 hours"], [24, "1 day"], [48, "2 days"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
-              <div class="field grow" style="min-width:130px"><label for="au-max">Max changes per run</label>
-                <input id="au-max" class="input" type="number" min="0" placeholder="No limit" value=${p.max_changes_per_run || ""} onInput=${e => setP({ ...p, max_changes_per_run: e.currentTarget.value ? +e.currentTarget.value : null })} /></div>
+              <div class="field grow" style="min-width:170px"><span class="field-label">Changes per run</span>
+                <div class="row" style="gap:8px">
+                  <label class="switch small"><input type="checkbox" checked=${limitOn} onChange=${e => { const on = e.currentTarget.checked; setP({ ...p, max_changes_per_run: on ? (+maxRaw || 20) : null }); if (on && !maxRaw) setMaxRaw("20"); }} />Limit</label>
+                  ${limitOn ? html`<input id="au-max" class=${"input" + (errOf("max_changes_per_run") ? " is-invalid" : "")} style="width:90px" inputmode="numeric" aria-label="Maximum changes per run (1–500)"
+                      aria-invalid=${errOf("max_changes_per_run") ? "true" : undefined} aria-describedby=${errOf("max_changes_per_run") ? "err-max_changes_per_run" : undefined}
+                      value=${maxRaw} onInput=${e => { const v = e.currentTarget.value.trim(); setMaxRaw(v); setP({ ...p, max_changes_per_run: /^\d+$/.test(v) ? +v : p.max_changes_per_run ?? 0 }); }} />`
+                    : html`<span class="small muted">No limit</span>`}
+                </div><${FieldErr} k="max_changes_per_run" /></div>
             </div>
             <div class="row wrap" style="gap:12px;align-items:flex-end">
               <div class="field grow" style="min-width:150px"><label for="au-can">Canary server</label>
@@ -163,13 +186,13 @@ export function Policy({ au }) {
                 <select id="au-soak" class="select" disabled=${p.mode !== "apply"} value=${p.canary_soak_hours ?? 24} onChange=${e => setP({ ...p, canary_soak_hours: +e.currentTarget.value })}>
                   ${[[1, "1 hour"], [2, "2 hours"], [6, "6 hours"], [12, "12 hours"], [24, "1 day"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
             </div>
-            <p class="small muted">Automatic updates go to ${p.canary_server || defSrc || "the canary"} first; the rest follow after ${p.canary_soak_hours ?? 24} h if it stays healthy. Manual sources are only auto-applied when their mapping allows it.</p>
+            <p class="small muted">Automatic updates go to ${p.canary_server || defSrc || "the canary"} first. The rest follow only after ${p.canary_server || defSrc || "it"} restarts, its log shows each updated plugin enabling cleanly, and ${p.canary_soak_hours ?? 24} h pass. A plugin that fails to enable there is held back. Manual sources are only auto-applied when their mapping allows it.</p>
           </fieldset>
           <${LastRun} au=${au} />
           <p class="small muted">Pinned and ignored plugins are always skipped. Manage them per server or in <a class="link" href="#/settings/sources">Settings → Update sources</a>.</p>
         </div>`}
     </div>
-    ${p && html`<div class="panel-foot"><span class="small muted grow">${dirty ? "Unsaved changes" : "Saved"}</span>
-      <${Btn} disabled=${!dirty} onClick=${() => setP({ ...q.data.auto_update })}>Reset<//><${Btn} kind="primary" busy=${saving} disabled=${!dirty} onClick=${save}>Save policy<//></div>`}
+    ${p && html`<div class="panel-foot"><span class=${"small grow " + (invalid ? "" : "muted")} style=${invalid ? "color:var(--danger)" : ""}>${invalid ? "Fix the highlighted field to save" : dirty ? "Unsaved changes" : "Saved"}</span>
+      <${Btn} disabled=${!dirty} onClick=${() => { setP({ ...q.data.auto_update }); setMaxRaw(q.data.auto_update.max_changes_per_run ? String(q.data.auto_update.max_changes_per_run) : ""); setServerErr({}); }}>Reset<//><${Btn} kind="primary" busy=${saving} disabled=${!dirty || invalid} onClick=${save}>Save policy<//></div>`}
   </section>`;
 }

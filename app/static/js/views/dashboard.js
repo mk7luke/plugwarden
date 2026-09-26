@@ -7,6 +7,7 @@ import { checkUpdates } from "../actions.js";
 import { relTime, plural } from "../fmt.js";
 import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { updateCounts, updateHeadline, updateDetail, restartList, checkLine, updatesOf } from "../summary.js";
+import { CanaryStatus } from "../components/health.js";
 
 const MODE = { off: "Off", notify: "Notify only", apply: "Automatic" };
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
@@ -72,8 +73,9 @@ function Headline({ d, c, restarts }) {
       <p class="hl-title">${updateHeadline(c)}${has && html`<span class="hl-detail"> · ${updateDetail(c)}</span>`}</p>
       <p class="hl-meta">${checkLine(d)} · auto-update <a class="link" href="#/updates">${(MODE[d.auto_update?.mode] || "off").toLowerCase()}</a>
         ${d.auto_update?.next_run ? ` · next ${relTime(d.auto_update.next_run)}` : ""}
-        ${d.auto_update?.mode === "apply" && d.auto_update?.effective_canary && html` · canary <b>${d.auto_update.effective_canary}</b>${(d.auto_update.canary || []).length ? ` soaking ${plural(d.auto_update.canary.length, "update")}, ${Math.ceil(Math.max(...d.auto_update.canary.map(c => c.soak_hours_left || 0)))} h left` : ""}`}</p>
-${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
+        ${d.auto_update?.mode === "apply" && d.auto_update?.effective_canary && html` · canary <b>${d.auto_update.effective_canary}</b>${(() => { const soak = (d.auto_update.canary || []).filter(c => c.canary_health !== "failed"); return soak.length ? ` soaking ${plural(soak.length, "update")}, ${Math.ceil(Math.max(...soak.map(c => c.soak_hours_left || 0)))} h left` : ""; })()}`}</p>
+<${CanaryStatus} au=${d.auto_update} compact=${true} />
+      ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
         <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
     <div class="row wrap" style="gap:8px">

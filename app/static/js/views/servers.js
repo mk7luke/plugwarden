@@ -79,7 +79,7 @@ export function ServerDetail({ id }) {
   return html`
     <${PageHead} title=${id} sub=${srv ? html`<span class="row wrap" style="gap:10px"><${Platform} p=${srv.platform} mc=${srv.mc_version} /> · ${plural(srv.plugin_count, "plugin")}
         ${srv.drift > 0 && html` · <span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip(srv)}><${Icon} n="git-compare-arrows" />${srv.drift} drift</span>`}</span>` : " "}>
-      <a class="btn" href=${`#/deploy?targets=${encodeURIComponent(id)}`}><${Icon} n="rocket" cls="i-sm" />Deploy to ${id}</a>
+      ${srv?.eligible_target && html`<a class="btn" href=${`#/deploy?targets=${encodeURIComponent(id)}`}><${Icon} n="rocket" cls="i-sm" />Deploy to ${id}</a>`}
       <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${() => review(outdated, `Review updates on ${id}`)}>
         ${outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>
     <//>

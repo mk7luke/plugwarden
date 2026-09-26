@@ -5,6 +5,7 @@ import { post } from "../api.js";
 import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { navigate } from "../router.js";
 import { LogView } from "../components/overlays.js";
+import { StartupCheck } from "../components/health.js";
 import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
 import { relTime, absTime, duration, plural } from "../fmt.js";
 
@@ -16,8 +17,14 @@ const OUTCOME_TAG = { changed: "ok", error: "danger", skipped: "", unchanged: ""
 
 export function Activity({ id, tab }) {
   const q = useQuery("/jobs");
-  const [kind, setKind] = useState(tab === "access" ? "access" : "all");
-  useEffect(() => { if (tab === "access") setKind("access"); }, [tab]);
+  // The Audit tab lives in the URL (#/activity?tab=audit) so it can be linked and survives Back.
+  const isAudit = tab === "audit" || tab === "access";
+  const [jobKind, setJobKind] = useState("all");
+  const kind = isAudit ? "access" : jobKind;
+  const setKind = (k) => {
+    if (k === "access") navigate("#/activity?tab=audit");
+    else { setJobKind(k); if (isAudit) navigate("#/activity"); }
+  };
   const [hideDry, setHideDry] = useState(() => pref("amp.act.hidedry", "1") === "1");
   const setHD = (v) => { setHideDry(v); try { localStorage.setItem("amp.act.hidedry", v ? "1" : "0"); } catch {} };
   const base = useMemo(() => (q.data || []).filter(j => !hideDry || !j.dry_run), [q.data, hideDry]);
@@ -89,7 +96,7 @@ function AccessLog() {
         : html`<div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Access log, newest first</caption>
           <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">What</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
           <tbody>${entries.map(e => html`<tr><td class="small muted" title=${absTime(e.at)} style="white-space:nowrap">${relTime(e.at)}</td><td>${e.user}</td>
-            <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}</span></div></td>
+            <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · last ${relTime(e.last_at || e.at)}` : ""}</span></div></td>
             <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted audit-change" title=${change(e)}>${change(e)}</td></tr>`)}</tbody></table></div>`}
     </section>`;
 }
@@ -98,6 +105,7 @@ function JobDetail({ id }) {
   const q = useQuery(`/jobs/${encodeURIComponent(id)}`);
   const live = useStore(s => s.jobs.find(j => j.id === id));
   const [busy, setBusy] = useState(false);
+  const [checkAll, setCheckAll] = useState(false);
   useEffect(() => { if (live && !isActive(live.status)) q.reload(); }, [live?.status]);
   if (q.error) return html`<div class="panel"><div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div></div>`;
   if (q.loading) return html`<div class="panel"><div class="panel-body stack"><${Skel} w="60%" h=${16} /><${Skel} w="40%" /><${Skel} w="50%" /><${Skel} h=${120} /></div></div>`;
@@ -108,6 +116,7 @@ function JobDetail({ id }) {
   const tally = res.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {});
   const servers = [...new Set(res.map(r => r.server))];
   const canUndo = !!j.undoable;
+  const touched = j.restart_servers || j.changed_servers || [...new Set(res.filter(r => r.outcome === "changed").map(r => r.server))];
   const running = isActive(live?.status || j.status);
   const logLines = live && isActive(live.status) ? live.lines : (j.log || "").split("\n").filter((l, i, a) => l || i < a.length - 1);
 
@@ -125,6 +134,10 @@ function JobDetail({ id }) {
   };
 
   return html`<article class=${"panel" + (reverted(j) ? " is-reverted" : "")} aria-labelledby="jd-h">
+    ${(j.undo_failed_by || j.undo_error) && !reverted(j) && html`<div class="reverted-banner is-failed" role="alert"><${Icon} n="circle-x" cls="i-sm" />
+      <span class="grow">Undo failed${j.undo_error ? ` — ${j.undo_error}` : ""}.</span>
+      ${j.undo_failed_by && html`<a class="link" href=${`#/activity/${j.undo_failed_by}`}>View failed undo</a>`}
+      ${j.undoable && html`<${Btn} size="sm" icon="undo-2" busy=${busy} onClick=${undo}>Retry undo<//>`}</div>`}
     ${reverted(j) && html`<div class="reverted-banner" role="status"><${Icon} n="undo-2" cls="i-sm" /><span>Reverted${j.undone_at ? ` ${relTime(j.undone_at)}` : ""} — the changes below were rolled back.</span>
       ${j.undone_by && html`<a class="link" href=${`#/activity/${j.undone_by}`}>View undo job</a>`}</div>`}
     <div class="panel-head" style="flex-wrap:wrap">
@@ -145,6 +158,10 @@ function JobDetail({ id }) {
         ${res.length > 0 && html`<dt>Outcome</dt><dd class="row wrap" style="gap:4px">${Object.entries(tally).map(([k, n]) => html`<${Tag} kind=${j.dry_run && k === "changed" ? "update" : OUTCOME_TAG[k] || ""}>${n} ${j.dry_run && k === "changed" ? "would change" : k}<//>`)}</dd>`}
       </dl>
     </div>
+    ${!j.dry_run && ["update-apply", "deploy"].includes(j.kind) && touched.length > 0 && html`<div class="panel-body startup-block" style="border-top:1px solid var(--line)">
+      <div class="row" style="margin-bottom:8px"><span class="field-label grow">Plugin startup after this job</span>
+        ${touched.length > 1 && !checkAll && html`<${Btn} size="sm" icon="scroll-text" onClick=${() => setCheckAll(true)}>Check all ${touched.length}<//>`}</div>
+      ${touched.map(s => html`<div class="startup-row"><b class="small">${s}</b><${StartupCheck} server=${s} since=${j.finished} auto=${checkAll} /></div>`)}</div>`}
     ${res.length > 0 && html`<div class="tbl-wrap" style="max-height:300px;border-top:1px solid var(--line)"><table class="tbl">
       <thead><tr><th scope="col">Server</th><th scope="col">Item</th><th scope="col">Outcome</th><th scope="col" class="hide-md">Detail</th></tr></thead>
       <tbody>${res.map(r => html`<tr><td class="strong" style="white-space:nowrap">${r.server}</td><td><span class="jar" style="max-width:200px" title=${r.item}>${r.item}</span></td>

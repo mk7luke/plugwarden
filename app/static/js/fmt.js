@@ -54,7 +54,8 @@ export function compactVer(v) {
     .replace(/\+[0-9a-f]{6,}$/i, "")
     .replace(/\+(mc)?1\.\d+(\.\d+)?$/i, "")
     .replace(/-SNAPSHOT-?(\d+)/i, "·$1").replace(/-SNAPSHOT/i, "-S")
-    .replace(/\s*\(build (\d+)\)/i, "·$1").replace(/-b(?:uild-?)?(\d+)$/i, "·$1")
+    .replace(/\s*\(b(?:uild)?\s*(\d+)[^)]*\)/i, "·$1").replace(/-b(?:uild-?)?(\d+)$/i, "·$1").replace(/\s+build\s+(\d+)$/i, "·$1")
+    .replace(/\+(\d+)-[0-9a-f]{6,}$/i, "·$1").replace(/-Premium$/i, "-P")
     .replace(/-S·/, "·")
     .trim();
 }

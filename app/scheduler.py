@@ -229,7 +229,8 @@ def check_canary_health(st: dict, csrv: inventory.Server) -> None:
                            "excerpt": [], "checked_at": time.time()}
             continue
         desc = inventory.jar_meta(csrv.plugins_dir / p["jar"])["descriptors"].get(csrv.family)
-        res = health.plugin_health(csrv, health.read_runs(csrv, c["at"]), {**p, "version": version}, desc)
+        res = health.plugin_health(csrv, health.read_runs(csrv, c["at"]), {**p, "version": version}, desc,
+                                   since=c["at"])
         c["health"] = {**res, "checked_at": time.time()}
         if res["status"] == "failed" and k not in held:
             held[k] = {"key": key, "name": p["name"], "version": version, "server": csrv.id,

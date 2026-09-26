@@ -24,7 +24,11 @@ export async function api(path, { method = "GET", body, form } = {}) {
     let d = data && data.detail !== undefined ? data.detail : data;
     if (Array.isArray(d)) d = d.map(x => x.msg || JSON.stringify(x)).join("; ");
     // 409s carry {message, conflicts:[...]}.
-    if (d && typeof d === "object") throw new ApiError(res.status, d.message, path, d.conflicts);
+    if (d && typeof d === "object") {
+      const err = new ApiError(res.status, d.message || (d.fields ? "Some fields are invalid" : undefined), path, d.conflicts);
+      err.fields = d.fields; err.code = d.code;
+      throw err;
+    }
     throw new ApiError(res.status, typeof d === "string" ? d : `HTTP ${res.status}`, path);
   }
   return data;

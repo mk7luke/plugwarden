@@ -12,8 +12,9 @@ import { ineligible } from "./deploy.js";
 
 const FILTERS = [["all", "All"], ["outdated", "Updates"], ["drift", "Drift"], ["unknown", "Untracked"]];
 const LABEL = { current: "up to date", outdated: "update available", drift: "differs from other servers", unknown: "source unknown", pinned: "pinned", ignored: "ignored" };
-// Matrix cells hold 11 characters; compact first, then elide the middle (the tooltip has the full string).
-const shortVer = (v) => midTrunc(compactVer(v), 11) || "?";
+// Matrix cells hold 11 characters (13 in a smaller face); compact first, then elide the middle (the tooltip has the full string).
+const shortVer = (v) => midTrunc(compactVer(v), 13) || "?";
+const longVer = (v) => (compactVer(v) || "").length > 11;
 const cid = (key, server) => `${key}\u0000${server}`;
 
 export function Matrix({ query }) {
@@ -123,7 +124,7 @@ export function Matrix({ query }) {
               // The backend marks the odd cell out; pinned installs never count as drift.
               const s = c.drift ? "drift" : c.status;
               const on = sel.has(cid(p.key, id));
-              return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "")} aria-pressed=${on ? "true" : "false"} data-r=${ri} data-c=${ci}
+              return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "") + (longVer(c.version) ? " is-long" : "")} aria-pressed=${on ? "true" : "false"} data-r=${ri} data-c=${ci}
                 data-tip=${`${id}\n${c.jar}\n${c.version} — ${LABEL[s] || s}${p.latest_version && s === "outdated" ? ` (latest ${p.latest_version})` : ""}${c.drift_pinned ? `\nPinned — differs from the network (${p.expected_version}) on purpose` : ""}${p.expected_version && c.drift ? `\nNetwork majority: ${p.expected_version}` : ""}`}
                 aria-label=${`${p.name} on ${id}: ${c.version}, ${LABEL[s] || s}`} onClick=${e => clickCell(p, id, e)}>
                 <span class="mv">${(s === "pinned" || c.drift_pinned) && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}</span></button></td>`;
