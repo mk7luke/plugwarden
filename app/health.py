@@ -25,7 +25,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import inventory
+from . import inventory, settings
 from .inventory import Server
 from .redact import scrub_value
 
@@ -435,6 +435,107 @@ def _norm(v: str | None) -> str:
     return re.sub(r"[\s+]", "", v or "").lower()
 
 
+# ---------------------------------------------------------------- why a plugin is not running
+
+_DEPS = [re.compile(r"Unknown/missing dependency plugins: \[([^\]]*)\]"),
+         re.compile(r"UnknownDependencyException:\s*(?:Unknown dependency\s+)?([A-Za-z0-9_.\- ]+(?:,\s*[A-Za-z0-9_.\- ]+)*)\s*$"),
+         re.compile(r"[Mm]issing (?:required )?(?:plugin )?dependenc(?:y|ies):?\s*\[?([A-Za-z0-9_.\-, ]+)\]?")]
+_BIND = re.compile(r"BindException|Address already in use|Failed to bind to (?:port|address \S+ port)|"
+                   r"Failed to (?:run|start) .{0,60}?\b(?:UDP|TCP)? ?port \d+|port \d+ (?:is )?already in use", re.I)
+_PORT = re.compile(r"\b(?:(UDP|TCP)\s+)?port\s*[:#]?\s*(\d{2,5})\b", re.I)
+_UNSUPPORTED = re.compile(r"UnsupportedClassVersionError|compiled by a more recent version of the Java|"
+                          r"Unsupported API version|unsupported (?:server|minecraft) version|"
+                          r"requires (?:a newer|at least|Minecraft|Paper|Java)\b|not compatible with (?:this|your) server|"
+                          r"incompatible (?:server|minecraft) version", re.I)
+_CONFIG = re.compile(r"InvalidConfigurationException|ScannerException|ParserException|YAMLException|"
+                     r"while (?:parsing|scanning) a |MalformedJsonException|"
+                     r"(?:could not|failed to|unable to) (?:load|read|parse) (?:the )?(?:config|configuration)\b", re.I)
+SUGGESTIONS = {
+    "port_in_use": "{proto}port {port} is already in use: another process or a second server holds it. Change the "
+                   "plugin's port or stop whatever uses it, then restart.",
+    "missing_dependency": "Install {deps}, then restart.",
+    "unsupported_version": "This build doesn't support this server's Minecraft or Java version. Install a compatible "
+                           "version (or roll back with Undo).",
+    "config_error": "A config file has a syntax error. Fix it, or restore it with Undo if a push changed it, then restart.",
+    "unknown": "Open the log excerpt for the full error.",
+}
+
+
+def classify_cause(lines: list[str]) -> dict:
+    """{kind, detail, suggestion} for a plugin that isn't running, from its error lines (log order)."""
+    text = [_message(ln) if _TIME.match(ln) else ln for ln in lines]
+    for ln in text:
+        for pat in _DEPS:
+            m = pat.search(ln)
+            if m:
+                deps = [d.strip() for d in m.group(1).split(",") if d.strip()]
+                if deps:
+                    return {"kind": "missing_dependency", "detail": {"dependencies": [{"name": d} for d in deps]},
+                            "suggestion": SUGGESTIONS["missing_dependency"].format(deps=", ".join(deps))}
+    for ln in text:
+        if _BIND.search(ln):
+            m = _PORT.search(ln) or next((x for x in map(_PORT.search, text) if x), None)
+            port = int(m.group(2)) if m else None
+            proto = (m.group(1) or "").upper() if m else ""
+            if not proto:
+                proto = "UDP" if "udp" in ln.lower() else ("TCP" if "tcp" in ln.lower() else "")
+            return {"kind": "port_in_use", "detail": {"port": port, "protocol": proto or None},
+                    "suggestion": SUGGESTIONS["port_in_use"].format(proto=f"{proto} " if proto else "",
+                                                                    port=port if port else "(unknown)")}
+    for kind, pat in (("unsupported_version", _UNSUPPORTED), ("config_error", _CONFIG)):
+        if any(pat.search(ln) for ln in text):
+            return {"kind": kind, "detail": {}, "suggestion": SUGGESTIONS[kind]}
+    return {"kind": "unknown", "detail": {}, "suggestion": SUGGESTIONS["unknown"]}
+
+
+def _own_lines(item: dict) -> list[str]:
+    """The matched line of an excerpt and what follows it up to the next timestamped entry of another plugin:
+    the error itself plus its stack trace/continuation lines."""
+    ex, i = item.get("excerpt") or [], item.get("match_index")
+    if i is None:
+        return []
+    out = [ex[i]]
+    for ln in ex[i + 1:]:
+        if _TIME.match(ln) and not (_LEVEL.search(ln) or _WARN_LEVEL.search(ln)):
+            break
+        out.append(ln)
+    return out
+
+
+def _cause(res: dict) -> dict:
+    lines = _own_lines(res)
+    for it in res.get("preexisting_errors", []) + res.get("new_errors", []) + res.get("warnings", []):
+        lines += _own_lines(it)
+    return classify_cause(lines)
+
+
+def annotate_dependencies(report: dict, srv: Server) -> None:
+    """For missing dependencies: installed here? a jar on the default source (so the UI can offer an install)?"""
+    wanted = [d for p in report["plugins"] for d in ((p.get("cause") or {}).get("detail") or {}).get("dependencies", [])]
+    if not wanted:
+        return
+    source_id = settings.load_raw().get("default_source")
+    source = inventory.servers_by_id().get(source_id) if source_id else None
+
+    def by_name(s: Server | None) -> dict[str, dict]:
+        if s is None:
+            return {}
+        return {p["name"].lower(): p for p in inventory.list_plugins(s, cached_only=True)}
+    here, there = by_name(srv), by_name(source if source and source.id != srv.id else None)
+    for d in wanted:
+        hit = there.get(d["name"].lower())
+        d.update(installed=d["name"].lower() in here, source=source.id if source else None,
+                 on_source=bool(hit), source_jar=hit["jar"] if hit else None, key=hit["key"] if hit else None)
+    for p in report["plugins"]:
+        cause = p.get("cause") or {}
+        if cause.get("kind") == "missing_dependency":
+            deps = cause["detail"]["dependencies"]
+            parts = [f"{d['name']} ({d['source_jar']} is on {d['source']})" if d.get("on_source") else
+                     f"{d['name']} (not on {d['source'] or 'the source server'})" for d in deps if not d.get("installed")]
+            cause["suggestion"] = (f"Install {', '.join(parts)}, then restart." if parts else
+                                   "The dependency is installed now: restart the server.")
+
+
 def _pick(runs: list[dict], since: float | None) -> tuple[dict | None, list[dict]]:
     """The run to judge (the latest run, or the latest one started after `since`) and its baseline runs."""
     if not runs:
@@ -463,6 +564,8 @@ def plugin_health(srv: Server, runs: list[dict], plugin: dict, meta_desc: dict |
     pkg = main.rsplit(".", 1)[0] if main and main.count(".") >= 2 else None
     m = _Matcher(plugin["name"], plugin["jar"], pkg, srv.family, (meta_desc or {}).get("id"))
     res = analyse_run(target, baseline, m, plugin.get("version"), ctx["players"], ctx["base_sigs"])
+    if res["status"] == "failed" and res.get("running") is False:
+        res["cause"] = _cause(res)
     return {**res, "log": res.get("log") or target["file"], "run_started": target["start"],
             "baseline_runs": len(baseline)}
 
@@ -475,7 +578,30 @@ def context(runs: list[dict], since: float | None) -> dict:
             "base_sigs": baseline_signatures(baseline, players)}
 
 
+_reports: dict[str, tuple[tuple, dict]] = {}  # server id -> (log/jar signature, latest-start report)
+_reports_lock = threading.Lock()
+
+
 def server_report(srv: Server, since: float | None) -> dict:
+    """Plugin health for the latest start (or since `since`). Latest-start reports are cached until the
+    server's logs or jars change."""
+    sig = _signature(srv) if since is None else None
+    if sig is not None:
+        with _reports_lock:
+            hit = _reports.get(srv.id)
+        if hit and hit[0] == sig:
+            annotate_dependencies(hit[1], srv)
+            return hit[1]
+    report = _server_report(srv, since)
+    annotate_dependencies(report, srv)
+    if sig is not None and report["indexing"] is None:
+        with _reports_lock:
+            _reports[srv.id] = (sig, report)
+        remember(srv, report, sig)
+    return report
+
+
+def _server_report(srv: Server, since: float | None) -> dict:
     runs = read_runs(srv, since)
     ctx = context(runs, since)
     target, baseline = ctx["target"], ctx["baseline"]
@@ -510,8 +636,6 @@ def server_report(srv: Server, since: float | None) -> dict:
             "update_notices": notices,
             "indexing": inventory.indexing_state(),
             "plugins": plugins}
-    if not cached_only:
-        remember(srv, report)
     return report
 
 
@@ -532,7 +656,8 @@ def _signature(srv: Server) -> tuple:
 
 def _summarise(report: dict) -> dict:
     failed = [{"key": p["key"], "name": p["name"], "reason": p["reason"], "preexisting": bool(p.get("preexisting")),
-               "running": p.get("running")} for p in report["plugins"] if p["status"] == "failed"]
+               "running": p.get("running"), "cause": p.get("cause")}
+              for p in report["plugins"] if p["status"] == "failed"]
     known = report["preexisting_errors"]
     return {"failed": failed, "failed_count": len(failed), "run_started": report["run_started"],
             "known_errors": sum(1 for k in known if k.get("level") == "error"),
@@ -566,7 +691,7 @@ def refresh_summaries() -> None:
                 hit = _summary.get(srv.id)
             if hit and hit["sig"] == sig:
                 continue
-            remember(srv, server_report(srv, None), sig)
+            server_report(srv, None)  # caches the report and its summary
         except Exception:  # noqa: BLE001 - background; one bad server must not stop the others
             continue
 

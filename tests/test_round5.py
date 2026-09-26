@@ -142,7 +142,7 @@ def test_hard_failures_always_fail(env):
 
 
 def test_runtime_errors_after_grace_are_not_startup_failures(env):
-    now = datetime.now() - timedelta(hours=3)
+    now = (datetime.now() - timedelta(days=1)).replace(hour=12, minute=0, second=0)  # +90 min stays on one day
     body = [L(T, "[Vivecraft-Spigot-Extension] Enabling Vivecraft-Spigot-Extension v1.3.15-1", _at(now, 1)),
             L(T, "Done (60s)!", _at(now, 2)),
             L(E, "Could not pass event PlayerQuitEvent to Vivecraft-Spigot-Extension v1.3.15-1", _at(now, 90)),

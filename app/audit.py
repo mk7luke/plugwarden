@@ -51,7 +51,24 @@ def record(user: str, action: str, servers: list[str], path: str, detail: str = 
             f.write(json.dumps(entry) + "\n")
 
 
-def read(limit: int = 200, user: str | None = None, server: str | None = None, path: str | None = None,
+READ_ACTIONS = {"diff", "plan-values"}  # someone looked at values; everything else changed something
+
+
+def page(limit: int = 50, before: str | None = None, changes_only: bool = False, **filters) -> dict:
+    """Newest first, `limit` rows older than the `before` cursor (from a previous page's next_before)."""
+    rows = read(limit=None, **filters)
+    if changes_only:
+        rows = [e for e in rows if e["action"] not in READ_ACTIONS]
+    if before:
+        at, _, eid = before.partition("|")
+        rows = [e for e in rows if (e["last_seen"], e.get("id") or "") < (at, eid)]
+    out = rows[:limit]
+    more = len(rows) > limit
+    return {"entries": out, "has_more": more,
+            "next_before": f"{out[-1]['last_seen']}|{out[-1].get('id') or ''}" if more and out else None}
+
+
+def read(limit: int | None = 200, user: str | None = None, server: str | None = None, path: str | None = None,
          action: str | None = None) -> list[dict]:
     lines: list[str] = []
     for p in (_path().with_name("access.log.1"), _path()):
@@ -88,5 +105,6 @@ def read(limit: int = 200, user: str | None = None, server: str | None = None, p
         if action and action != e["action"]:
             continue
         out.append(e)
-    out.sort(key=lambda e: e["last_seen"], reverse=True)  # a collapsed row moves up when seen again
-    return out[:limit]
+    # a collapsed row moves up when seen again; the id breaks ties so paging cursors are stable
+    out.sort(key=lambda e: (e["last_seen"], e.get("id") or ""), reverse=True)
+    return out if limit is None else out[:limit]

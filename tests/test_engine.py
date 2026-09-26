@@ -183,7 +183,7 @@ def test_upload_rejects_non_jars(env):
 
 # ---------------------------------------------------------------- updates (mocked HTTP)
 
-def _mock_modrinth(env, new_jar_bytes, fail_hash=False):
+def _mock_modrinth(env, new_jar_bytes, fail_hash=False, changelog=None):
     old_sha1 = inventory.file_hash(env["a"] / "CoreProtect-23.1.jar")
     import hashlib
     sha512 = hashlib.sha512(new_jar_bytes).hexdigest()
@@ -195,6 +195,8 @@ def _mock_modrinth(env, new_jar_bytes, fail_hash=False):
            "date_published": "2026-01-01T00:00:00Z", "game_versions": ["1.21.6"], "loaders": ["paper"],
            "files": [{"url": "https://cdn.modrinth.com/cp.jar", "filename": "CoreProtect-CE-24.1.jar",
                       "primary": True, "hashes": {"sha1": hashlib.sha1(new_jar_bytes).hexdigest(), "sha512": sha512}}]}
+    if changelog is not None:
+        new["changelog"] = changelog
     seen = []
 
     def handler(req: httpx.Request):

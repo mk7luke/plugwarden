@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import (actions, audit, auth, config, configmerge, engine, health, inventory, jobs, plans, scheduler,
-               settings, updates)
+               settings, updates, visits)
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -282,7 +282,17 @@ def overview(request: Request):
         "default_source": snap["settings"]["default_source"],
         "version": config.VERSION,
         "indexing": inventory.indexing_state(),
+        "since_last_visit": visits.since_last_visit(user_of(request), snap["pending"]),
     }
+
+
+@app.post("/api/v2/seen")
+def seen(request: Request, body: dict = Body(default={})):
+    """Advance the caller's "last looked" time (to body.at if given, else now; never backwards)."""
+    at = (body or {}).get("at")
+    if at is not None and not isinstance(at, str):
+        raise HTTPException(400, "at must be an ISO timestamp")
+    return {"at": visits.mark_seen(user_of(request), at)}
 
 
 @app.get("/api/v2/servers")
@@ -555,9 +565,12 @@ def diff(request: Request, source: str, target: str, path: str, preserve_keys: s
 
 @app.get("/api/v2/access-log")
 def access_log(limit: int = Query(200, ge=1, le=2000), user: str | None = None, server: str | None = None,
-               path: str | None = None, action: str | None = None):
-    """Who read what (newest first). Filters are case-insensitive substring matches."""
-    return {"entries": audit.read(limit=limit, user=user, server=server, path=path, action=action)}
+               path: str | None = None, action: str | None = None, before: str | None = Query(None, max_length=200),
+               changes_only: bool = False):
+    """Who read or changed what (newest first). Filters are case-insensitive substring matches. Paging: pass
+    the previous page's `next_before` as `before`; `changes_only` hides reads (diff views, plan values)."""
+    return audit.page(limit=limit, before=before, changes_only=changes_only,
+                      user=user, server=server, path=path, action=action)
 
 
 UPLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._+\-() ]")

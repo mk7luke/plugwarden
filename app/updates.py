@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 import secrets
@@ -117,6 +118,50 @@ def display_version(v: str | None) -> str | None:
     return _LOADER_PREFIX.sub("", v) if v else v
 
 
+CHANGELOG_LINES = 6
+_CL_TAG = re.compile(r"<[^<>]{0,1000}>")
+_CL_RULES = [
+    (re.compile(r"!\[([^\]]*)\]\([^)]*\)"), r"\1"),            # images -> alt text
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),              # links -> text
+    (re.compile(r"\[([^\]]+)\]\[[^\]]*\]"), r"\1"),            # reference links
+    (re.compile(r"(\*\*|__|~~)(.+?)\1"), r"\2"),                  # bold, strike
+    (re.compile(r"(?<![\w*])[*_]([^*_\n]+)[*_](?![\w*])"), r"\1"),  # italics
+    (re.compile(r"`+([^`]*)`+"), r"\1"),                           # inline code
+]
+
+
+def changelog_excerpt(md: Any, max_lines: int = CHANGELOG_LINES) -> dict | None:
+    """Markdown/HTML release notes -> {lines: first non-empty lines as plain text, truncated}. Never returns
+    markup: tags are removed (before and after entity decoding), so the UI can show it as text."""
+    if not isinstance(md, str) or not md.strip():
+        return None
+    text = re.sub(r"<!--.*?-->", "", md[:20000], flags=re.S)
+    text = re.sub(r"<br\s*/?>|</p>|</li>|</h\d>", "\n", text, flags=re.I)
+    text = html.unescape(_CL_TAG.sub("", text))
+    text = _CL_TAG.sub("", text)
+    lines = []
+    for raw in text.splitlines():
+        ln = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", raw).strip()
+        if not ln or ln.startswith("```") or re.fullmatch(r"[-*_=|: ]{3,}", ln):
+            continue
+        ln = re.sub(r"^#{1,6}\s*", "", ln)
+        ln = re.sub(r"^(>\s*)+", "", ln)
+        ln = re.sub(r"^[-*+]\s+(\[[ xX]\]\s+)?", "• ", ln)
+        if ln.startswith("|"):
+            ln = " ".join(c.strip() for c in ln.strip("|").split("|") if c.strip())
+        for pat, sub in _CL_RULES:
+            ln = pat.sub(sub, ln)
+        ln = re.sub(r"\s+", " ", ln).strip()
+        if not ln or ln == "•":
+            continue
+        lines.append(ln if len(ln) <= 200 else ln[:199] + "…")
+        if len(lines) > max_lines:
+            break
+    if not lines:
+        return None
+    return {"lines": lines[:max_lines], "truncated": len(lines) > max_lines}
+
+
 def _modrinth_file(version: dict) -> dict | None:
     files = version.get("files") or []
     for f in files:
@@ -137,7 +182,7 @@ def _modrinth_latest(v: dict) -> dict:
         "download_url": f.get("url"), "filename": f.get("filename"),
         "hashes": {k: v2 for k, v2 in (f.get("hashes") or {}).items() if k in ("sha1", "sha512")},
         "verified": bool(f.get("hashes")), "size": f.get("size"),
-        "compat": _compat(v),
+        "compat": _compat(v), "changelog": changelog_excerpt(v.get("changelog")),
     }
 
 
@@ -196,6 +241,7 @@ def _resolve_hangar(c: httpx.Client, slug: str, family: str, mc: str | None) -> 
         "hashes": {"sha256": fi["sha256Hash"]} if fi.get("sha256Hash") else {},
         "verified": bool(fi.get("sha256Hash")) and bool(dl.get("downloadUrl")),
         "size": fi.get("sizeBytes"), "compat": {"mc_versions": list(deps), "loaders": [platform.lower()]},
+        "changelog": changelog_excerpt(d.get("description")),
     }
 
 
@@ -256,6 +302,7 @@ def _resolve_github(c: httpx.Client, repo: str, family: str, mc: str | None, ass
         "published": published, "url": d.get("html_url"), "changelog_url": d.get("html_url"),
         "download_url": (a or {}).get("browser_download_url"), "filename": (a or {}).get("name"),
         "hashes": hashes, "verified": bool(hashes), "size": (a or {}).get("size"), "compat": None,
+        "changelog": changelog_excerpt(d.get("body")),
     }
 
 
@@ -415,10 +462,18 @@ def check(job=None) -> dict:
                 entries[ck] = entry
     with _cache_lock:
         cache = load_cache()
+        prev_checked = cache.get("checked_at")
         # Keep entries for other (family, mc) combos only if their jars still exist.
         cache["entries"] = entries
         cache["checked_at"] = now
         cache["errors"] = errors
+        # When each (plugin, new version) was first found: "N new updates since you last looked".
+        def outdated(ents: dict) -> set[str]:
+            return {f"{e['key']}|{e['latest']['version']}" for e in ents.values() if e.get("outdated") and e.get("latest")}
+        prev_first = cache.get("first_seen")
+        if prev_first is None:  # cache from before first_seen existed: what it already listed isn't new
+            prev_first = {k: prev_checked or now for k in outdated(previous)}
+        cache["first_seen"] = {k: prev_first.get(k, now) for k in sorted(outdated(entries))}
         write_json(_cache_file(), cache)
     n_src = sum(1 for e in entries.values() if e["source"])
     counts = update_counts(pending_updates())
@@ -483,7 +538,7 @@ def public_latest(latest: dict | None) -> dict | None:
     if not latest:
         return None
     return {k: latest.get(k) for k in ("version", "url", "download_url", "published", "changelog_url",
-                                       "type", "verified", "filename", "size", "compat")}
+                                       "changelog", "type", "verified", "filename", "size", "compat")}
 
 
 def pending_updates(servers: list[inventory.Server] | None = None,
@@ -505,6 +560,7 @@ def pending_updates(servers: list[inventory.Server] | None = None,
                 "download_url": latest.get("download_url"), "published": latest.get("published"),
                 "source": source, "verified": latest.get("verified", False),
                 "compat": latest.get("compat"), "size": latest.get("size"),
+                "changelog": latest.get("changelog"),
             })
             if srv.id in u["servers"]:
                 continue  # duplicate jars of one plugin on a server count as one install
@@ -585,7 +641,7 @@ def create_plan(items: Any, user: str) -> dict:
                 "to_version": latest["version"], "compat": compat_for(latest.get("compat"), srv),
                 "size": latest.get("size"), "published": latest.get("published"),
                 "verified": bool(latest.get("verified")), "changelog_url": latest.get("changelog_url"),
-                "type": latest.get("type"),
+                "changelog": latest.get("changelog"), "type": latest.get("type"),
                 "source": source, "_latest": latest,
             })
             break
