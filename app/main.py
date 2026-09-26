@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import actions, audit, config, engine, inventory, jobs, plans, scheduler, settings, updates
+from . import actions, audit, config, configmerge, engine, inventory, jobs, plans, scheduler, settings, updates
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -410,10 +410,44 @@ def server_search(server_id: str, q: str = Query(..., min_length=2, max_length=1
 
 
 @app.get("/api/v2/diff")
-def diff(request: Request, source: str, target: str, path: str):
-    """Secret-looking values are redacted on both sides; every read is written to the access log."""
+def diff(request: Request, source: str, target: str, path: str, preserve_keys: str | None = None):
+    """Secret-looking values are redacted on both sides; every read is written to the access log.
+
+    preserve_keys=server_specific (or a comma-separated key list) diffs the merged file that a
+    push with that option would write, instead of the raw source file."""
     src, tgt = inventory.get_server(source), inventory.get_server(target)
-    out = inventory.diff_file(src, tgt, path)
+    transform = None
+    if preserve_keys:
+        if len(preserve_keys) > 2000:
+            raise HTTPException(400, "preserve_keys too long")
+
+        def transform(src_lines, tgt_lines, out):
+            rel = out["path"]
+            if not configmerge.is_config(rel):
+                out["merge_error"] = "not a config file"
+                return src_lines
+            if preserve_keys == "server_specific":
+                peers = [s for s in inventory.discover()
+                         if s.family == src.family and s.id not in (src.id, tgt.id)]
+                others = [configmerge.parse(rel, ln) for s in peers
+                          if (ln := configmerge.read_lines(s.plugins_dir / rel)) is not None]
+                keep = [k["key"] for k in configmerge.server_specific(
+                    rel, configmerge.parse(rel, src_lines), configmerge.parse(rel, tgt_lines), others)]
+            else:
+                keep = [k.strip() for k in preserve_keys.split(",") if k.strip()]
+            try:
+                merged, kept = configmerge.merge(rel, src_lines, tgt_lines, keep)
+            except configmerge.MergeUnsafe as e:
+                out["merge_error"] = str(e)  # the push would refuse this file (merge_unsafe)
+                return src_lines
+            out["kept_keys"] = kept
+            return merged
+
+    out = inventory.diff_file(src, tgt, path, transform)
+    if preserve_keys:
+        out["preserve_keys"] = preserve_keys
+        out.setdefault("kept_keys", [])
+        out.setdefault("merge_error", None)
     audit.record(user_of(request), "diff", servers=[src.id, tgt.id], path=out["path"],
                  detail=f"{len(out['redacted'])} value(s) redacted")
     return out

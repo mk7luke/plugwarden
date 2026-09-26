@@ -511,8 +511,11 @@ def redact(lines: list[str]) -> tuple[list[str], dict[str, str]]:
     return out, found
 
 
-def diff_file(source: Server, target: Server, rel: str) -> dict:
-    """Unified diff of one text file between two servers (≤ 256 KB each)."""
+def diff_file(source: Server, target: Server, rel: str, transform=None) -> dict:
+    """Unified diff of one text file between two servers (≤ 256 KB each).
+
+    transform(src_lines, tgt_lines, out) may return replacement source lines (e.g. the merged file a
+    preserve_keys push would write), so the diff shows exactly what the target will become."""
     src = resolve_in(source, rel)
     dst = resolve_in(target, rel)
     rel = check_rel(rel)
@@ -545,6 +548,8 @@ def diff_file(source: Server, target: Server, rel: str) -> dict:
         if len(texts[-1]) > DIFF_MAX_LINES:
             out["too_large"] = True
             return out
+    if transform is not None and out["source_exists"] and out["target_exists"]:
+        texts[0] = transform(texts[0], texts[1], out)
     (texts[0], secrets_src), (texts[1], secrets_dst) = redact(texts[0]), redact(texts[1])
     out["redacted"] = [{"key": k, "changed": secrets_src.get(k) != secrets_dst.get(k)}
                        for k in sorted(set(secrets_src) | set(secrets_dst))]

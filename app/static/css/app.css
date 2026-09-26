@@ -556,7 +556,9 @@ a.srv-chip:hover { border-color: var(--line-strong); color: var(--fg); }
 .identity h3 .i { color: var(--warn); }
 .id-file { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
 .id-path { padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--fg-2); }
-.id-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.id-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); table-layout: fixed; }
+.id-tbl th, .id-tbl td { overflow-wrap: anywhere; }
+.id-tbl thead th:first-child { width: 32%; }
 .id-tbl th, .id-tbl td { text-align: left; padding: 4px 10px; border-top: 1px solid var(--line); vertical-align: top; }
 .id-tbl thead th { border-top: 0; color: var(--fg-3); font-weight: 600; }
 .id-tbl td .mono { color: var(--fg); }
