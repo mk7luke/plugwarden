@@ -351,7 +351,9 @@ def merge(rel: str, src_lines: list[str], tgt_lines: list[str], keep: list[str])
         want = copy.deepcopy(real[0])
         for key in kept:
             tv = _lookup(real[1], key, low)
-            if tv is _MISSING or isinstance(tv, (dict, list)) or not _assign(want, key, tv, low):
+            # A single-line flow value ({"global": "…"}) is replaced as a whole; the comparison below
+            # checks the entire parsed result, so a subtree value is still verified exactly.
+            if tv is _MISSING or not _assign(want, key, tv, low):
                 raise MergeUnsafe(f"'{key}' does not map to one scalar in the parsed file")
         try:
             merged = _load(low, "".join(out))

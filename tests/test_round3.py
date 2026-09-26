@@ -296,3 +296,10 @@ def test_target_only_identity_key_flagged(lp_env):
     plan = lp_plan()
     keys = {k["key"]: k["reason"] for w in plan["warnings"] if w["server"] == "M1-hub01" for k in w["keys"]}
     assert keys == {"server": "name", "server-name": "target_only"}
+
+
+def test_flow_map_line_merged_and_verified():
+    src = ['Channels: {"global": "111"}\n', "Other: 1\n"]
+    tgt = ['Channels: {"global": "222"}\n', "Other: 2\n"]
+    out, kept = configmerge.merge("c.yml", src, tgt, ["Channels"])
+    assert out == ['Channels: {"global": "222"}\n', "Other: 1\n"] and kept == ["Channels"]

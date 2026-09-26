@@ -100,7 +100,7 @@ export function Deploy({ query }) {
       trackJob(r.job_id, { title: `Deploy · ${ACTIONS.find(a => a[0] === action)[1]}` });
     } catch (e) {
       toast({ kind: "err", title: e.status === 409 ? "Targets changed since this preview" : "Deploy didn't start",
-        body: e.status === 409 ? `${e.conflicts.map(c => `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed — review it and execute again.` : e.message });
+        body: e.status === 409 ? `${e.conflicts.map(c => c.reason === "needs_decision" ? "a server-specific value appeared since the preview" : `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed — review it and execute again.` : e.message });
       if (e.status === 409) setNonce(n => n + 1);
     }
   };
@@ -282,7 +282,7 @@ function TargetCol({ source, servers, groups, targets, setTargets, action, setAc
         </div>
         <div class="row wrap" style="gap:16px">
           ${action === "sync" && html`<label class="switch small"><input type="checkbox" checked=${opts.install} onChange=${e => setOpts({ ...opts, install: e.currentTarget.checked })} />Also install where missing</label>`}
-          ${hasFolders && (action === "sync" || action === "install") && html`<label class="switch small"><input type="checkbox" checked=${opts.include_data} onChange=${e => setOpts({ ...opts, include_data: e.currentTarget.checked })} />Include data files (databases, userdata, logs)</label>`}
+          ${hasFolders && (action === "sync" || action === "install") && html`<label class="switch small"><input type="checkbox" checked=${opts.include_data} onChange=${e => setOpts({ ...opts, include_data: e.currentTarget.checked })} />Include player data, logs and databases</label>`}
           <span class="small muted row" style="gap:6px"><${Icon} n="shield" cls="i-sm" />Every change is backed up and can be undone from Activity</span>
         </div>
       </div>
@@ -300,6 +300,7 @@ function groupPlan(raw, targets) {
     shared: (raw.warnings || []).filter(w => w.shared_with?.length).map(w => ({ server: w.server, item: w.folder, shared_with: w.shared_with })),
     identity: (raw.warnings || []).filter(w => w.type === "server_specific"),
     dataWarn: (raw.warnings || []).find(w => w.type === "include_data"),
+    unchecked: (raw.warnings || []).filter(w => w.type === "unchecked_config"),
     needsDecision: !!raw.needs_decision,
     servers: [...by].map(([server, rows]) => ({ server, rows, changed: rows.filter(r => r.outcome === "changed").length, skipped: rows.filter(r => r.outcome === "skipped").length, errors: rows.filter(r => r.outcome === "error").length })),
     summary: raw.summary || {},
@@ -346,11 +347,12 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
         <ul class="shared-list">${sharedGroups(shared).map(g => html`<li><span class="mono">${g.item}/</span> — ${g.names.join(", ")} <span class="muted">(${g.servers.join(", ")})</span></li>`)}</ul>
         <label class="check"><input type="checkbox" checked=${force} onChange=${e => setForce(e.currentTarget.checked)} />Delete them anyway — I understand shared data will be lost</label></div>
     </div>`}
+    ${plan?.unchecked.length > 0 && html`<div class="plan-warn is-info"><${Icon} n="info" cls="i-sm" /><span>Not checked for server-specific values: ${plan.unchecked.map(w => `${w.path || "config files"} on ${w.server} (${w.reason})`).join("; ")}</span></div>`}
     ${plan?.dataWarn && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plan.dataWarn.message}</div>`}
     ${errors > 0 && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plural(errors, "item")} would fail — see details below.</div>`}
     <div class="plan-body">
       ${plan?.servers.some(sv => sv.rows.some(r => r.data_excluded)) && html`<div class="data-note small"><${Icon} n="shield" cls="i-sm" />
-        <span><b>Data files protected.</b> Databases (*.db, *.sqlite, *.h2), userdata, playerdata, data, logs, cache and backups inside folders are left untouched. Turn on “Include data files” to mirror them too.</span></div>`}
+        <span><b>Player data, logs and databases are protected.</b> Databases, userdata/playerdata, per-player files, logs, caches, backups and LuckPerms storage inside folders are left untouched. Turn on “Include player data, logs and databases” to mirror them too.</span></div>`}
       ${plan?.identity.length > 0 && html`<${IdentityBlock} warnings=${plan.identity} choice=${identity} setChoice=${setIdentity} />`}
       ${!ready ? html`<${Empty} icon="list-checks" title="Nothing planned yet">
           ${!count && !targets ? "Pick items on the left and target servers, and a dry-run plan appears here automatically."
@@ -466,7 +468,7 @@ function IdentityBlock({ warnings, choice, setChoice }) {
   const files = new Map();
   for (const w of warnings) for (const k of w.keys) {
     const f = files.get(w.path) || files.set(w.path, new Map()).get(w.path);
-    (f.get(k.key) || f.set(k.key, { source: k.source_value, targets: [] }).get(k.key)).targets.push([w.server, k.target_value]);
+    (f.get(k.key) || f.set(k.key, { source: k.source_value, targets: [] }).get(k.key)).targets.push([w.server, k.target_value, k.reason]);
   }
   const servers = new Set(warnings.map(w => w.server)).size;
   return html`<section class="identity" aria-labelledby="id-h" role="group">
@@ -474,10 +476,12 @@ function IdentityBlock({ warnings, choice, setChoice }) {
     <p class="small">This push would change values that differ on each server (identity, ports, database names) on ${plural(servers, "server")}.</p>
     ${[...files].map(([path, keys]) => html`<div class="id-file"><div class="mono small id-path">${path}</div>
       <table class="id-tbl"><thead><tr><th scope="col">Key</th><th scope="col">This server now</th><th scope="col">Source value</th></tr></thead>
-        <tbody>${[...keys].map(([key, v]) => v.targets.map(([srv, tv], i) => html`<tr>
+        <tbody>${[...keys].map(([key, v]) => v.targets.map(([srv, tv, reason], i) => html`<tr>
           ${i === 0 && html`<th scope="row" rowspan=${v.targets.length} class="mono">${key}</th>`}
-          <td><span class="small muted">${srv}</span> <span class="mono">${tv}</span></td>
-          ${i === 0 && html`<td rowspan=${v.targets.length} class="mono">${v.source}</td>`}</tr>`))}</tbody></table></div>`)}
+          <td><span class="small muted">${srv}</span> <span class="mono">${tv}</span>
+            ${reason === "target_only" && html`<div class="small id-why">not in the source file — overwriting drops it</div>`}
+            ${reason === "complex" && html`<div class="small id-why">list or multi-line value</div>`}</td>
+          ${i === 0 && html`<td rowspan=${v.targets.length} class="mono">${v.source ?? "—"}</td>`}</tr>`))}</tbody></table></div>`)}
     <div class="id-choice" role="radiogroup" aria-label="Server-specific values" aria-required="true">
       <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "keep"} onChange=${() => { setChoice("keep"); setEditing(false); }} />
         <div><b>Keep each server's own values <span class="tag tag-ok">recommended</span></b><span>Push everything else; these keys stay as they are on every target.</span></div></label>

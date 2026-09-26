@@ -560,6 +560,8 @@ a.srv-chip:hover { border-color: var(--line-strong); color: var(--fg); }
 .id-tbl th, .id-tbl td { text-align: left; padding: 4px 10px; border-top: 1px solid var(--line); vertical-align: top; }
 .id-tbl thead th { border-top: 0; color: var(--fg-3); font-weight: 600; }
 .id-tbl td .mono { color: var(--fg); }
+.id-why { color: var(--warn); }
+.plan-warn.is-info { background: var(--surface-2); color: var(--fg-2); border-bottom-color: var(--line); }
 .id-choice { display: grid; gap: 6px; }
 .id-choice .radio-card { background: var(--surface); }
 .has-identity { border-left: 2px solid var(--warn); padding-left: 6px; margin-left: -8px; }
