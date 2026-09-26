@@ -1,0 +1,23 @@
+[Unit]
+Description=Luke's Genius Tools - AMP Sync (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=amp
+Group=amp
+WorkingDirectory=/opt/lgt-amp-sync
+Environment=LGT_STATE_DIR=/var/lib/lgt-amp-sync
+# Optional: lock GUI to your datastore base (prevents typo accidents)
+# Environment=LGT_BASE_OVERRIDE=/mnt/storage_ssd/ssd-live
+ExecStart=/opt/lgt-amp-sync/run.sh
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/lgt-amp-sync /mnt/storage_ssd/ssd-live
+
+[Install]
+WantedBy=multi-user.target

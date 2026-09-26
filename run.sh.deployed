@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -e
+
+APP_DIR="/opt/lgt-amp-sync"
+VENV="$APP_DIR/venv"
+
+exec "$VENV/bin/uvicorn" app.main:app \
+  --host 0.0.0.0 \
+  --port 8078
