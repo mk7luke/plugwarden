@@ -2,12 +2,11 @@
 import { html, render, useEffect } from "./lib.js";
 import { useRoute, navigate } from "./router.js";
 import { setState, getState, prefetch, peek, invalidate, useQuery } from "./store.js";
-import { trackJob, JOB_TITLES } from "./jobs.js";
+import { trackJob, JOB_TITLES, kindTitle } from "./jobs.js";
 import { Sidebar, Topbar, Tabbar, Drawer } from "./components/shell.js";
 import { Toasts, ConfirmHost, Palette, Dock, NAV, Shortcuts } from "./components/overlays.js";
 import { ChangesetHost } from "./components/changeset.js";
 import { RemoveHost } from "./components/removedialog.js";
-import { RollingHost, ConsoleHost, AmpCacheSync } from "./components/amp.js";
 import { checkUpdates, openUpdateAll } from "./actions.js";
 import { Dashboard } from "./views/dashboard.js";
 import { ServersList, ServerDetail } from "./views/servers.js";
@@ -24,7 +23,7 @@ const TITLES = { dashboard: "Dashboard", servers: "Servers", plugins: "Plugins",
 // "Deploy · 5m ago" for a job id, when the job list is cached.
 function jobCrumb(id) {
   const j = (peek("/jobs") || []).find(x => x.id === id);
-  return j ? `${JOB_TITLES[j.kind] || j.kind} · ${relTime(j.started || j.created)}` : "Job";
+  return j ? `${kindTitle(j.kind)} · ${relTime(j.started || j.created)}` : "Job";
 }
 
 function view(r) {
@@ -105,9 +104,6 @@ function App() {
     <${Palette} actions=${PALETTE_ACTIONS} />
     <${ChangesetHost} />
     <${RemoveHost} />
-    <${RollingHost} />
-    <${ConsoleHost} />
-    <${AmpCacheSync} />
     <${ConfirmHost} />
     <${Shortcuts} />
     <${Dock} />
@@ -117,7 +113,7 @@ function App() {
 
 // Attach to jobs already running (started elsewhere or by the scheduler) so their logs stream into the dock.
 prefetch("/overview").finally(() => {
-  for (const j of peek("/overview")?.active_jobs || []) trackJob(j.id, { title: JOB_TITLES[j.kind] || "Job", quiet: true });
+  for (const j of peek("/overview")?.active_jobs || []) trackJob(j.id, { title: kindTitle(j.kind), quiet: true });
 });
 
 // Keep the overview (counts, last check, auto-update status) fresh while the tab is visible.

@@ -2,7 +2,7 @@
 import { html, useState, useMemo, useEffect } from "../lib.js";
 import { useQuery, useStore, confirmDialog } from "../store.js";
 import { post } from "../api.js";
-import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
+import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle, kindTitle } from "../jobs.js";
 import { navigate } from "../router.js";
 import { LogView } from "../components/overlays.js";
 import { StartupCheck } from "../components/health.js";
@@ -28,8 +28,12 @@ export function Activity({ id, tab }) {
   const [hideDry, setHideDry] = useState(() => pref("amp.act.hidedry", "1") === "1");
   const setHD = (v) => { setHideDry(v); try { localStorage.setItem("amp.act.hidedry", v ? "1" : "0"); } catch {} };
   const base = useMemo(() => (q.data || []).filter(j => !hideDry || !j.dry_run), [q.data, hideDry]);
-  const list = useMemo(() => base.filter(j => kind === "all" || j.kind === kind), [base, kind]);
-  const count = (k) => k === "all" ? base.length : base.filter(j => j.kind === k).length;
+  // "Other": kinds without their own filter (e.g. jobs from a removed feature).
+  const known = new Set(KINDS.map(k => k[0]));
+  const match = (j, k) => k === "all" || (k === "other" ? !known.has(j.kind) : j.kind === k);
+  const list = useMemo(() => base.filter(j => match(j, kind)), [base, kind]);
+  const count = (k) => base.filter(j => match(j, k)).length;
+  const kinds = count("other") ? [...KINDS, ["other", "Other"]] : KINDS;
   const selected = id || null;
   // Wide screens have room for the detail pane: open the newest job instead of an empty "Select a job".
   useEffect(() => {
@@ -38,12 +42,12 @@ export function Activity({ id, tab }) {
 
   return html`<${PageHead} title="Activity" sub="Every update, deploy and undo — who ran it, what changed, and the full log." />
     <div class="toolbar"><div class="seg" role="group" aria-label="Filter by kind">
-      ${KINDS.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}
+      ${kinds.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}
       <button type="button" aria-pressed=${kind === "access" ? "true" : "false"} onClick=${() => setKind("access")} title="Who viewed config diffs and changed settings, pins, ignores, sources and uploads"><${Icon} n="eye" cls="i-xs" />Audit</button></div>
       <span class="spacer"></span>
       ${kind !== "access" && html`<label class="switch small"><input type="checkbox" checked=${hideDry} onChange=${e => setHD(e.currentTarget.checked)} />Hide dry runs</label>`}</div>
     ${kind === "access" ? html`<${AccessLog} />` : html`
-    <div class=${"act-layout" + (selected ? " has-detail" : "") + (q.data && !q.data.length ? " is-empty" : "")}>
+    <div class=${"act-layout" + (selected ? " has-detail" : "") + (q.data && !q.data.length && !selected ? " is-empty" : "")}>
       <section class="panel job-list-panel" aria-label="Job history">
         ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
           : q.loading ? html`<${SkelRows} n=${8} cols=${[4, 50, 12]} />`
@@ -107,7 +111,7 @@ function JobDetail({ id }) {
   const [busy, setBusy] = useState(false);
   const [checkAll, setCheckAll] = useState(false);
   useEffect(() => { if (live && !isActive(live.status)) q.reload(); }, [live?.status]);
-  if (q.error) return html`<div class="panel"><div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div></div>`;
+  if (q.error) return html`<div class="panel"><div class="panel-body">${q.error.status === 404 ? html`<${Empty} icon="history" title="Job not found">No job with id <span class="mono">${id}</span> — it may have been pruned. <a class="link" href="#/activity">See all activity</a><//>` : html`<${ErrorState} error=${q.error} retry=${q.reload} />`}</div></div>`;
   if (q.loading) return html`<div class="panel"><div class="panel-body stack"><${Skel} w="60%" h=${16} /><${Skel} w="40%" /><${Skel} w="50%" /><${Skel} h=${120} /></div></div>`;
   const j = q.data;
   if (!j) return html`<div class="panel"><${Empty} icon="scroll-text" title="Job not found">It may have been pruned from history.<//></div>`;
@@ -142,7 +146,7 @@ function JobDetail({ id }) {
       ${j.undone_by && html`<a class="link" href=${`#/activity/${j.undone_by}`}>View undo job</a>`}</div>`}
     <div class="panel-head" style="flex-wrap:wrap">
       <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${KIND_ICON[j.kind] || "terminal"} cls="i-xs" /></span>
-      <h2 id="jd-h" class="grow" style="min-width:160px">${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? " · dry run" : ""}<span class="sub" style="display:block;font-weight:400;margin-top:1px">${jobSummary(j) || (running ? "In progress…" : "")}</span></h2>
+      <h2 id="jd-h" class="grow" style="min-width:160px">${kindTitle(j.kind)}${j.dry_run ? " · dry run" : ""}<span class="sub" style="display:block;font-weight:400;margin-top:1px">${jobSummary(j) || (running ? "In progress…" : "")}</span></h2>
       ${canUndo && html`<${Btn} size="sm" icon="undo-2" busy=${busy} onClick=${undo}>Undo<//>`}
     </div>
     <div class="panel-body">

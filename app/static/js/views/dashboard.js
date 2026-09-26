@@ -4,11 +4,10 @@ import { useQuery, useStore } from "../store.js";
 import { Icon, Btn, Tag, Platform, VerArrow, Skel, ErrorState, Empty } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
 import { checkUpdates } from "../actions.js";
-import { relTime, plural } from "../fmt.js";
+import { relTime, absTime, plural } from "../fmt.js";
 import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { updateCounts, updateHeadline, updateDetail, restartList, checkLine, updatesOf } from "../summary.js";
 import { CanaryStatus } from "../components/health.js";
-import { useAmpStatus, AmpBadge, RestartNow } from "../components/amp.js";
 
 const MODE = { off: "Off", notify: "Notify only", apply: "Automatic" };
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
@@ -20,7 +19,6 @@ export function Dashboard() {
   const mx = useQuery("/matrix");
   const jobs = useQuery("/jobs");
   const [view, setView] = useState(() => pref("amp.dash.view", "tiles"));
-  const amp = useAmpStatus();
   const setV = (v) => { setView(v); save("amp.dash.view", v); };
 
   const byServer = useMemo(() => {
@@ -51,9 +49,10 @@ export function Dashboard() {
             <button type="button" aria-pressed=${view === "tiles" ? "true" : "false"} onClick=${() => setV("tiles")}><${Icon} n="layout-dashboard" cls="i-xs" />Tiles</button>
             <button type="button" aria-pressed=${view === "list" ? "true" : "false"} onClick=${() => setV("list")}><${Icon} n="menu" cls="i-xs" />List</button>
           </div></div>
-        ${!d ? html`<div class="tiles">${Array.from({ length: 9 }, () => html`<div class="tile tile-skel"><${Skel} w="55%" h=${12} /><${Skel} w="40%" h=${10} /><${Skel} w="80%" h=${8} /><${Skel} w="70%" h=${8} /><${Skel} w="60%" h=${8} /></div>`)}</div>`
+        ${!d && ov.error ? html`<p class="small muted">Server tiles appear once the overview loads.</p>`
+          : !d ? html`<div class="tiles">${Array.from({ length: 9 }, () => html`<div class="tile tile-skel"><${Skel} w="55%" h=${12} /><${Skel} w="40%" h=${10} /><${Skel} w="80%" h=${8} /><${Skel} w="70%" h=${8} /><${Skel} w="60%" h=${8} /></div>`)}</div>`
           : view === "list" ? html`<${ServerList} servers=${d.servers} byServer=${byServer} />`
-          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} checked=${!!d.last_check} a=${amp.servers[s.id]} />`)}</div>`}
+          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} checked=${!!d.last_check} />`)}</div>`}
       </section>
       <aside aria-labelledby="feed-h"><${Feed} q=${jobs} /></aside>
     </div>`;
@@ -80,8 +79,7 @@ function Headline({ d, c, restarts }) {
       ${(() => { const f = d.servers.flatMap(s => (s.startup?.failed || []).map(p => ({ ...p, server: s.id }))); return f.length > 0 && html`<p class="hl-canary-fail"><${Icon} n="circle-x" cls="i-sm" />
         <b>${plural(f.length, "plugin")} ${f.length === 1 ? "is" : "are"} not running:</b> <span>${f.slice(0, 3).map(p => html`<a class="link" href=${`#/servers/${encodeURIComponent(p.server)}`}>${p.name} on ${p.server}</a>`).reduce((a, x, i) => i ? [...a, ", ", x] : [x], [])}${f.length > 3 ? ` +${f.length - 3} more` : ""}</span></p>`; })()}
       ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
-        <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span>
-        <${RestartNow} servers=${restarts.map(r => r.server)} /></p>`}
+        <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
     <div class="row wrap" style="gap:8px">
       ${has ? html`<${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => openChangeset("all", "Review: update everything")}>Review & update all<//>`
@@ -93,15 +91,15 @@ function Headline({ d, c, restarts }) {
 function Flags({ s, n, restart = true, compact = false }) {
   const driftTip = s.drift_plugins?.length ? `Differs from the network majority: ${s.drift_plugins.map(p => `${p.name} ${p.version} (network: ${p.expected})`).join(", ")}` : `${plural(s.drift, "plugin")} on a different version than the network majority`;
   return html`<div class="tile-flags">
-    ${n > 0 && html`<span class="tag tag-update tip" tabindex="0" data-tip=${`${plural(n, "plugin")} can be updated on ${s.id}`}>${plural(n, "update")}</span>`}
+    ${n > 0 && html`<span class="tag tag-update tip" tabindex="0" data-tip=${`${plural(n, "plugin")} can be updated on ${s.id}`} aria-label=${compact ? plural(n, "update") : undefined}>${compact ? html`<${Icon} n="circle-arrow-up" />${n}` : plural(n, "update")}</span>`}
     ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip} aria-label=${`${s.drift} drift: ${driftTip}`}><${Icon} n="git-compare-arrows" />${s.drift}${compact ? "" : " drift"}</span>`}
-    ${(s.startup?.failed?.length || s.startup_failed) > 0 && html`<span class="tag tag-danger tip" tabindex="0" data-tip=${`Not running after the last start: ${(s.startup?.failed || []).map(f => f.name).join(", ") || s.startup_failed}`}><${Icon} n="circle-x" />${s.startup?.failed?.length || s.startup_failed} failed</span>`}
+    ${(s.startup?.failed?.length || s.startup_failed) > 0 && html`<span class="tag tag-danger tip" tabindex="0" data-tip=${`Not running after the last start: ${(s.startup?.failed || []).map(f => f.name).join(", ") || s.startup_failed}`}><${Icon} n="circle-x" />${s.startup?.failed?.length || s.startup_failed}${compact ? "" : " failed"}</span>`}
     ${restart && s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started"><${Icon} n="rotate-ccw" />Restart</span>`}
     ${!compact && s.is_source && html`<span class="tag tag-plain tip" tabindex="0" data-tip="Default deploy source"><${Icon} n="circle-dot" />source</span>`}
   </div>`;
 }
 
-function ServerTile({ s, ups, loadingUps, vers, checked, a }) {
+function ServerTile({ s, ups, loadingUps, vers, checked }) {
   const href = `#/servers/${encodeURIComponent(s.id)}`;
   const empty = s.plugin_count === 0;
   const n = ups.length;
@@ -120,8 +118,7 @@ function ServerTile({ s, ups, loadingUps, vers, checked, a }) {
         : html`<div class="watch-empty ok"><${Icon} n="circle-check" cls="i-sm" />All tracked plugins current</div>`}
     </div>
     <div class="tile-foot">
-      <${AmpBadge} a=${a} />
-      ${!(a && s.pending_restart) && html`<span class="tile-plat ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} short=${!!s.pending_restart} />`}${s.is_source ? html` <span class="muted">· source</span>` : ""}</span>`}
+      ${html`<span class="tile-plat ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} short=${!!s.pending_restart} />`}${s.is_source ? html` <span class="muted">· source</span>` : ""}</span>`}
       ${s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started — restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart</span>`}
       ${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}
         aria-label=${`Review ${plural(n, "update")} on ${s.id}`}>Review ${n}<//>`}
@@ -148,7 +145,8 @@ function Feed({ q }) {
   const list = useMemo(() => {
     // Real changes only by default: no checks, dry runs, or jobs that changed nothing.
     const noop = (j) => !isActive(j.status) && j.counts && !j.counts.changed && j.kind !== "update-check";
-    const src = (q.data || []).filter(j => all || isActive(j.status) || (!j.dry_run && j.kind !== "update-check" && !noop(j)));
+    // Kinds this version doesn't know (e.g. from a removed feature) stay in Activity only.
+    const src = (q.data || []).filter(j => JOB_TITLES[j.kind] && (all || isActive(j.status) || (!j.dry_run && j.kind !== "update-check" && !noop(j))));
     const out = [];
     for (const j of src) {
       const prev = out[out.length - 1];
@@ -166,9 +164,9 @@ function Feed({ q }) {
       : html`<ol class="feed">${list.map(j => { const undone = j.status === "undone" || j.undone_by; return html`<li class=${"feed-item" + (undone ? " is-undone" : "")}>
         <span class=${"feed-icon " + (undone ? "" : jobTone(j))}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
         <div style="min-width:0"><a class="feed-title" href=${`#/activity/${j.id}`}>${j.group ? `${j.group} update checks` : jobTitle(j)}</a>
-          ${j.dry_run ? html` <${Tag}>dry run<//>` : ""}${undone ? html` <${Tag}>reverted<//>` : ""}
-          ${!j.group && jobSummary(j) && html`<div class="feed-sum">${jobSummary(j)}</div>`}
-          <div class="feed-meta"><span>${j.group ? "last " : ""}${relTime(j.started || j.created)}</span><span>·</span><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length > 1 ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
+          ${j.dry_run ? html` <${Tag}>dry run<//>` : ""}${undone ? html` <${Tag}>Reverted<//>` : j.undo_failed_by ? html` <${Tag} kind="danger">Undo failed<//>` : ""}
+          <div class="feed-meta">${!j.group && jobSummary(j) ? html`<span class="feed-sum ellipsis">${jobSummary(j)}</span><span>·</span>` : ""}<span class="ellipsis">${j.user || "system"}</span>${j.servers?.length > 1 ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
+        <span class="when" title=${absTime(j.started || j.created)}>${j.group ? "last " : ""}${relTime(j.started || j.created)}</span>
       </li>`; })}</ol>
       <div class="panel-foot"><a class="link small" href="#/activity">All activity</a></div>`}
   </div>`;

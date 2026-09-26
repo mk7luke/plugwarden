@@ -4,9 +4,8 @@ import { useStore, setState, dismissToast, peek, prefetch, setTheme, getState } 
 import { searchFiles } from "../api.js";
 import { openChangeset } from "./changeset.js";
 import { openRemove } from "./removedialog.js";
-import { openConsole, openRolling, power } from "./amp.js";
 import { navigate } from "../router.js";
-import { Icon, Btn, Kbd, modKey } from "./ui.js";
+import { Icon, Btn, Kbd, modKey, focusables, trapTab } from "./ui.js";
 import { dismissJob, toggleJobMin, isActive, jobTone } from "../jobs.js";
 import { plural } from "../fmt.js";
 
@@ -15,17 +14,11 @@ function useTrap(ref, onEscape) {
   useEffect(() => {
     const prev = document.activeElement;
     const el = ref.current;
-    const sel = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
-    const auto = el?.querySelector("[data-autofocus]") || el?.querySelector(sel);
+    const auto = el?.querySelector("[data-autofocus]") || (el && focusables(el)[0]);
     auto?.focus();
     const key = (e) => {
       if (e.key === "Escape") { e.preventDefault(); onEscape(); }
-      if (e.key === "Tab" && el) {
-        const f = [...el.querySelectorAll(sel)];
-        if (!f.length) return;
-        if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
-        else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
-      }
+      trapTab(e, el);
     };
     document.addEventListener("keydown", key);
     return () => { document.removeEventListener("keydown", key); prev?.focus?.(); };
@@ -114,8 +107,7 @@ const tokScore = (tokens, text) => { let t = 0; for (const k of tokens) { const 
 const GROUPS = ["Actions", "Plugins", "Servers", "Files", "Go to"];
 // Verb words a query may start or end with; "update core" = verb "update" + entity "core".
 const VERBS = { update: "update", upgrade: "update", review: "update", replace: "replace", swap: "replace", remove: "remove", delete: "remove", del: "remove", rm: "remove",
-  open: "open", go: "open", show: "open", push: "deploy", deploy: "deploy", sync: "deploy",
-  console: "console", con: "console", term: "console", restart: "restart", reboot: "restart", start: "start", boot: "start" };
+  open: "open", go: "open", show: "open", push: "deploy", deploy: "deploy", sync: "deploy" };
 const verbOf = (tok) => Object.keys(VERBS).find(v => tok.length >= 2 && v.startsWith(tok)) ? VERBS[Object.keys(VERBS).find(v => v.startsWith(tok))] : null;
 
 function PaletteInner({ actions }) {
@@ -175,12 +167,6 @@ function PaletteInner({ actions }) {
         act("Servers", "open", 0, s.id, `Go to ${s.id}`, "server", () => navigate(`#/servers/${encodeURIComponent(s.id)}`), s.platform);
         if (s.updates) act("Servers", "update", 1, s.id, `Review ${plural(s.updates, "update")} on ${s.id}…`, "circle-arrow-up", () => openChangeset({ server: s.id }, `Review updates on ${s.id}`));
         if (s.eligible_target) act("Servers", "deploy", 2, s.id, `Deploy to ${s.id}…`, "rocket", () => navigate(`#/deploy?targets=${encodeURIComponent(s.id)}`));
-        const a = getState().ampCache?.[s.id];
-        if (ov?.amp?.configured && a) {
-          act("Servers", "console", 1, s.id, `Open console ${s.id}`, "terminal", () => openConsole(s.id));
-          if (a.state === "running" && !ov.amp.readonly) act("Servers", "restart", 2, s.id, `Restart ${s.id}…`, "rotate-ccw", () => openRolling([s.id]));
-          if (a.state === "stopped" && !ov.amp.readonly) act("Servers", "start", 2, s.id, `Start ${s.id}`, "play", () => power(s.id, "start"));
-        }
       }
       if (!verbs.length || verbs.includes("deploy")) for (const f of files) out.push({ group: "Files", label: `Push ${f.path}…`, icon: "file-code", hint: `from ${f.src}`, sc: 50, rank: 0, run: () => navigate(`#/deploy?paths=${encodeURIComponent(f.path)}`) });
     }
@@ -236,20 +222,6 @@ export const LogView = ({ lines, empty = "Waiting for output…", live }) => {
     : html`<span class="log-empty">${empty}</span>`}</pre>`;
 };
 
-// Rolling-restart phases, as reported in job.progress.current.phase.
-const PHASE = { warning: "warning players", waiting_empty: "waiting for players to leave", stopping: "stopping", starting: "starting", health: "checking plugin startup", done: "done" };
-
-// Rolling restarts report progress only in the log: "==> M4 (1/2)" then "  M4: warned players (60s)".
-function rollingStep(lines) {
-  let head = null, step = null;
-  for (let i = lines.length - 1; i >= 0 && !head; i--) {
-    const l = lines[i].replace(/^\[[^\]]*\]\s*/, "");
-    head = /^==> (\S+) \((\d+)\/(\d+)\)/.exec(l);
-    if (!head && !step) step = /^\s*\S+: (.+)$/.exec(l)?.[1];
-  }
-  return head && `${head[1]} · ${head[2]}/${head[3]}${step ? ` · ${step}` : ""}`;
-}
-
 export function Dock() {
   const jobs = useStore(s => s.jobs.filter(j => j.id !== s.inlineJob));
   const j = jobs[0];
@@ -259,7 +231,7 @@ export function Dock() {
   return html`<section class=${"dock" + (j.min ? " min" : "")} aria-label="Running job">
     <div class="dock-head">
       ${running ? html`<${Icon} n="loader-circle" cls="spin t-info" /> ` : failed ? html`<${Icon} n="circle-x" cls="outcome-failed" />` : html`<${Icon} n="circle-check" cls="outcome-changed" />`}
-      <div class="grow"><b>${j.title}</b><div class="sub">${running ? (!j.progress?.current && rollingStep(j.lines)) || (j.progress?.current ? `${j.progress.current.server} · ${PHASE[j.progress.current.phase] || j.progress.current.phase}${j.progress.total ? ` · ${j.progress.done}/${j.progress.total}` : ""}` : "Running…") : j.job?.summary || j.status} · <span class="mono">${j.id}</span>${jobs.length > 1 ? ` · +${jobs.length - 1} more` : ""}</div></div>
+      <div class="grow"><b>${j.title}</b><div class="sub">${running && (j.job?.status || j.status) === "queued" ? "Queued — waiting for another job to finish" : running ? (j.progress?.total ? `${j.progress.done} of ${j.progress.total} done` : "Running…") : j.job?.summary || j.status} · <span class="mono">${j.id}</span>${jobs.length > 1 ? ` · +${jobs.length - 1} more` : ""}</div></div>
       <a class="btn btn-ghost btn-sm" href=${`#/activity/${j.id}`}>Details</a>
       <${Btn} kind="ghost" size="sm" icon=${j.min ? "chevron-down" : "minus"} aria-label=${j.min ? "Expand log" : "Minimise log"} onClick=${() => toggleJobMin(j.id)} />
       ${!running && html`<${Btn} kind="ghost" size="sm" icon="x" aria-label="Close" onClick=${() => dismissJob(j.id)} />`}

@@ -70,7 +70,7 @@ export function knownIssues(report) {
   const brief = (l) => l.replace(/^(\[[^\]]*\]:?\s*)+/, "").slice(0, 160);
   // Top-level list when the backend sends it; its `reason` is generic, so show the log line itself.
   const known = Array.isArray(report.preexisting_errors)
-    ? report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
+    ? report.preexisting_errors.map(e => ({ kind: e.kind, repeats: e.repeats, lines: typeof e.lines === "number" ? e.lines : undefined, group_size: e.group_size, name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
     : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level })));
   // Errors that can't be judged yet (no earlier start to compare with) are only listed per plugin.
   const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ name: pname(p), reason: `${brief(first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
@@ -79,34 +79,63 @@ export function knownIssues(report) {
 
 // Warnings that were already there before the latest change (e.g. a UDP port already in use).
 // "2 errors, 1 warning" — by the backend's level, else by the matched log line.
+const levelOf = (i) => i.level || (/\b(ERROR|SEVERE)\b/.test(i.reason || "") || /\b(ERROR|SEVERE)\b/.test(lines(i.excerpt)) ? "error" : "warning");
 function byLevel(issues) {
-  const lv = (i) => i.level || (/\b(ERROR|SEVERE)\b/.test(i.reason || "") || /\b(ERROR|SEVERE)\b/.test(lines(i.excerpt)) ? "error" : "warning");
-  const e = issues.filter(i => lv(i) === "error").length, w = issues.length - e;
+  const e = issues.filter(i => levelOf(i) === "error").length, w = issues.length - e;
   return [e && plural(e, "error"), w && plural(w, "warning")].filter(Boolean).join(", ");
 }
+// Banner rules (~~~~, ====) carry no information.
+const DECOR = /^[\W_]{8,}$/;
+// "A new release for X is available", "update available", "out of date"…: plugin nags, not problems.
+const NAG = /new (release|version|update)|update (is )?available|updates? found|out of date|outdated|newer version|latest version is/i;
 
-export function KnownIssues({ issues, title = "Known issues on this server", sub = "that also appeared in earlier starts — not caused by recent changes" }) {
-  if (!issues?.length) return null;
-  // The same message logged by several code paths reads as one issue with a count.
-  const grouped = [...issues.reduce((m, i) => { const k = `${i.name}|${i.reason}`; const g = m.get(k); g ? g.n++ : m.set(k, { ...i, n: 1 }); return m; }, new Map()).values()];
-  issues = grouped;
-  return html`<section class="known" aria-label=${title}>
-    <div class="row" style="gap:8px"><${Icon} n="info" cls="i-sm" /><b class="small">${title}</b>
-      <span class="small muted">${byLevel(issues)} ${sub}</span></div>
-    <ul>${issues.map(i => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
-      ${i.seen_in_runs > 1 && html`<span class="small muted"> · in the last ${i.seen_in_runs} starts</span>`}
-      <${Excerpt} ...${ex(i)} /></li>`)}</ul>
-  </section>`;
+// Collapses a multi-line banner (same plugin, same log, lines next to each other) into one issue titled by its first real line.
+function group(issues) {
+  const out = [];
+  for (const i of issues) {
+    const prev = out[out.length - 1];
+    if (prev && prev.name === i.name && prev.log === i.log && i.line != null && prev.lastLine != null && i.line - prev.lastLine <= 2 && levelOf(prev) === levelOf(i)) {
+      prev.extra += 1 + (i.extra_lines || 0); prev.lastLine = i.line;
+      if (DECOR.test(prev.reason) && !DECOR.test(i.reason)) prev.reason = i.reason;
+      continue;
+    }
+    out.push({ ...i, extra: i.lines ? i.lines - 1 : i.group_size ? i.group_size - 1 : 0, lastLine: i.line });
+  }
+  return out.filter(i => !DECOR.test(i.reason || ""));
 }
 
-// Server page: known issues from the current run's log (no `since`).
+export function KnownIssues({ issues, title = "Known issues on this server", sub = "seen in earlier starts — not caused by recent changes" }) {
+  const [showWarn, setShowWarn] = useState(false);
+  const [wid] = useState(() => "kw-" + Math.random().toString(36).slice(2, 8));
+  if (!issues?.length) return null;
+  const nags = issues.filter(i => i.kind === "update_notice" || NAG.test(i.reason || ""));
+  const real = group(issues.filter(i => !nags.includes(i)));
+  // The same message logged by several code paths reads as one issue with a count.
+  const merged = [...real.reduce((m, i) => { const k = `${i.name}|${i.reason}`; const g = m.get(k); g ? g.n += (i.repeats || 1) : m.set(k, { ...i, n: i.repeats || 1 }); return m; }, new Map()).values()];
+  const errors = merged.filter(i => levelOf(i) === "error"), warnings = merged.filter(i => levelOf(i) !== "error");
+  const nagPlugins = [...new Set(nags.map(i => i.name).filter(Boolean))];
+  if (!merged.length && !nagPlugins.length) return null;
+  const row = (i) => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
+      ${i.seen_in_runs > 1 && html`<span class="small muted"> · in the last ${i.seen_in_runs} starts</span>`}
+      <${Excerpt} ...${ex(i)} label=${i.extra ? `Log excerpt (+${plural(i.extra, "line")})` : "Log excerpt"} /></li>`;
+  return html`<section class="known" aria-label=${title}>
+    <div class="row" style="gap:8px"><${Icon} n="info" cls="i-sm" /><b class="small">${title}</b>
+      <span class="small muted">${merged.length ? `${byLevel(merged)} ${sub}` : ""}</span></div>
+    ${errors.length > 0 && html`<ul>${errors.map(row)}</ul>`}
+    ${warnings.length > 0 && (!errors.length && warnings.length <= 2 ? html`<ul class="known-warn">${warnings.map(row)}</ul>`
+      : html`<button type="button" class="linkbtn small known-more" aria-expanded=${showWarn ? "true" : "false"} aria-controls=${wid} onClick=${() => setShowWarn(v => !v)}>
+          <${Icon} n="chevron-right" cls=${"i-xs" + (showWarn ? " rot90" : "")} />${showWarn ? "Hide" : "Show"} ${plural(warnings.length, "warning")}</button>
+        <ul class="known-warn" id=${wid} hidden=${!showWarn}>${warnings.map(row)}</ul>`)}
+    ${nagPlugins.length > 0 && html`<p class="small muted known-nag"><${Icon} n="circle-arrow-up" cls="i-xs" />${plural(nagPlugins.length, "plugin")} announce${nagPlugins.length === 1 ? "s" : ""} updates in ${nagPlugins.length === 1 ? "its" : "their"} logs (${nagPlugins.slice(0, 4).join(", ")}${nagPlugins.length > 4 ? ` +${nagPlugins.length - 4}` : ""}) — <a class="link" href="#/updates">see Updates</a></p>`}
+  </section>`;
+}
 export function ServerKnownIssues({ server }) {
   const q = useQuery(`/servers/${encodeURIComponent(server)}/health`);
   const failing = (q.data?.plugins || []).filter(p => p.status === "failed");
   return html`${failing.length > 0 && html`<section class="known is-failing" aria-label="Plugins failing at startup">
       <div class="row" style="gap:8px"><${Icon} n="circle-x" cls="i-sm" /><b class="small">${plural(failing.length, "plugin")} ${failing.some(p => p.running === false) ? "not running" : "failed to start"} after the last start</b>
         <span class="small muted">${q.data.restarted_at ? `started ${relTime(q.data.restarted_at)}` : ""}</span></div>
-      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting ? " (on every start)" : ""}</span>
+      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting && !/every start/.test(p.reason || "") ? " (on every start)" : ""}</span>
         ${p.running === false && html` <${Tag} kind="danger">Not running<//>`}<${Excerpt} ...${ex(p)} /></li>`)}</ul>
     </section>`}
     <${KnownIssues} issues=${knownIssues(q.data)} />`;

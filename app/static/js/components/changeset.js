@@ -8,8 +8,7 @@ import { updatesOf, compatOf } from "../summary.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "./overlays.js";
 import { StartupCheck } from "./health.js";
-import { RestartNow } from "./amp.js";
-import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow } from "./ui.js";
+import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow, trapTab } from "./ui.js";
 import { plural, bytes, safeUrl } from "../fmt.js";
 
 // scope: "all" | {server} | {keys:[key]} | {items:[{key, servers?}]} — translated to the API's {items}.
@@ -34,7 +33,7 @@ function useSheetFocus(ref, onClose) {
   useEffect(() => {
     const prev = document.activeElement;
     ref.current?.querySelector("[data-autofocus]")?.focus() || ref.current?.focus();
-    const k = (e) => { if (e.key === "Escape" && !getState().confirm) onClose(); };
+    const k = (e) => { if (e.key === "Escape" && !getState().confirm) onClose(); if (!getState().confirm) trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
   }, []);
@@ -222,8 +221,7 @@ function Result({ live, job, running, rows, onClose }) {
       <div class="row wrap" style="gap:6px">${Object.entries(byOutcome).map(([k, v]) => html`<${Tag} kind=${k === "changed" ? "ok" : k === "error" ? "danger" : ""}>${v} ${k === "changed" ? "updated" : k}<//>`)}
 </div>
       ${restart.length > 0 && html`<section class="restart-list" aria-labelledby="rs-h">
-        <h3 id="rs-h"><${Icon} n="rotate-ccw" cls="i-sm" />Restart checklist <span class="muted small grow" style="font-weight:500">${restart.length - restarted.size} of ${plural(restart.length, "server")} still need${restart.length - restarted.size === 1 ? "s" : ""} a restart</span>
-          <${RestartNow} servers=${restart.filter(s => !restarted.has(s))} /></h3>
+        <h3 id="rs-h"><${Icon} n="rotate-ccw" cls="i-sm" />Restart checklist <span class="muted small" style="font-weight:500">${restart.length - restarted.size} of ${plural(restart.length, "server")} still need${restart.length - restarted.size === 1 ? "s" : ""} a restart</span></h3>
         <ul>${restart.map(s => { const d = restarted.has(s); return html`<li class=${d ? "is-done" : ""}>
           <span class="tick">${d ? html`<${Icon} n="check" cls="i-xs" />` : ""}</span><b>${s}</b>
           <span class="small muted grow">${res.filter(r => r.server === s && r.outcome === "changed").map(nameOf).join(", ")}</span>

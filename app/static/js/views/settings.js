@@ -50,7 +50,7 @@ export function Settings({ tab }) {
 
 function General({ d, set, servers }) {
   return html`
-    <div class="field-row"><div class="field-label">Datastore base<small>Where AMP instances live. Each instance's <span class="mono">Minecraft/plugins</span> is managed.</small></div>
+    <div class="field-row"><div class="field-label">Datastore base<small>The folder that holds every server; each server's <span class="mono">Minecraft/plugins</span> is managed.</small></div>
       <div class="stack" style="gap:6px"><div class="readonly"><${Icon} n="folder-open" cls="i-sm" /><span class="path-scroll">${d.base || "Configured on the server"}</span>
         ${d.base && html`<${Btn} size="sm" kind="ghost" icon="copy" aria-label="Copy datastore path" onClick=${() => { navigator.clipboard?.writeText(d.base); toast({ kind: "ok", title: "Path copied" }); }} />`}</div>
         ${(d.base_overridden || d.base_readonly) && html`<span class="small muted row" style="gap:6px">${d.base_overridden && html`<${Tag} kind="warn">override<//>`}Set by the server environment — read-only here.</span>`}</div></div>
@@ -122,7 +122,7 @@ function Sources({ d, set }) {
     </div>`}
     <div class="input-wrap" style="max-width:300px"><${Icon} n="search" cls="i-sm" /><input class="input" type="search" placeholder="Filter plugins" aria-label="Filter plugins" value=${filter} onInput=${e => setFilter(e.currentTarget.value)} /></div>
     ${mx.error ? html`<${ErrorState} error=${mx.error} retry=${mx.reload} />` : mx.loading ? html`<${SkelRows} n=${6} />` : html`<div class="panel tbl-wrap" style="max-height:520px">
-      <table class="tbl"><thead><tr><th scope="col">Plugin</th><th scope="col">Detected</th><th scope="col">Manual source</th><th scope="col" title="Allow the scheduler to auto-apply from the manual source">Auto</th><th scope="col">Id / slug</th></tr></thead>
+      <table class="tbl src-tbl"><thead><tr><th scope="col">Plugin</th><th scope="col">Detected</th><th scope="col">Manual source</th><th scope="col" title="Allow the scheduler to auto-apply from the manual source">Auto</th><th scope="col">Id / slug</th></tr></thead>
       <tbody>${rows.map(p => { const m = sm[p.key] || {}; return html`<tr key=${p.key}>
         <td><span class="strong">${p.name}</span>${p.family && p.family !== "bukkit" ? html` <span class="small muted">· ${p.family}</span>` : ""}</td>
         <td>${m.kind ? html`<${Tag} kind="accent" title="A manual source is used instead of the automatic match">${p.source && p.source.kind !== m.kind ? `manual · overrides ${p.source.kind}` : "manual"}<//>` : p.unknown ? html`<${Tag} icon="circle-dashed">untracked<//>` : html`<span class="row" style="gap:6px"><${Tag} kind="ok" icon="check">auto<//><span class="small muted">${p.source?.kind}</span></span>`}</td>

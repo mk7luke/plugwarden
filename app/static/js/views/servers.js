@@ -2,16 +2,15 @@
 import { html, useState, useMemo, useEffect, useRef } from "../lib.js";
 import { useQuery, invalidate, toast, setState, useStore, getState } from "../store.js";
 import { post, put } from "../api.js";
-import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check } from "../components/ui.js";
+import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, trapTab } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
 import { ServerKnownIssues } from "../components/health.js";
-import { AmpPanel, RestartNow } from "../components/amp.js";
 import { relTime, bytes, plural, safeUrl } from "../fmt.js";
 import { navigate } from "../router.js";
 
 export function ServersList() {
   const q = useQuery("/servers");
-  return html`<${PageHead} title="Servers" sub="Every AMP instance with a plugins folder under the datastore." />
+  return html`<${PageHead} title="Servers" sub="Every server with a plugins folder under the datastore." />
     <div class="panel">
       ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
         : q.loading ? html`<${SkelRows} n=${8} />`
@@ -67,7 +66,7 @@ export function ServerDetail({ id }) {
   // Plugins the last start left not running (from the log-based health report; same query as the failures card).
   const health = useQuery(srv && srv.plugin_count > 0 ? `/servers/${encodeURIComponent(id)}/health` : null);
   const notRunning = new Set((health.data?.plugins || []).filter(h => h.status === "failed").map(h => h.key));
-  const counts = { all: plugins.data?.length, outdated: outdated.length, unknown: plugins.data?.filter(p => p.status === "unknown").length, held: plugins.data?.filter(held).length };
+  const counts = { all: plugins.data?.length, outdated: plugins.data ? outdated.length : undefined, unknown: plugins.data?.filter(p => p.status === "unknown").length, held: plugins.data?.filter(held).length };
 
   const review = (list, title) => openChangeset(list.length === outdated.length ? { server: id } : { items: list.map(p => ({ key: p.key, servers: [id] })) }, title);
 
@@ -86,12 +85,10 @@ export function ServerDetail({ id }) {
     <${PageHead} title=${id} sub=${srv ? html`<span class="row wrap" style="gap:10px"><${Platform} p=${srv.platform} mc=${srv.mc_version} /> · ${plural(srv.plugin_count, "plugin")}
         ${srv.drift > 0 && html` · <span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip(srv)}><${Icon} n="git-compare-arrows" />${srv.drift} drift</span>`}</span>` : " "}>
       ${srv?.eligible_target && html`<a class="btn" href=${`#/deploy?targets=${encodeURIComponent(id)}`}><${Icon} n="rocket" cls="i-sm" />Deploy to ${id}</a>`}
-      <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${() => review(outdated, `Review updates on ${id}`)}>
-        ${reading ? "Reading plugins…" : outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>
+      ${!plugins.error && html`<${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} aria-busy=${!plugins.data ? "true" : undefined} onClick=${() => review(outdated, `Review updates on ${id}`)}>
+        ${!plugins.data ? "Review updates" : reading ? "Reading plugins…" : outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>`}
     <//>
-    ${srv && srv.family !== "fabric" && html`<${AmpPanel} server=${id} />`}
     ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed</b> — files changed since ${id} last started.</div>
-      <${RestartNow} servers=${[id]} label="Restart now…" />
       <${Btn} size="sm" icon="check" onClick=${markRestarted}>Mark restarted<//></div>`}
     ${srv && srv.plugin_count > 0 && html`<${ServerKnownIssues} server=${id} />`}
     ${srv?.platform === "velocity" && html`<div class="plan-warn" style="border:1px solid var(--warn-line);border-radius:var(--r-md);margin-bottom:var(--s-4)"><${Icon} n="shield" cls="i-sm" />Velocity proxy — it uses a different plugin ecosystem, and Bukkit/Paper plugins are never pushed here.</div>`}
@@ -229,7 +226,7 @@ function SourceDialog() {
     setAutoApply(!!cur?.auto_apply);
     const prev = document.activeElement;
     setTimeout(() => ref.current?.querySelector("select")?.focus(), 0);
-    const k = (e) => e.key === "Escape" && setState({ mapSource: null });
+    const k = (e) => { if (e.key === "Escape") setState({ mapSource: null }); trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
   }, [p?.key, st.data]);

@@ -123,6 +123,10 @@ export function Deploy({ query }) {
     }
   };
 
+  const loadErr = servers.error || settings.error;
+  if (loadErr) return html`<${PageHead} title="Deploy" sub="Push configs, roll out jars, or remove plugins — with a dry-run plan before anything is touched." />
+    <div class="panel"><div class="panel-body"><${ErrorState} error=${loadErr} retry=${() => { servers.reload(); settings.reload(); }} /></div></div>`;
+
   return html`
     <${PageHead} title="Deploy" sub="Push configs, roll out jars, or remove plugins — with a dry-run plan before anything is touched." >
       ${(count > 0 || targets.size > 0) && html`<${Btn} kind="ghost" icon="x" onClick=${() => { reset(); setTargets(new Set()); history.replaceState(null, "", "#/deploy"); }}>Clear<//>`}

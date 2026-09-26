@@ -82,3 +82,19 @@ export function Check({ checked, indeterminate, onChange, label, children, disab
   return html`<label class="check"><input type="checkbox" checked=${!!checked} aria-label=${label} disabled=${!!disabled}
     ref=${el => el && (el.indeterminate = !!indeterminate)} onChange=${e => onChange(e.currentTarget.checked)} />${children}</label>`;
 }
+
+// ---------- focus trap ----------
+// Tab / Shift+Tab wrap inside `el`. Only real focus targets count (not SVG <use href> or hidden elements).
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+export const focusables = (el) => [...el.querySelectorAll(FOCUSABLE)].filter(x => x.offsetParent !== null || x === document.activeElement);
+export function trapTab(e, el) {
+  if (e.key !== "Tab" || !el) return;
+  const a = document.activeElement;
+  // A dialog stacked above (e.g. a confirm over a sheet) handles its own focus.
+  if (a && a !== document.body && !el.contains(a)) return;
+  const f = focusables(el);
+  if (!f.length) { e.preventDefault(); return; }
+  const i = f.indexOf(a);
+  if (e.shiftKey && (i <= 0)) { e.preventDefault(); f[f.length - 1].focus(); }
+  else if (!e.shiftKey && (i === -1 || i === f.length - 1)) { e.preventDefault(); f[0].focus(); }
+}

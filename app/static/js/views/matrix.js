@@ -5,7 +5,7 @@ import { html, useState, useMemo, useEffect, useRef } from "../lib.js";
 import { useQuery, setState, useStore, getState, toast } from "../store.js";
 import { openRemove } from "../components/removedialog.js";
 import { openChangeset } from "../components/changeset.js";
-import { Icon, Btn, Tag, StatusTag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
+import { Icon, Btn, Tag, StatusTag, SkelRows, ErrorState, Empty, PageHead, Skel, trapTab } from "../components/ui.js";
 import { navigate } from "../router.js";
 import { plural, compactVer, midTrunc } from "../fmt.js";
 import { ineligible } from "./deploy.js";
@@ -167,7 +167,7 @@ function PluginDrawer({ all, source, pf }) {
     if (!key) return;
     const prev = document.activeElement;
     ref.current?.querySelector("[data-autofocus]")?.focus();
-    const k = (e) => e.key === "Escape" && !getState().confirm && close();
+    const k = (e) => { if (e.key === "Escape" && !getState().confirm) close(); if (!getState().confirm) trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
   }, [key]);

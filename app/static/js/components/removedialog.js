@@ -5,7 +5,7 @@ import { html, useState, useEffect, useRef } from "../lib.js";
 import { useStore, setState } from "../store.js";
 import { get, post } from "../api.js";
 import { runJob } from "../jobs.js";
-import { Icon, Btn, Skel } from "./ui.js";
+import { Icon, Btn, Skel, trapTab } from "./ui.js";
 import { plural, bytes } from "../fmt.js";
 
 export const openRemove = (row) => setState({ removePlugin: row });
@@ -30,7 +30,7 @@ function RemoveDialog({ row }) {
   useEffect(() => {
     const prev = document.activeElement;
     ref.current?.querySelector("[data-autofocus]")?.focus();
-    const k = (e) => e.key === "Escape" && close();
+    const k = (e) => { if (e.key === "Escape") close(); trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
   }, []);

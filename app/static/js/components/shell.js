@@ -1,7 +1,7 @@
 // App shell: sidebar, top bar, mobile tab bar + drawer.
 import { html, useRef, useEffect } from "../lib.js";
 import { useStore, setState, useQuery, setTheme, invalidate } from "../store.js";
-import { Icon, Btn, Kbd, modKey } from "./ui.js";
+import { Icon, Btn, Kbd, modKey, trapTab } from "./ui.js";
 import { checkUpdates } from "../actions.js";
 import { isActive } from "../jobs.js";
 import { relTime, initials } from "../fmt.js";
@@ -77,7 +77,7 @@ export function Drawer({ route }) {
   if (!open) return null;
   const close = () => setState({ drawer: false });
   return html`<div class="scrim" onClick=${close}></div>
-  <aside class="drawer" role="dialog" aria-modal="true" aria-label="Navigation" onKeyDown=${e => e.key === "Escape" && close()}>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-label="Navigation" onKeyDown=${e => { if (e.key === "Escape") close(); trapTab(e, e.currentTarget); }}>
     <div class="row"><${Brand} /><span class="grow"></span><${Btn} kind="ghost" icon="x" aria-label="Close menu" onClick=${close} /></div>
     <${NavList} route=${route} ov=${ov} onNav=${close} />
     <${SideFoot} ov=${ov} route=${route} onNav=${close} />
