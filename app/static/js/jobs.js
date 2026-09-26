@@ -73,12 +73,16 @@ export function trackJob(id, { title, onDone, quiet } = {}) {
           body: job?.summary,
           href: `#/activity/${id}`,
         });
-        // Most undos happen in the first minute: offer it right here for 10 s (also on "z").
-        if (UNDO_KINDS.has(job?.kind) && !job.dry_run && st === "done" && job.undoable) toast({
-          kind: "ok", title: `${title || kindTitle(job.kind)} finished`, body: job.summary,
-          timeout: 10000, countdown: 10, undo: true, href: `#/activity/${id}`,
-          action: { label: "Undo", run: () => undoJob(job) },
-        });
+        // Most undos happen in the first minute: offer it for 10 s (also on "z") on the surface already showing the
+        // result — the dock row, or the review sheet's own result panel — and only as a toast when neither is visible.
+        if (UNDO_KINDS.has(job?.kind) && !job.dry_run && st === "done" && job.undoable) {
+          if (shown) patch(id, { undoUntil: Date.now() + 10000 });
+          else if (getState().inlineJob !== id) toast({
+            kind: "ok", title: `${title || kindTitle(job.kind)} finished`, body: job.summary,
+            timeout: 10000, countdown: 10, undo: true, href: `#/activity/${id}`,
+            action: { label: "Undo", run: () => undoJob(job) },
+          });
+        }
         invalidate("/overview", "/servers", "/matrix", "/updates", "/jobs");
         onDone?.(job);
         resolve(job);

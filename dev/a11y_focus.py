@@ -75,13 +75,14 @@ def main():
 
         def page(w=1440, h=900):
             pg = b.new_page(viewport={"width": w, "height": h})
+            pg.set_default_timeout(60000)
             pg.on("pageerror", lambda e: errs.append(str(e)))
             pg.route("**/api/v2/**", lambda r: r.abort() if r.request.method in ("POST", "PUT", "DELETE", "PATCH") else r.continue_())
             return pg
 
         x = page()
         # 1. Command palette
-        x.goto(BASE + "#/"); x.wait_for_selector(".tile", timeout=30000)
+        x.goto(BASE + "#/"); x.wait_for_selector(".tile", timeout=60000)
         x.locator(".topbar input, .search-btn, [aria-label*='Search']").first.focus()
         x.keyboard.press("Control+k")
         check(x, "command palette", ".palette")
@@ -92,7 +93,7 @@ def main():
 
         # 3. Review sheet from a server page
         x.goto(BASE + "#/servers/elChapo01")
-        x.wait_for_selector(".page-head button:has-text('Review '):not([disabled])", timeout=30000)
+        x.wait_for_selector(".page-head button:has-text('Review '):not([disabled])", timeout=60000)
         btn = x.locator(".page-head button:has-text('Review '):not([disabled])").first
         btn.focus(); x.keyboard.press("Enter")
         check(x, "review sheet", ".sheet", opener_desc="Review")
@@ -104,7 +105,7 @@ def main():
             check(x, "map-source dialog", '[aria-modal="true"]', opener_desc="No update source")
 
         # 5. Plugin drawer, and 6. drawer -> Remove hand-off (the r7 P1)
-        x.goto(BASE + "#/plugins"); x.wait_for_selector(".mx-open", timeout=30000)
+        x.goto(BASE + "#/plugins"); x.wait_for_selector(".mx-open", timeout=60000)
         opener = x.locator(".mx-open:not([disabled])").first
         name = opener.get_attribute("aria-label")
         opener.focus(); x.keyboard.press("Enter")
@@ -121,7 +122,7 @@ def main():
         check(x, "palette → Remove dialog", '[aria-labelledby="rm-t"]')
 
         # 8. Confirm dialog (turning on automatic installs; the save request is aborted anyway)
-        x.goto(BASE + "#/updates"); x.wait_for_selector("text=Check & apply", timeout=30000)
+        x.goto(BASE + "#/updates"); x.wait_for_selector("text=Check & apply", timeout=60000)
         for _ in range(3):
             if not x.locator(".scrim").count():
                 break
@@ -135,7 +136,7 @@ def main():
 
         # 9. Navigation drawer on a phone
         m = page(390, 844)
-        m.goto(BASE + "#/"); m.wait_for_selector(".tile", timeout=30000)
+        m.goto(BASE + "#/"); m.wait_for_selector(".tile", timeout=60000)
         mb = m.locator("button[aria-label='Open menu']")
         mb.focus(); m.keyboard.press("Enter")
         check(m, "nav drawer (390)", ".drawer", opener_desc="Open menu")

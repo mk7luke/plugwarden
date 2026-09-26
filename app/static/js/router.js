@@ -23,3 +23,13 @@ export function useRoute() {
   }, []);
   return r;
 }
+
+// Navigate, then open a dialog on the new page. Route changes close open dialogs, so the dialog must open after that.
+let afterNav = null;
+export function openAfterNav(to, open) {
+  const h = to.startsWith("#") ? to : "#" + to;
+  if (location.hash.split("?")[0] === h.split("?")[0]) { open(); return; }
+  afterNav = open;
+  navigate(h);
+}
+export function runAfterNav() { const f = afterNav; afterNav = null; f?.(); }

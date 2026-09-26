@@ -163,8 +163,17 @@ function mark(line) {
   parts.push(line.slice(last));
   return parts;
 }
+// Defensive cleanup in case source text slips through: markdown escapes ("26\.2\."), and leading
+// boilerplate (Patreon/Discord pleas, a bare "Changelog" heading) that would push the real changes out of view.
+const BOILER = /patr(eo)?on|discord|sponsor|donat|support(ing)? (the|this) project|ko-fi/i;
+const HEADING = /^(changelog|changes|what'?s new|release notes)\s*:?$/i;
+function cleanLines(lines) {
+  const out = lines.map(l => l.replace(/\\([\\`*_{}[\]()#+\-.!|>~])/g, "$1"));
+  while (out.length && (BOILER.test(out[0]) || HEADING.test(out[0].replace(/^•\s*/, "").trim()))) out.shift();
+  return out;
+}
 export function Changelog({ r }) {
-  const lines = r.changelog?.lines || [];
+  const lines = cleanLines(r.changelog?.lines || []);
   if (!lines.length) return null;
   const flags = riskFlags(lines);
   return html`<details class="cl">

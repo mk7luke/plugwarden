@@ -4,9 +4,9 @@ import { useStore, setState, dismissToast, peek, prefetch, setTheme, getState } 
 import { searchFiles } from "../api.js";
 import { openChangeset } from "./changeset.js";
 import { openRemove } from "./removedialog.js";
-import { navigate } from "../router.js";
+import { navigate, openAfterNav } from "../router.js";
 import { Icon, Btn, Kbd, modKey, focusables, trapTab, restoreFocus } from "./ui.js";
-import { dismissJob, toggleJobMin, isActive, jobTone } from "../jobs.js";
+import { dismissJob, toggleJobMin, isActive, jobTone, undoJob } from "../jobs.js";
 import { plural } from "../fmt.js";
 
 // ---------- focus trap ----------
@@ -168,7 +168,7 @@ function PaletteInner({ actions }) {
         act("Plugins", "open", 0, p.name, `Open ${p.name}`, "package", () => { navigate(`#/plugins?q=${encodeURIComponent(p.name)}`); setState({ pluginDrawer: p.key }); }, plural(cells.length, "server"));
         if (outd) act("Plugins", "update", 1, p.name, `Update ${p.name} on ${plural(outd, "server")}…`, "circle-arrow-up", () => openChangeset({ keys: [p.key] }, `Update ${p.name} everywhere`));
         if (src) act("Plugins", "replace", 2, p.name, `Replace ${p.name} jar from ${source}…`, "arrow-up-down", () => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}`));
-        act("Plugins", "remove", 3, p.name, `Remove ${p.name}…`, "trash-2", () => { navigate("#/plugins"); setTimeout(() => openRemove({ ...p }), 50); });
+        act("Plugins", "remove", 3, p.name, `Remove ${p.name}…`, "trash-2", () => openAfterNav("#/plugins", () => openRemove({ ...p })));
       }
       for (const s of ov?.servers || []) {
         act("Servers", "open", 0, s.id, `Go to ${s.id}`, "server", () => navigate(`#/servers/${encodeURIComponent(s.id)}`), s.platform);
@@ -229,6 +229,15 @@ export const LogView = ({ lines, empty = "Waiting for output…", live }) => {
     : html`<span class="log-empty">${empty}</span>`}</pre>`;
 };
 
+// "Undo · 9s" on a finished job's dock row; gone when the time is up (Undo then lives in Activity).
+function DockUndo({ j }) {
+  const left = () => Math.max(0, Math.ceil((j.undoUntil - Date.now()) / 1000));
+  const [n, setN] = useState(left);
+  useEffect(() => { const t = setInterval(() => setN(left()), 500); return () => clearInterval(t); }, [j.undoUntil]);
+  if (!n) return null;
+  return html`<${Btn} kind="primary" size="sm" icon="undo-2" aria-keyshortcuts="z" onClick=${() => { setState(s => ({ jobs: s.jobs.map(x => x.id === j.id ? { ...x, undoUntil: 0 } : x) })); undoJob(j.job); }}>Undo<span class="t-count" aria-hidden="true"> · ${n}s</span><//>`;
+}
+
 export function Dock() {
   const jobs = useStore(s => s.jobs.filter(j => j.id !== s.inlineJob));
   const j = jobs[0];
@@ -239,6 +248,7 @@ export function Dock() {
     <div class="dock-head">
       ${running ? html`<${Icon} n="loader-circle" cls="spin t-info" /> ` : failed ? html`<${Icon} n="circle-x" cls="outcome-failed" />` : html`<${Icon} n="circle-check" cls="outcome-changed" />`}
       <div class="grow"><b>${j.title}</b><div class="sub">${running && (j.job?.status || j.status) === "queued" ? "Queued — waiting for another job to finish" : running ? (j.progress?.total ? `${j.progress.done} of ${j.progress.total} done` : "Running…") : j.job?.summary || j.status} · <span class="mono">${j.id}</span>${jobs.length > 1 ? ` · +${jobs.length - 1} more` : ""}</div></div>
+      ${!running && j.undoUntil && html`<${DockUndo} j=${j} />`}
       <a class="btn btn-ghost btn-sm" href=${`#/activity/${j.id}`}>Details</a>
       <${Btn} kind="ghost" size="sm" icon=${j.min ? "chevron-down" : "minus"} aria-label=${j.min ? "Expand log" : "Minimise log"} onClick=${() => toggleJobMin(j.id)} />
       ${!running && html`<${Btn} kind="ghost" size="sm" icon="x" aria-label="Close" onClick=${() => dismissJob(j.id)} />`}

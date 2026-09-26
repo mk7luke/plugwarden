@@ -715,7 +715,7 @@ a.srv-chip:hover { border-color: var(--line-strong); color: var(--fg); }
 .toast p { color: var(--fg-3); font-size: var(--fs-xs); margin-top: 1px; }
 .toast .t-ok { color: var(--ok); } .toast .t-err { color: var(--danger); } .toast .t-info { color: var(--accent); }
 .toast .t-actions { display: flex; gap: 4px; margin-top: 6px; }
-.toast .t-count { font-variant-numeric: tabular-nums; opacity: .8; font-weight: 500; }
+.toast .t-count, .dock .t-count { font-variant-numeric: tabular-nums; opacity: .8; font-weight: 500; }
 
 /* job dock */
 .dock {
@@ -725,7 +725,8 @@ a.srv-chip:hover { border-color: var(--line-strong); color: var(--fg); }
 }
 .dock-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .dock-head b { font-size: var(--fs-sm); font-weight: 620; }
-.dock-head .sub { font-size: var(--fs-xs); color: var(--fg-3); }
+.dock-head .sub { font-size: var(--fs-xs); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dock-head > .grow { min-width: 0; }
 .dock .log { max-height: 220px; border-top: 0; }
 .dock.min .log { display: none; }
 .progress { height: 2px; background: var(--surface-3); position: relative; overflow: hidden; }

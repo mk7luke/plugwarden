@@ -72,14 +72,21 @@ export function Dashboard() {
 }
 
 // "Since you last looked (yesterday 9:14 PM): 3 new updates (LuckPerms 5.5.23, …) · 1 plugin stopped running · 2 changes by others".
-function SinceLine({ s }) {
+function SinceLine({ s, pending }) {
   if (!s?.at) return null;
   const nu = s.new_updates_total ?? s.new_updates.length, nf = s.new_failures.length, nj = s.jobs_by_others.length;
+  const backlog = s.is_backlog === true;
   if (!nu && !nf && !nj) return html`<p class="hl-since"><${Icon} n="clock" cls="i-sm" /><span>Nothing new since you last looked <span class="muted" title=${absTime(s.at)}>(${relTime(s.at)})</span></span></p>`;
-  const names = (xs, f, n = 2) => xs.slice(0, n).map(f).join(", ") + (xs.length > n ? ", …" : "");
+  // The 3 newest by name, then "+N more" against the full count (lists are capped server-side).
+  const names = (xs, f, total = xs.length, n = 3) => xs.slice(0, n).map(f).join(", ") + (total > n ? ` +${total - n} more` : "");
   const who = [...new Set(s.jobs_by_others.map(j => j.user || "someone"))];
+  // Honest counts (backend's is_backlog): when every pending update, or the whole first-check backlog, is "new",
+  // say they were found since then, not that they're news. Otherwise the new ones are a subset of what's waiting.
+  const newest = names(s.new_updates, u => `${u.name} ${u.to_version}`, nu);
   const parts = [
-    nu && html`<a class="link" href="#/updates">${plural(nu, "new update")}</a> <span class="muted">(${names(s.new_updates, u => `${u.name} ${u.to_version}`)})</span>`,
+    nu && (backlog
+      ? html`<a class="link" href="#/updates">${nu === 1 ? "the only pending update was" : `all ${nu} pending updates were`} found since then</a> <span class="muted">(${newest})</span>`
+      : html`<a class="link" href="#/updates">${plural(nu, "new update")}</a> <span class="muted">(${newest}${pending > nu ? `; ${pending} waiting in all` : ""})</span>`),
     nf && html`<a class="link" href=${`#/servers/${encodeURIComponent(s.new_failures[0].server)}`}>${plural(nf, "plugin")} stopped running</a> <span class="muted">(${names(s.new_failures, f => `${f.name} on ${f.server}`)})</span>`,
     nj && html`<a class="link" href=${`#/activity/${s.jobs_by_others[0].id}`}>${plural(nj, "change")} by ${who.slice(0, 2).join(" and ")}${who.length > 2 ? " and others" : ""}</a>`,
   ].filter(Boolean);
@@ -106,7 +113,7 @@ function Headline({ d, c, restarts, since }) {
 <${CanaryStatus} au=${d.auto_update} compact=${true} />
       ${(() => { const f = d.servers.flatMap(s => (s.startup?.failed || []).map(p => ({ ...p, server: s.id }))); return f.length > 0 && html`<p class="hl-canary-fail"><${Icon} n="circle-x" cls="i-sm" />
         <b>${plural(f.length, "plugin")} ${f.length === 1 ? "is" : "are"} not running:</b> <span>${f.slice(0, 3).map(p => html`<a class="link" href=${`#/servers/${encodeURIComponent(p.server)}`}>${p.name} on ${p.server}</a>${causeShort(p.cause) ? html`<span class="muted"> (${causeShort(p.cause)})</span>` : ""}`).reduce((a, x, i) => i ? [...a, ", ", x] : [x], [])}${f.length > 3 ? ` +${f.length - 3} more` : ""}</span></p>`; })()}
-      <${SinceLine} s=${since} />
+      <${SinceLine} s=${since} pending=${c.plugins} />
       ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
         <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
