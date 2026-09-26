@@ -11,9 +11,9 @@ from fastapi.templating import Jinja2Templates
 
 APP_TITLE = "Luke’s Genius Tools — AMP Sync"
 
-BASE_DEFAULT = "/mnt/storage_ssd/ssd-live"
+BASE_DEFAULT = os.environ.get("LGT_BASE", "/mnt/storage_ssd/ssd-live")
 REL_PLUGINS = "Minecraft/plugins"
-SCRIPT_ORIG = "/usr/local/bin/amp-plugin-sync"
+SCRIPT_ORIG = os.environ.get("LGT_SCRIPT", "/usr/local/bin/amp-plugin-sync")
 
 STATE_DIR = Path(os.environ.get("LGT_STATE_DIR", "/var/lib/lgt-amp-sync"))
 UPLOAD_DIR = STATE_DIR / "uploads"
