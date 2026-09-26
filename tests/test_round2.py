@@ -336,3 +336,80 @@ def test_undoing_an_undo_clears_undone(env):
     jobs.wait(actions.start_undo("t", u.id), 30)
     assert jobs.get(j.id).to_dict()["status"] == "done"
     assert jobs.get(u.id).to_dict()["status"] == "undone"
+
+
+def test_reason_codes_replace_fields_and_job_extras(env):
+    out = engine.dry_run({"source": "elChapo01", "targets": ["M1-hub01", "M3-hunger01"], "action": "replace",
+                          "items": {"jars": ["CoreProtect-24.1.jar", "Vault.jar"]}})
+    rows = {(r["server"], r["item"]): r for r in out["results"]}
+    cp = rows[("M1-hub01", "CoreProtect-24.1.jar")]
+    assert cp["old_jars"] == ["CoreProtect-23.1.jar"] and cp["new_jar"] == "CoreProtect-24.1.jar"
+    assert cp["old_versions"] == ["23.1"] and cp["new_version"] == "24.1" and "reason_code" not in cp
+    assert rows[("M3-hunger01", "CoreProtect-24.1.jar")]["reason_code"] == "not_installed"
+    j = deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"jars": ["Vault.jar"]}})
+    d = j.to_dict()
+    assert d["restart_servers"] == ["M1-hub01"] and d["undone_at"] is None
+    jobs.wait(actions.start_undo("t", j.id), 30)
+    assert jobs.get(j.id).to_dict()["undone_at"]
+    again = engine.dry_run({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync",
+                            "items": {"jars": ["Vault.jar", "Nope.jar"]}})
+    codes = {r["item"]: r.get("reason_code") for r in again["results"]}
+    assert codes == {"Vault.jar": None, "Nope.jar": "missing_on_source"}  # Vault differs again after undo
+
+
+# ---------------------------------------------------------------- diff redaction + access log, pinned drift
+
+def test_diff_redacts_secrets_and_flags_changes(env):
+    (env["src"] / "LuckPerms").mkdir()
+    (env["a"] / "LuckPerms").mkdir()
+    (env["src"] / "LuckPerms" / "config.yml").write_text(
+        "data:\n  password: 'new-secret'\n  username: lp\nserver: a\napi-key: same\n")
+    (env["a"] / "LuckPerms" / "config.yml").write_text(
+        "data:\n  password: 'old-secret'\n  username: lp\nserver: b\napi-key: same\n")
+    with TestClient(app) as c:
+        r = c.get("/api/v2/diff", params={"source": "elChapo01", "target": "M1-hub01", "path": "LuckPerms/config.yml"},
+                  headers={"Cf-Access-Authenticated-User-Email": "ops@example.com"}).json()
+        assert "new-secret" not in r["diff"] and "old-secret" not in r["diff"] and "same" not in r["diff"]
+        assert "-server: b" in r["diff"] and "+server: a" in r["diff"]
+        assert r["redacted"] == [{"key": "api-key", "changed": False}, {"key": "password", "changed": True}]
+        assert r["redacted_changed"] is True
+        # only the secret differs → not identical, empty diff, but flagged
+        (env["a"] / "LuckPerms" / "config.yml").write_text(
+            "data:\n  password: 'x'\n  username: lp\nserver: a\napi-key: same\n")
+        r = c.get("/api/v2/diff", params={"source": "elChapo01", "target": "M1-hub01", "path": "LuckPerms/config.yml"}).json()
+        assert r["diff"] == "" and r["identical"] is False and r["redacted_changed"] is True
+        log = c.get("/api/v2/access-log").json()["entries"]
+        assert len(log) == 2 and log[0]["user"] == "local" and log[1]["user"] == "ops@example.com"
+        assert log[1]["servers"] == ["elChapo01", "M1-hub01"] and log[1]["path"] == "LuckPerms/config.yml"
+        assert log[1]["action"] == "diff" and "redacted" in log[1]["detail"]
+        filtered = c.get("/api/v2/access-log", params={"user": "OPS@"}).json()["entries"]
+        assert [e["user"] for e in filtered] == ["ops@example.com"]
+        assert c.get("/api/v2/access-log", params={"server": "M3"}).json()["entries"] == []
+
+
+def test_pinned_installs_are_not_drift(env):
+    make_jar(env["b"] / "CoreProtect-23.1.jar", "CoreProtect", "23.1")
+    # 3 installs: source 24.1, M1 23.1, M3 23.1 → majority 23.1, source drifts
+    src, _ = _server("elChapo01")
+    assert [d["key"] for d in src["drift_plugins"]] == ["bukkit:coreprotect"]
+    # pin M1 and M3 at 23.1: they don't vote, source (only voter) is expected; pinned ones are flagged, not drift
+    settings.update({"pins": {"bukkit:coreprotect": {"version": "23.1", "servers": ["M1-hub01", "M3-hunger01"]}}})
+    src, snap = _server("elChapo01")
+    m1, _ = _server("M1-hub01")
+    assert not any(d["key"] == "bukkit:coreprotect" for d in src["drift_plugins"])
+    assert not any(d["key"] == "bukkit:coreprotect" for d in m1["drift_plugins"])
+    assert m1["drift_pinned"] == [{"key": "bukkit:coreprotect", "name": "CoreProtect", "version": "23.1",
+                                   "expected": "24.1"}]
+    assert "bukkit:coreprotect" not in snap["drift"]
+    with TestClient(app) as c:
+        row = next(r for r in c.get("/api/v2/matrix").json()["plugins"] if r["key"] == "bukkit:coreprotect")
+    assert row["drift"] is False
+    assert row["cells"]["M1-hub01"]["drift"] is False and row["cells"]["M1-hub01"]["drift_pinned"] is True
+    assert row["cells"]["M1-hub01"]["status"] == "pinned"
+
+
+def test_redaction_keeps_toggles_visible():
+    from app.inventory import redact
+    out, found = redact(["BlockWebhooks: false\n", "TokenExpiry: 3600\n", "BotToken: \"abc\"\n"])
+    assert out == ["BlockWebhooks: false\n", "TokenExpiry: 3600\n", "BotToken: «redacted»\n"]
+    assert found == {"BotToken": '"abc"'}

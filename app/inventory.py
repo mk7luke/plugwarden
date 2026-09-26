@@ -474,6 +474,43 @@ def search(server: Server, q: str, limit: int = 200) -> dict:
     return {"server": server.id, "q": q, "results": results, "truncated": truncated}
 
 
+REDACTED = "«redacted»"
+_SECRET_KEY = r"[A-Za-z0-9_.\-]*(?:password|passwd|secret|token|api[-_]?key|webhook|jdbc|private[-_]?key|license)[A-Za-z0-9_.\-]*"
+# key: value (YAML/properties), key = value (TOML/properties), "key": value (JSON); optional list dash / quotes.
+_SECRET_LINE = re.compile(r"^(?P<pre>\s*(?:-\s+)?)(?P<q>[\"']?)(?P<key>" + _SECRET_KEY + r")(?P=q)(?P<sep>\s*[:=]\s*)"
+                          r"(?P<val>[^\s#].*?)(?P<post>\s*,?\s*)$", re.I)
+# Values that are secrets whatever their key is called.
+_SECRET_VALUE = re.compile(r"^(?P<pre>\s*(?:-\s+)?)(?P<q>[\"']?)(?P<key>[A-Za-z0-9_.\-]+)(?P=q)(?P<sep>\s*[:=]\s*)"
+                           r"(?P<val>[\"']?(?:jdbc:|https?://(?:\w+\.)?discord(?:app)?\.com/api/webhooks/|"
+                           r"[a-z]+://[^/\s:@]+:[^/\s@]+@).*?)(?P<post>\s*,?\s*)$", re.I)
+
+
+def _not_secret(val: str) -> bool:
+    """Empty values, block/collection openers, booleans and numbers (feature toggles like
+    'BlockWebhooks: false') carry no secret; showing them keeps config diffs useful."""
+    v = val.strip().strip("'\"").lower()
+    return v in ("", "|", ">", "{", "[", "true", "false", "yes", "no", "on", "off", "null", "~") or \
+        bool(re.fullmatch(r"-?\d+(\.\d+)?", v))
+
+
+def redact(lines: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Replace secret values with «redacted». Returns new lines and {key label: original value}, where
+    repeated keys are labelled 'password', 'password (2)', … in file order (same on both sides)."""
+    out, found, seen = [], {}, {}
+    for ln in lines:
+        body, nl = (ln[:-1], "\n") if ln.endswith("\n") else (ln, "")
+        m = _SECRET_LINE.match(body) or _SECRET_VALUE.match(body)
+        if not m or _not_secret(m.group("val")):
+            out.append(ln)
+            continue
+        key = m.group("key")
+        seen[key] = seen.get(key, 0) + 1
+        label = key if seen[key] == 1 else f"{key} ({seen[key]})"
+        found[label] = m.group("val")
+        out.append(f"{m.group('pre')}{m.group('q')}{key}{m.group('q')}{m.group('sep')}{REDACTED}{m.group('post')}{nl}")
+    return out, found
+
+
 def diff_file(source: Server, target: Server, rel: str) -> dict:
     """Unified diff of one text file between two servers (≤ 256 KB each)."""
     src = resolve_in(source, rel)
@@ -481,7 +518,8 @@ def diff_file(source: Server, target: Server, rel: str) -> dict:
     rel = check_rel(rel)
     out: dict[str, Any] = {"path": rel, "source": source.id, "target": target.id,
                            "source_exists": src.is_file(), "target_exists": dst.is_file(),
-                           "identical": False, "binary": False, "too_large": False, "diff": ""}
+                           "identical": False, "binary": False, "too_large": False, "diff": "",
+                           "redacted": [], "redacted_changed": False}
     if (src.exists() and not src.is_file()) or (dst.exists() and not dst.is_file()):
         raise PathError(f"not a file: {rel!r}")
     if not src.is_file() and not dst.is_file():
@@ -507,7 +545,12 @@ def diff_file(source: Server, target: Server, rel: str) -> dict:
         if len(texts[-1]) > DIFF_MAX_LINES:
             out["too_large"] = True
             return out
-    out["identical"] = texts[0] == texts[1] and out["source_exists"] == out["target_exists"]
+    (texts[0], secrets_src), (texts[1], secrets_dst) = redact(texts[0]), redact(texts[1])
+    out["redacted"] = [{"key": k, "changed": secrets_src.get(k) != secrets_dst.get(k)}
+                       for k in sorted(set(secrets_src) | set(secrets_dst))]
+    out["redacted_changed"] = any(r["changed"] for r in out["redacted"])
+    out["identical"] = (texts[0] == texts[1] and out["source_exists"] == out["target_exists"]
+                        and not out["redacted_changed"])
     # "what the target will become": target (a) → source (b)
     out["diff"] = "".join(difflib.unified_diff(texts[1], texts[0], fromfile=f"{target.id}/{rel}",
                                                tofile=f"{source.id}/{rel}"))

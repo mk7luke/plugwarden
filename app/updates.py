@@ -414,7 +414,19 @@ def current_compat(p: dict, srv: inventory.Server, cache: dict) -> dict | None:
     if not comp:
         return None
     ok = None if not srv.mc_version or srv.family == "velocity" else srv.mc_version in comp["mc_versions"]
-    return {**comp, "supports_server": ok}
+    return {**comp, "supports_server": ok, "mc": srv.mc_version, "ok": ok}
+
+
+def compat_for(compat: dict | None, srv: inventory.Server) -> dict | None:
+    """Adds the server's MC version and whether the version supports it (None when unknown)."""
+    if not compat:
+        return None
+    ok = None
+    if srv.family == "velocity":
+        ok = None if not compat["loaders"] else "velocity" in compat["loaders"]
+    elif srv.mc_version and compat["mc_versions"]:
+        ok = srv.mc_version in compat["mc_versions"]
+    return {**compat, "mc": srv.mc_version, "ok": ok}
 
 
 def public_latest(latest: dict | None) -> dict | None:
@@ -450,7 +462,7 @@ def pending_updates(servers: list[inventory.Server] | None = None,
                 u["from_versions"].append(p["version"])
             u["servers"].append(srv.id)
             u["targets"].append({"server": srv.id, "jar": p["jar"], "from": p["version"], "to": latest["version"],
-                                 "to_jar": latest.get("filename"), "compat": latest.get("compat")})
+                                 "to_jar": latest.get("filename"), "compat": compat_for(latest.get("compat"), srv)})
     return sorted(out.values(), key=lambda u: u["name"].lower())
 
 
@@ -520,7 +532,8 @@ def create_plan(items: Any, user: str) -> dict:
                 "from_jars": sorted([q["jar"], inventory.file_hash(srv.plugins_dir / q["jar"])] for q in same_key),
                 "also_removes": sorted(q["jar"] for q in same_key if q["jar"] != p["jar"]),
                 "to_jar": _safe_filename(latest.get("filename"), f"{p['name']}-{latest['version']}"),
-                "to_version": latest["version"], "compat": latest.get("compat"), "size": latest.get("size"),
+                "to_version": latest["version"], "compat": compat_for(latest.get("compat"), srv),
+                "size": latest.get("size"), "published": latest.get("published"),
                 "verified": bool(latest.get("verified")), "changelog_url": latest.get("changelog_url"),
                 "source": source, "_latest": latest,
             })

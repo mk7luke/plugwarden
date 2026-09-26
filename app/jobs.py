@@ -120,6 +120,8 @@ class Job:
             "summary": f"Undone by {self.undone_by} · was: {self.summary}" if undone else self.summary, "dry_run": self.dry_run, "params": self.params,
             "results": self.results, "undo_of": self.undo_of, "undone_by": self.undone_by,
             "undoable": self.undoable, "changed_servers": self.changed_servers,
+            "restart_servers": [] if self.dry_run else self.changed_servers,
+            "undone_at": getattr(self, "undone_at", None),
             "has_backup": self.has_backup,
         }
         if with_log:
@@ -158,7 +160,7 @@ def _from_disk(d: dict) -> Job:
         "created": d.get("created"), "started": d.get("started"), "finished": d.get("finished"),
         "summary": d.get("summary", ""), "results": d.get("results") or [], "log": d.get("log_lines") or [],
         "undo_of": d.get("undo_of"), "undone_by": d.get("undone_by"), "has_backup": d.get("has_backup", False),
-        "changed_servers": d.get("changed_servers") or [], "_last_save": 0.0, "_cond": threading.Condition(),
+        "changed_servers": d.get("changed_servers") or [], "undone_at": d.get("undone_at"), "_last_save": 0.0, "_cond": threading.Condition(),
     })
     return j
 
@@ -205,6 +207,7 @@ def mark_undone(job_id: str, by: str) -> None:
     j = get(job_id)
     if j:
         j.undone_by = by
+        j.undone_at = now_iso() if by else None
         j.save()
 
 

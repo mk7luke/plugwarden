@@ -227,7 +227,7 @@ def test_update_check_parsing_and_apply(env):
     plan = updates.create_plan("all", "tester")
     assert [(r["server"], r["from_jar"], r["to_jar"], r["to_version"]) for r in plan["rows"]] == [
         ("M1-hub01", "CoreProtect-23.1.jar", "CoreProtect-CE-24.1.jar", "24.1")]
-    assert plan["rows"][0]["compat"] == {"mc_versions": ["1.21.6"], "loaders": ["paper"]}
+    assert plan["rows"][0]["compat"] == {"mc_versions": ["1.21.6"], "loaders": ["paper"], "mc": "1.21.6", "ok": True}
     job = jobs.wait(actions.start_apply("tester", plan["plan_id"], dry_run=True), timeout=30)
     assert jars_of("M1-hub01", "bukkit:coreprotect") == ["CoreProtect-23.1.jar"]
     assert job.results and job.results[0]["outcome"] == "changed", job.log

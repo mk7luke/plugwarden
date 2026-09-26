@@ -201,6 +201,9 @@ class Ctx:
     def result(self, server: str, item: str, action: str, outcome: str, detail: str = "",
                changes: list[str] | None = None, **fields) -> None:
         extra: dict[str, Any] = dict(fields)
+        code = extra.pop("reason_code", None) or _reason_code(outcome, detail)
+        if code:
+            extra["reason_code"] = code
         if changes is not None:
             extra["changes"] = changes[:MAX_CHANGE_LINES]
             extra["change_count"] = len(changes)
@@ -218,6 +221,24 @@ class Ctx:
             fn(*args, **kwargs)
         except Exception as e:  # noqa: BLE001 - per-item boundary
             self.result(server, item, action, "error", f"{type(e).__name__}: {e}")
+
+
+_REASONS = (("missing on source", "missing_on_source"), ("not on target", "not_installed"),
+            ("not installed", "not_installed"), ("shared with", "shared_folder"), ("not present", "not_present"),
+            ("no update available", "no_update"), ("not outdated", "no_update"),
+            ("source provides no hash", "unverified"), ("changed since", "changed_since_plan"))
+
+
+def _reason_code(outcome: str, detail: str) -> str | None:
+    """Machine-readable reason for non-change rows (the UI keys copy off it)."""
+    if outcome == "unchanged":
+        return "identical"
+    if outcome not in ("skipped", "error"):
+        return None
+    for needle, code in _REASONS:
+        if needle in detail:
+            return code
+    return None if outcome == "error" else "other"
 
 
 # ---------------------------------------------------------------- operations
@@ -386,9 +407,11 @@ def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str 
     changes.append(f">f{'.' if new_jar.name in old_names else '+'} {new_jar.name}")
     olds = ", ".join(f"{p['jar']} ({p['version']})" for p in existing) or "none"
     detail = f"{olds} → {new_jar.name} ({info['version']})"
+    jar_fields = {"old_jars": old_names, "new_jar": new_jar.name, "old_versions": [p["version"] for p in existing],
+                  "new_version": info["version"]}
     if ctx.dry_run:
         ctx.remember(tgt.id, item, action, changes + sorted(p["jar"] + ":" + p["sha1"] for p in existing))
-        return ctx.result(tgt.id, item, action, "changed", detail, changes)
+        return ctx.result(tgt.id, item, action, "changed", detail, changes, **jar_fields)
 
     for n in old_names:
         if ctx.backup:
@@ -425,7 +448,7 @@ def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str 
         except OSError as e2:
             detail += f"; ROLLBACK FAILED ({e2}) — use Undo on this job"
         return ctx.result(tgt.id, item, action, "error", detail)
-    ctx.result(tgt.id, item, action, "changed", detail, changes)
+    ctx.result(tgt.id, item, action, "changed", detail, changes, **jar_fields)
 
 
 def remove_plugin(ctx: Ctx, tgt: Server, key: str, remove_folder: bool, force: bool = False) -> None:

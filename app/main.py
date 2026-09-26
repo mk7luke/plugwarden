@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import actions, config, engine, inventory, jobs, plans, scheduler, settings, updates
+from . import actions, audit, config, engine, inventory, jobs, plans, scheduler, settings, updates
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -114,27 +114,42 @@ def snapshot() -> dict:
     source = next((s for s in servers if s.id == st["default_source"]), None)
     plugins: dict[str, list[dict]] = {}
     per_key: dict[str, dict[str, str]] = {}  # key -> {server: version}
+    pinned_at: dict[str, set[str]] = {}      # key -> servers where a pin applies
     for srv in servers:
         rows = []
         for p in inventory.list_plugins(srv):
             status, src, latest = updates.status_for(p, srv, st, cache)
             pin, ign = st["pins"].get(p["key"]), st["ignores"].get(p["key"])
-            rows.append({**p, "status": status, "source": src, "latest": updates.public_latest(latest),
+            pub = updates.public_latest(latest)
+            if pub:
+                pub["compat"] = updates.compat_for(pub["compat"], srv)
+            rows.append({**p, "status": status, "source": src, "latest": pub,
                          "current_compat": updates.current_compat(p, srv, cache),
                          "pinned_version": pin["version"] if settings.hold_applies(pin, srv.id) else None,
                          "pin_scope": pin["servers"] if pin else None,
                          "ignore_scope": ign["servers"] if ign else None})
             per_key.setdefault(p["key"], {}).setdefault(srv.id, p["version"])
+            if settings.hold_applies(pin, srv.id):
+                pinned_at.setdefault(p["key"], set()).add(srv.id)
         plugins[srv.id] = rows
     inventory.flush_cache()
-    expected = {k: _expected_version(v, source) for k, v in per_key.items() if len(v) > 1}
+    # Pinned installs are deliberate: they neither vote for the expected version nor count as drift.
+    voters = {k: ({s: ver for s, ver in v.items() if s not in pinned_at.get(k, set())} or v)
+              for k, v in per_key.items()}
+    expected = {k: _expected_version(voters[k], source) for k, v in per_key.items() if len(v) > 1}
     for rows in plugins.values():
         for r in rows:
             exp = expected.get(r["key"])
+            differs = exp is not None and r["version"] != exp
+            pinned = r["pinned_version"] is not None
             r["expected_version"] = exp
-            r["versions_differ"] = r["key"] in expected and len(set(per_key[r["key"]].values())) > 1
-            r["drift"] = exp is not None and r["version"] != exp
-    drift_keys = {k for k in expected if len(set(per_key[k].values())) > 1}
+            r["drift"] = differs and not pinned
+            r["drift_pinned"] = differs and pinned
+    drift_keys = {k for k in expected
+                  if any(ver != expected[k] for s, ver in per_key[k].items() if s not in pinned_at.get(k, set()))}
+    for rows in plugins.values():
+        for r in rows:
+            r["versions_differ"] = r["key"] in drift_keys
     pending = updates.pending_updates(servers, plugins)
     return {"settings": st, "cache": cache, "servers": servers, "plugins": plugins, "drift": drift_keys,
             "expected": expected, "source": source, "pending": pending, "counts": updates.update_counts(pending)}
@@ -158,17 +173,18 @@ def server_view(srv: inventory.Server, snap: dict) -> dict:
     src = snap["source"]
     src_family = src.family if src else "bukkit"
     seen: set[str] = set()
-    drift_plugins = []
+    drift_plugins, drift_pinned = [], []
     for r in rows:
-        if r["drift"] and r["key"] not in seen:
+        if (r["drift"] or r["drift_pinned"]) and r["key"] not in seen:
             seen.add(r["key"])
-            drift_plugins.append({"key": r["key"], "name": r["name"], "version": r["version"],
-                                  "expected": r["expected_version"]})
+            (drift_plugins if r["drift"] else drift_pinned).append(
+                {"key": r["key"], "name": r["name"], "version": r["version"], "expected": r["expected_version"]})
     return {
         "id": srv.id, "platform": srv.platform, "family": srv.family, "mc_version": srv.mc_version,
         "plugin_count": len(rows),
         "updates": sum(1 for u in snap["pending"] if srv.id in u["servers"]),
         "drift": len(drift_plugins), "drift_plugins": drift_plugins, "drift_basis": DRIFT_BASIS,
+        "drift_pinned": drift_pinned,
         "unknown": sum(1 for r in rows if r["status"] == "unknown"),
         "pending_restart": actions.pending_restart(srv),
         "is_source": bool(src and src.id == srv.id),
@@ -267,7 +283,8 @@ def matrix():
                     cell["status"] = "outdated"  # consistent with update counts
                 continue
             row["cells"][srv.id] = {"version": r["version"], "jar": r["jar"], "status": r["status"],
-                                    "sha1": r["sha1"], "duplicates": [], "drift": r["drift"]}
+                                    "sha1": r["sha1"], "duplicates": [], "drift": r["drift"],
+                                    "drift_pinned": r["drift_pinned"]}
     src = snap["source"]
     if src:
         for row in rows.values():
@@ -392,8 +409,20 @@ def server_search(server_id: str, q: str = Query(..., min_length=2, max_length=1
 
 
 @app.get("/api/v2/diff")
-def diff(source: str, target: str, path: str):
-    return inventory.diff_file(inventory.get_server(source), inventory.get_server(target), path)
+def diff(request: Request, source: str, target: str, path: str):
+    """Secret-looking values are redacted on both sides; every read is written to the access log."""
+    src, tgt = inventory.get_server(source), inventory.get_server(target)
+    out = inventory.diff_file(src, tgt, path)
+    audit.record(user_of(request), "diff", servers=[src.id, tgt.id], path=out["path"],
+                 detail=f"{len(out['redacted'])} value(s) redacted")
+    return out
+
+
+@app.get("/api/v2/access-log")
+def access_log(limit: int = Query(200, ge=1, le=2000), user: str | None = None, server: str | None = None,
+               path: str | None = None, action: str | None = None):
+    """Who read what (newest first). Filters are case-insensitive substring matches."""
+    return {"entries": audit.read(limit=limit, user=user, server=server, path=path, action=action)}
 
 
 UPLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._+\-() ]")
