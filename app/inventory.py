@@ -283,20 +283,38 @@ def _dep_names(d: dict) -> list[str]:
 
 
 MAX_CENTRAL_DIR = 32 * 1024 * 1024  # bytes of zip central directory we are willing to load
+MAX_ZIP_ENTRIES = 100_000
 
 
 def _check_central_directory(path: Path) -> None:
-    """Refuse zips whose central directory is huge (millions of entries) before zipfile loads it."""
+    """Refuse zips whose central directory is huge (millions of entries) before zipfile loads it.
+    Checks the zip64 end record too, since zipfile trusts it over the classic one."""
     size = path.stat().st_size
     with open(path, "rb") as f:
         f.seek(max(0, size - 65557))
+        tail_start = f.tell()
         tail = f.read()
-    i = tail.rfind(b"PK\x05\x06")
-    if i < 0 or len(tail) < i + 22:
-        raise zipfile.BadZipFile("no end of central directory record")
-    cd_size = int.from_bytes(tail[i + 12:i + 16], "little")
-    if cd_size > MAX_CENTRAL_DIR:
-        raise zipfile.BadZipFile("zip central directory too large")
+        i = tail.rfind(b"PK\x05\x06")
+        if i < 0 or len(tail) < i + 22:
+            raise zipfile.BadZipFile("no end of central directory record")
+        entries = int.from_bytes(tail[i + 10:i + 12], "little")
+        cd_size = int.from_bytes(tail[i + 12:i + 16], "little")
+        loc = i - 20
+        if loc >= 0 and tail[loc:loc + 4] == b"PK\x06\x07":
+            off = int.from_bytes(tail[loc + 8:loc + 16], "little")
+            if off >= size:
+                raise zipfile.BadZipFile("bad zip64 locator")
+            f.seek(off)
+            rec = f.read(56)
+            if rec[:4] != b"PK\x06\x06" or len(rec) < 56:
+                raise zipfile.BadZipFile("bad zip64 end record")
+            entries = max(entries, int.from_bytes(rec[32:40], "little"))
+            cd_size = max(cd_size, int.from_bytes(rec[40:48], "little"))
+        elif entries == 0xFFFF or cd_size == 0xFFFFFFFF:
+            raise zipfile.BadZipFile("zip64 sentinel without a zip64 record")
+    del tail_start
+    if cd_size > MAX_CENTRAL_DIR or entries > MAX_ZIP_ENTRIES:
+        raise zipfile.BadZipFile("zip has too many entries")
 
 
 def read_descriptors(path: Path) -> dict[str, dict]:

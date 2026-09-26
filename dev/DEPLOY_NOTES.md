@@ -25,7 +25,7 @@ The user shown in the audit and activity logs is the token's `email` (or `common
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `LGT_AUTH` | no | `cf-access` (default when `LGT_CF_AUD` is set) or `none` (only allowed on a loopback bind) |
+| `LGT_AUTH` | no | `cf-access` (default when `LGT_CF_AUD` is set) or `none` (only on a loopback bind, never together with `LGT_HOSTNAME`, and it refuses requests that arrive through a proxy or tunnel) |
 | `LGT_CF_TEAM_DOMAIN` | cf-access | e.g. `yourteam.cloudflareaccess.com` (no `https://`) |
 | `LGT_CF_AUD` | cf-access | the Access application's Audience (AUD) tag |
 | `LGT_HOSTNAME` | yes (prod) | the public hostname, e.g. `amp-sync.example.com`; added to the Host allowlist |
@@ -70,7 +70,10 @@ Environment=LGT_HOSTNAME=amp-sync.example.com
   - send `X-Requested-With: lgt-amp-sync` (the frontend does);
   - have no cross-site `Sec-Fetch-Site`;
   - have an `Origin` (if present) that is an allowed host and not `null`.
-- Responses carry `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and a CSP with `frame-ancestors 'none'; object-src 'none'`.
+- Responses carry `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`.
+- The app page gets a strict CSP: `default-src 'self'`, and `script-src 'self'` plus the SHA-256 of each inline script, computed per response.
+- API responses carry `frame-ancestors 'none'; object-src 'none'`.
+- The JWKS cache keeps serving cached keys during a Cloudflare outage and retries once a minute.
 - Uploads over 200 MB are refused from `Content-Length` before the body is parsed.
 
 ## 4. Data safety and retention
@@ -101,3 +104,8 @@ Environment=LGT_HOSTNAME=amp-sync.example.com
 - changes: `settings`, `pin`, `ignore`, `upload`, with before/after values.
 
 It is stored in `STATE_DIR/access.log` (JSON lines, rotated at 5 MB).
+
+## 7. Housekeeping before deploying
+
+- `app.stale-2025-12-14/` in the repo root is an old copy. Do not deploy it alongside `app/`.
+- Install `PyJWT[crypto]` (in `requirements.txt`).

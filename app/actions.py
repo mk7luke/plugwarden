@@ -102,7 +102,8 @@ def housekeeping(keep_ids: set[str] = frozenset()) -> dict:
     st = settings.load_raw()
     out = {"backups": [], "jobs": 0}
     try:
-        active = {j.id for j in jobs.active_jobs()}
+        live = jobs.active_jobs()
+        active = {j.id for j in live} | {j.undo_of for j in live if j.undo_of} | set(_undo_pending)
         out["backups"] = engine.prune_backups(st["backup_keep_jobs"], keep_ids=set(keep_ids) | active,
                                               max_age_days=st["backup_max_age_days"],
                                               max_bytes=int(st["backup_max_gb"] * 1024 ** 3))
@@ -137,6 +138,8 @@ def _mutating_body(job: jobs.Job, fn) -> None:
     try:
         fn(ctx)
     finally:
+        if backup and backup.used:
+            backup.fill_missing_posts(inventory.servers_by_id())
         job.has_backup = bool(backup and backup.used)
         if not job.dry_run:
             housekeeping(keep_ids={job.id})

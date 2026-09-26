@@ -247,9 +247,13 @@ def _resolve_github(c: httpx.Client, repo: str, family: str, mc: str | None, ass
     digest = str((a or {}).get("digest") or "")
     hashes = {"sha256": digest.split(":", 1)[1]} if digest.startswith("sha256:") else {}
     tag = str(d.get("tag_name") or "")
+    # A release's assets can be replaced later without changing published_at: age from the asset.
+    published = max(filter(None, [d.get("published_at"), (a or {}).get("updated_at"), (a or {}).get("created_at")]),
+                    default=None)
     return {
-        "version": re.sub(r"^v(?=\d)", "", tag), "version_id": str(d.get("id")), "type": "release",
-        "published": d.get("published_at"), "url": d.get("html_url"), "changelog_url": d.get("html_url"),
+        "version": re.sub(r"^v(?=\d)", "", tag), "version_id": str(d.get("id")),
+        "type": "prerelease" if d.get("prerelease") else "release",
+        "published": published, "url": d.get("html_url"), "changelog_url": d.get("html_url"),
         "download_url": (a or {}).get("browser_download_url"), "filename": (a or {}).get("name"),
         "hashes": hashes, "verified": bool(hashes), "size": (a or {}).get("size"), "compat": None,
     }

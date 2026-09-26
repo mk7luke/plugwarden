@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app import auth, config
 from app.main import app
-from conftest import CSRF, client_for
+from conftest import CSRF, client_for, snapshot_tree
 
 TEAM, AUD = "example.cloudflareaccess.com", "aud-tag-123"
 
@@ -407,3 +407,102 @@ def test_control_characters_rejected(env):
     (env["a"] / "evil\nname.yml").write_text("x")
     tree = inventory.list_tree(inventory.get_server("M1-hub01"), "")
     assert not any("\n" in e["name"] for e in tree["entries"])
+
+
+# ---------------------------------------------------------------- follow-up review items
+
+def test_zip_entry_cap_includes_zip64(env, monkeypatch):
+    import zipfile
+    from app import inventory
+    monkeypatch.setattr(inventory, "MAX_ZIP_ENTRIES", 10)
+    p = env["tmp"] / "many.jar"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("plugin.yml", "name: X\nversion: 1\n")
+        for i in range(20):
+            z.writestr(str(i), b"")
+    with pytest.raises(zipfile.BadZipFile, match="too many"):
+        inventory._check_central_directory(p)
+
+
+def test_none_mode_refuses_public_hostname_and_proxied_requests(env, monkeypatch):
+    monkeypatch.setattr(config, "AUTH_MODE", "none")
+    monkeypatch.setattr(config, "HOSTNAME", "amp.example.com")
+    with pytest.raises(RuntimeError, match="public deployment"):
+        auth.check_startup()
+    monkeypatch.setattr(config, "HOSTNAME", "")
+    c = client_for(app)
+    assert c.get("/api/v2/health", headers={"Cf-Connecting-IP": "203.0.113.9"}).status_code == 403
+    assert c.get("/api/v2/health", headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 403
+
+
+def test_jwks_outage_keeps_cached_keys(cf, monkeypatch):
+    c = client_for(app)
+    tok = _token(cf["keys"]["k1"], "k1")
+    assert c.get("/api/v2/health", headers={auth.JWT_HEADER: tok}).status_code == 200
+    monkeypatch.setattr(auth, "TRANSPORT", httpx.MockTransport(lambda r: httpx.Response(503)))
+    auth.JWKS.fetched = 0  # TTL expired
+    assert c.get("/api/v2/health", headers={auth.JWT_HEADER: tok}).status_code == 200
+
+
+def test_index_has_strict_csp_with_inline_hashes(env):
+    r = client_for(app).get("/")
+    csp = r.headers["content-security-policy"]
+    assert "default-src 'self'" in csp and "script-src 'self' 'sha256-" in csp and "unsafe-inline" not in csp.split(
+        "style-src")[0]
+
+
+def test_undo_handles_symlinks_and_utf8_names(env):
+    from app import actions, jobs
+    src, dst = env["src"] / "Ess", env["a"] / "Ess"
+    src.mkdir()
+    dst.mkdir()
+    (src / "config.yml").write_text("new\n")
+    (dst / "config.yml").write_text("old\n")
+    (src / "café.yml").write_text("x\n")
+    (src / "lnk").symlink_to("config.yml")
+    before = snapshot_tree_links(env["a"])
+    job = _plan_deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"folders": ["Ess"]}})
+    assert (dst / "café.yml").exists() and (dst / "lnk").is_symlink()
+    undo = jobs.wait(actions.start_undo("t", job.id), 30)
+    assert undo.status == "done", [r for r in undo.results]
+    assert snapshot_tree_links(env["a"]) == before
+
+
+def snapshot_tree_links(root):
+    out = {}
+    for p in sorted(root.rglob("*")):
+        rel = p.relative_to(root).as_posix()
+        out[rel] = ("->" + str(p.readlink())) if p.is_symlink() else (p.read_bytes() if p.is_file() else "<dir>")
+    return out
+
+
+def test_retention_and_record_pruning_protect_undo_state(env):
+    from app import actions, config, engine, jobs
+    job = _plan_deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"jars": ["Vault.jar"]}})
+    for i in range(3):  # newer, backup-less records
+        (config.state("jobs") / f"2999010{i}-000000-00000{i}.json").write_text("{}")
+    assert jobs.prune_records(1) == 2  # the job with a backup stays even though it is beyond the limit
+    assert (config.state("jobs") / f"{job.id}.json").exists()
+    actions._undo_pending.add(job.id)
+    try:
+        engine_pruned = actions.housekeeping()["backups"]
+        assert job.id not in engine_pruned
+    finally:
+        actions._undo_pending.discard(job.id)
+
+
+def test_scheduler_apply_cycle_end_to_end(env):
+    from app import scheduler, settings, updates, inventory
+    from conftest import make_jar
+    from test_engine import _mock_modrinth
+    new_bytes = make_jar(env["tmp"] / "dl" / "x.jar", "CoreProtect", "24.1", extra=b"mr").read_bytes()
+    (env["src"] / "CoreProtect-24.1.jar").write_bytes(new_bytes)  # canary runs exactly that build
+    _mock_modrinth(env, new_bytes)
+    settings.update({"auto_update": {"mode": "apply", "min_release_age_hours": 0, "canary_soak_hours": 0,
+                                     "canary_server": "elChapo01"}})
+    result = scheduler.run_cycle()
+    assert "apply: done" in result, result
+    jars = [p["jar"] for p in inventory.list_plugins(inventory.get_server("M1-hub01")) if p["key"] == "bukkit:coreprotect"]
+    assert jars == ["CoreProtect-CE-24.1.jar"]
+    sel = scheduler.status()["last_selection"]
+    assert sel["applied"] == [{"server": "M1-hub01", "key": "bukkit:coreprotect", "to_version": "24.1"}]

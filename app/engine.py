@@ -76,7 +76,9 @@ def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: b
           excludes: list[str] | None = None, backup_dir: Path | None = None) -> tuple[int, list[str], str]:
     # --checksum: size+mtime quick-check misses same-size config edits made within the same second.
     # --safe-links: never copy source symlinks that point outside the copied tree.
-    cmd = ["rsync", "-a", "--itemize-changes", "--checksum", "--safe-links"]
+    # --out-format "%i %n" is --itemize-changes without the " -> target" suffix on symlinks; -8 keeps
+    # UTF-8 names unescaped so undo bookkeeping sees real file names.
+    cmd = ["rsync", "-a", "-8", "--out-format=%i %n", "--checksum", "--safe-links"]
     if dry_run:
         cmd.append("--dry-run")
     if delete:
@@ -90,7 +92,9 @@ def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: b
     if not (src.startswith("/") and dest.startswith("/")):
         raise ValueError("rsync paths must be absolute")
     cmd += [src, dest]  # absolute paths can never be read as options or host:path
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    env = {**os.environ, "LC_ALL": "C.UTF-8"}
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+                          timeout=3600, env=env)
     # Lines starting with "." are attribute-only updates (no content transferred); ignore them.
     changes = [ln for ln in proc.stdout.splitlines()
                if ln and not ln.startswith("created director") and not ln.startswith(".")]
@@ -162,8 +166,21 @@ class Backup:
         """Record the state the job left at rel (for every entry of this path and its created parents)."""
         with self._lock:
             for e in self.entries:
-                if e["server"] == srv.id and (e["rel"] == rel or rel.startswith(e["rel"] + "/")) and "post" not in e:
-                    e["post"] = state_sig(srv.plugins_dir / e["rel"])
+                if e["server"] != srv.id:
+                    continue
+                if e["rel"] == rel or (rel.startswith(e["rel"] + "/") and "post" not in e):
+                    e["post"] = state_sig(srv.plugins_dir / e["rel"])  # latest state wins
+            self._flush()
+
+    def fill_missing_posts(self, servers: dict[str, Server]) -> None:
+        """After a job (also one that failed midway): every entry gets the state the job left behind."""
+        with self._lock:
+            for e in self.entries:
+                if "post" not in e and e["server"] in servers:
+                    try:
+                        e["post"] = state_sig(servers[e["server"]].plugins_dir / e["rel"])
+                    except OSError:
+                        pass
             self._flush()
 
     def new_store(self, srv: Server, rel: str) -> Path:
@@ -173,6 +190,21 @@ class Backup:
             d = self.root / "rsync" / str(n) / srv.id / rel
             d.mkdir(parents=True, exist_ok=False)
             return d
+
+    def record_store(self, srv: Server, base_rel: str, store: Path) -> None:
+        """Fallback when rsync died mid-run: every file it moved into the backup dir becomes an entry."""
+        with self._lock:
+            for root, _dirs, files in os.walk(store):
+                for f in files:
+                    p = Path(root) / f
+                    name = p.relative_to(store).as_posix()
+                    rel = f"{base_rel}/{name}" if base_rel else name
+                    self.entries.append({"server": srv.id, "rel": rel, "existed": True, "type": "file",
+                                         "store": str(p.relative_to(self.root)),
+                                         "post": state_sig(srv.plugins_dir / rel)})
+                    if self._on_record:
+                        self._on_record(self.entries[-1])
+            self._flush()
 
     def record_rsync(self, srv: Server, base_rel: str, lines: list[str], store: Path,
                      created: list[str] = ()) -> None:
@@ -198,6 +230,9 @@ class Backup:
                 name = name.rstrip("/")
                 rel = f"{base_rel}/{name}" if base_rel else name
                 if covered(rel):
+                    for e in self.entries:  # changed again in the same job: refresh its post-state
+                        if e["server"] == srv.id and e["rel"] == rel:
+                            e["post"] = state_sig(srv.plugins_dir / rel)
                     continue
                 if code.startswith("*deleting"):
                     entry = {"server": srv.id, "rel": rel, "existed": True, "type": "dir" if is_dir else "file"}
@@ -520,7 +555,13 @@ def _rsync_item(ctx: Ctx, tgt: Server, item: str, action: str, src: str, dest: s
         store = ctx.backup.new_store(tgt, rel)
     elif ctx.backup:
         ctx.backup.save(tgt, rel)
-    rc, done, err = rsync(src, dest, dry_run=False, delete=delete, mkpath=True, excludes=excludes, backup_dir=store)
+    try:
+        rc, done, err = rsync(src, dest, dry_run=False, delete=delete, mkpath=True, excludes=excludes,
+                              backup_dir=store)
+    except Exception:
+        if ctx.backup and store is not None:
+            ctx.backup.record_store(tgt, rel, store)  # keep whatever rsync already moved aside undoable
+        raise
     if ctx.backup:
         if is_dir:
             ctx.backup.record_rsync(tgt, rel, done, store, created)
@@ -1079,7 +1120,15 @@ def _restore_entry(ctx: Ctx, src: Backup, srv: Server, e: dict) -> None:
         return ctx.result(srv.id, rel, "restore", "error", str(err))
     cur = state_sig(path)
     post = e.get("post")
-    if post is not None and cur != post and not (post == "dir" and cur == "dir"):
+    if post is None:
+        # Unknown post-job state: only safe if the path already looks like the pre-job state.
+        stored0 = src.store_path(e) if e.get("store") else None
+        pre = "absent" if not e["existed"] else (state_sig(stored0) if stored0 and _exists(stored0) else None)
+        if cur == pre:
+            return ctx.result(srv.id, rel, "restore", "unchanged", "already in its previous state")
+        return ctx.result(srv.id, rel, "restore", "skipped", "state after the job is unknown; left as is",
+                          reason_code="changed_since_job")
+    if cur != post and not (post == "dir" and cur == "dir"):
         return ctx.result(srv.id, rel, "restore", "skipped", "changed since the job ran; left as is",
                           reason_code="changed_since_job")
     stored = src.store_path(e) if e.get("store") else None

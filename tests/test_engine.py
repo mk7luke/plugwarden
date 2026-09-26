@@ -321,7 +321,9 @@ def test_backup_store_handles_child_then_parent(env):
     (env["a"] / "Essentials" / "config.yml").write_text("changed\n")  # pretend: after child backup
     b.entries.clear()
     b.save(srv, "Essentials/config.yml")
+    b.set_post(srv, "Essentials/config.yml")
     b.save(srv, "Essentials", move=True)
+    b.set_post(srv, "Essentials")
     assert not (env["a"] / "Essentials").exists()
     undo = engine.Ctx(dry_run=False, backup=engine.Backup("20990101-000001-bbbbbb"))
     engine.run_undo(undo, "20990101-000000-aaaaaa")

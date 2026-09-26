@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from . import actions, config, inventory, jobs, settings, updates
+from . import actions, config, inventory, jobs, plans, settings, updates
 from .storage import read_json, write_json
 
 USER = "scheduler"
@@ -90,7 +90,7 @@ def _canary_id(au: dict) -> str | None:
 
 def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str | None,
                      canary_restarted: bool, now: float,
-                     installed_on_canary: dict[str, tuple[str, float]]) -> tuple[list[dict], list[dict]]:
+                     installed_on_canary: dict[str, tuple[str, str]]) -> tuple[list[dict], list[dict]]:
     """Which plan rows the unattended run may apply, and why the others wait.
 
     Only verified release builds from a Modrinth hash match (or a manual source marked auto_apply),
@@ -108,7 +108,7 @@ def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str
         age = now - published.timestamp() if published else None
         if not r.get("verified"):
             why = "no verified hash"
-        elif (r.get("type") or "release") != "release":
+        elif r.get("type") != "release":
             why = "pre-release"
         elif src.get("manual") and not src.get("auto_apply"):
             why = "manual source (not enabled for auto-apply)"
@@ -120,9 +120,9 @@ def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str
             k = f"{r['key']}|{r['to_version']}"
             if canary and r["key"] in installed_on_canary:
                 c = canary_state.get(k)
-                ver, mtime = installed_on_canary[r["key"]]
-                if not c and updates.display_version(ver) == r["to_version"]:
-                    c = {"at": mtime}  # the canary already runs this version (e.g. updated by hand)
+                want_sha1 = ((r.get("_latest") or {}).get("hashes") or {}).get("sha1")
+                if c and want_sha1 and c.get("sha1") and c["sha1"] != want_sha1:
+                    c = None  # the canary soaked a different build of this version
                 if not c:
                     why = f"waiting for canary {canary}"
                 elif now - c["at"] < soak:
@@ -152,10 +152,12 @@ def run_cycle() -> str:
     if not in_window(datetime.now(), au["window"]):
         return _record(result + "; outside the maintenance window, nothing applied")
     plan = updates.create_plan("all", USER)
+    plan["rows"] = plans.load(plan["plan_id"], "updates")["rows"]  # internal rows (with build hashes)
     canary = _canary_id(au)
     servers = inventory.servers_by_id()
     csrv = servers.get(canary) if canary else None
-    installed = {p["key"]: (p["version"] or "", p["mtime"]) for p in inventory.list_plugins(csrv)} if csrv else {}
+    installed = {p["key"]: (p["version"] or "", p["sha1"]) for p in inventory.list_plugins(csrv)} if csrv else {}
+    _note_canary_versions(st, canary, installed, plan["rows"])
     chosen, deferred = select_auto_rows(plan["rows"], au, st.get("canary") or {}, canary,
                                         csrv is not None and not actions.pending_restart(csrv), time.time(),
                                         installed)
@@ -177,9 +179,28 @@ def run_cycle() -> str:
     for r in chosen:
         label = f"{r['name']} {r['from_version']} → {r['to_version']}"
         if r["server"] == canary and (r["server"], label) in changed:
-            cs[f"{r['key']}|{r['to_version']}"] = {"at": time.time(), "server": canary}
+            cs[f"{r['key']}|{r['to_version']}"] = {
+                "at": time.time(), "server": canary,
+                "sha1": ((r.get("_latest") or {}).get("hashes") or {}).get("sha1")}
     write_json(_state_file(), st)
     return _record(result + f"; apply: {real.status} ({real.summary}); {len(deferred)} waiting")
+
+
+def _note_canary_versions(st: dict, canary: str | None, installed: dict[str, tuple[str, str]],
+                          rows: list[dict]) -> None:
+    """If the canary already runs a version other servers are about to get (e.g. updated by hand), start
+    its soak clock now — first seen by the scheduler, never the jar's (copyable) mtime."""
+    if not canary:
+        return
+    cs = st.setdefault("canary", {})
+    for r in rows:
+        if r["server"] == canary or r["key"] not in installed:
+            continue
+        ver, sha1 = installed[r["key"]]
+        k = f"{r['key']}|{r['to_version']}"
+        if k not in cs and updates.display_version(ver) == r["to_version"]:
+            cs[k] = {"at": time.time(), "server": canary, "sha1": sha1, "seen": "installed"}
+    write_json(_state_file(), st)
 
 
 def _save_selection(chosen: list[dict], deferred: list[dict]) -> None:
@@ -209,7 +230,7 @@ def _loop() -> None:
         try:
             if time.time() - _last_housekeeping > HOUSEKEEPING_EVERY and not jobs.active_jobs():
                 _last_housekeeping = time.time()
-                actions.housekeeping()
+                jobs.run_exclusive(actions.housekeeping)
         except Exception:  # noqa: BLE001
             pass
         try:

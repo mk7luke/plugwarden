@@ -56,6 +56,9 @@ def check_startup() -> None:
     if config.AUTH_MODE == "none" and not is_loopback(config.BIND):
         raise RuntimeError(f"LGT_AUTH=none is only allowed when bound to loopback (LGT_BIND={config.BIND!r}); "
                            "set LGT_CF_TEAM_DOMAIN and LGT_CF_AUD to use Cloudflare Access")
+    if config.AUTH_MODE == "none" and config.HOSTNAME:
+        raise RuntimeError(f"LGT_HOSTNAME={config.HOSTNAME!r} marks a public deployment, which must not run "
+                           "without authentication; set LGT_CF_TEAM_DOMAIN and LGT_CF_AUD")
     if config.AUTH_MODE == "cf-access" and not (config.CF_TEAM_DOMAIN and config.CF_AUD):
         raise RuntimeError("LGT_AUTH=cf-access needs LGT_CF_TEAM_DOMAIN and LGT_CF_AUD")
 
@@ -70,14 +73,24 @@ class _Jwks:
 
     def _fetch(self) -> None:
         url = f"https://{config.CF_TEAM_DOMAIN}/cdn-cgi/access/certs"
-        with httpx.Client(timeout=10.0, transport=TRANSPORT) as c:
-            r = c.get(url)
-            r.raise_for_status()
-            data = r.json()
-        keys = {}
-        for k in data.get("keys", []):
-            if k.get("kid") and k.get("kty") == "RSA":
-                keys[k["kid"]] = jwt.PyJWK(k, algorithm="RS256").key
+        try:
+            with httpx.Client(timeout=5.0, transport=TRANSPORT) as c:
+                r = c.get(url)
+                r.raise_for_status()
+                data = r.json()
+            keys = {}
+            for k in data.get("keys", []):
+                if isinstance(k, dict) and k.get("kid") and k.get("kty") == "RSA":
+                    try:
+                        keys[k["kid"]] = jwt.PyJWK(k, algorithm="RS256").key
+                    except jwt.PyJWKError:
+                        continue
+        except (httpx.HTTPError, ValueError):
+            if not self.keys:
+                raise
+            # Keep serving the cached keys; retry in a minute instead of on every request.
+            self.fetched = time.time() - JWKS_TTL + 60
+            return
         self.keys, self.fetched = keys, time.time()
 
     def get(self, kid: str):
@@ -87,6 +100,8 @@ class _Jwks:
                 self._fetch()
             elif kid not in self.keys and now - self.fetched > JWKS_MIN_REFRESH:
                 self._fetch()  # key rotation
+                if kid not in self.keys:
+                    self.fetched = max(self.fetched, now)  # don't let unknown kids hammer the endpoint
             return self.keys.get(kid)
 
     def reset(self) -> None:
@@ -140,6 +155,8 @@ def authenticate(headers, cookies, client_host: str | None) -> str:
     if config.AUTH_MODE == "none":
         if not is_loopback(client_host):
             raise AuthError(403, "unauthenticated mode only serves loopback clients")
+        if any(headers.get(h) for h in ("cf-connecting-ip", JWT_HEADER, "x-forwarded-for")):
+            raise AuthError(403, "unauthenticated mode refuses proxied requests; configure Cloudflare Access")
         return "local"
     token = headers.get(JWT_HEADER) or cookies.get(JWT_COOKIE)
     if not token:

@@ -50,7 +50,7 @@ def test_auto_policy_age_prerelease_manual_and_canary():
             _row("M6-creative01", source={"kind": "github", "id": "a/b", "manual": True}),
             _row("M7-bending01", source={"kind": "github", "id": "a/b", "manual": True, "auto_apply": True,
                                         "overrides_modrinth": {"id": "p"}})]
-    installed = {"bukkit:cp": ("23.1", now - 99999)}
+    installed = {"bukkit:cp": ("23.1", "sha-old")}
     chosen, waiting = scheduler.select_auto_rows(rows, AU, {}, "elChapo01", True, now, installed)
     assert [r["server"] for r in chosen] == ["elChapo01"]
     why = {r["server"]: r["reason"] for r in waiting}
@@ -68,9 +68,14 @@ def test_auto_policy_age_prerelease_manual_and_canary():
     state = {"bukkit:cp|24.1": {"at": now - 2 * 3600}}
     _, waiting = scheduler.select_auto_rows(rows[1:2], AU, state, "elChapo01", True, now, installed)
     assert waiting[0]["reason"].startswith("canary soak")
-    # canary already on that version (hand update) counts, by jar mtime
-    chosen, _ = scheduler.select_auto_rows(rows[1:2], AU, {}, "elChapo01", True, now, {"bukkit:cp": ("24.1", now - 30 * 3600)})
-    assert chosen
+    # a different build of that version soaked on the canary does not count
+    r = {**rows[1], "_latest": {"hashes": {"sha1": "b" * 40}}}
+    _, waiting = scheduler.select_auto_rows([r], AU, {"bukkit:cp|24.1": {"at": now - 25 * 3600, "sha1": "a" * 40}},
+                                            "elChapo01", True, now, installed)
+    assert waiting[0]["reason"] == "waiting for canary elChapo01"
+    # missing type is not a release
+    _, waiting = scheduler.select_auto_rows([{**rows[0], "type": None}], AU, {}, "elChapo01", True, now, installed)
+    assert waiting[0]["reason"] == "pre-release"
     # plugin not on the canary: release age + soak
     chosen, waiting = scheduler.select_auto_rows([_row("M1-hub01", key="bukkit:x", age_h=60)], AU, {}, "elChapo01",
                                                  True, now, installed)
@@ -102,3 +107,14 @@ def test_apply_mode_needs_confirmation(env):
     assert ov["policy"]["min_release_age_hours"] == 48 and ov["effective_canary"] == "elChapo01"
     log = c.get("/api/v2/access-log", params={"action": "settings"}).json()["entries"]
     assert log[0]["before"]["auto_update"]["mode"] == "off" and log[0]["after"]["auto_update"]["mode"] == "apply"
+
+
+def test_hand_updated_canary_soaks_from_first_seen(env):
+    import time as _t
+    st = {}
+    scheduler._note_canary_versions(st, "elChapo01", {"bukkit:cp": ("24.1", "s" * 40)}, [_row("M1-hub01")])
+    c = st["canary"]["bukkit:cp|24.1"]
+    assert abs(c["at"] - _t.time()) < 5 and c["seen"] == "installed"  # not the jar mtime
+    _, waiting = scheduler.select_auto_rows([_row("M1-hub01")], AU, st["canary"], "elChapo01", True, _t.time(),
+                                            {"bukkit:cp": ("24.1", "s" * 40)})
+    assert waiting[0]["reason"].startswith("canary soak")

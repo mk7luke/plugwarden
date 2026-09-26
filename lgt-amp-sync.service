@@ -8,8 +8,13 @@ User=amp
 Group=amp
 WorkingDirectory=/opt/lgt-amp-sync
 Environment=LGT_STATE_DIR=/var/lib/lgt-amp-sync
-# Optional: lock GUI to your datastore base (prevents typo accidents)
-# Environment=LGT_BASE_OVERRIDE=/mnt/storage_ssd/ssd-live
+Environment=LGT_BASE_OVERRIDE=/mnt/storage_ssd/ssd-live
+# Security (see dev/DEPLOY_NOTES.md). The app refuses to start unauthenticated on a non-loopback bind.
+Environment=LGT_BIND=127.0.0.1
+Environment=LGT_AUTH=cf-access
+Environment=LGT_CF_TEAM_DOMAIN=<team>.cloudflareaccess.com
+Environment=LGT_CF_AUD=<application-audience-tag>
+Environment=LGT_HOSTNAME=<public hostname, e.g. amp-sync.example.com>
 ExecStart=/opt/lgt-amp-sync/run.sh
 Restart=on-failure
 RestartSec=2

@@ -219,7 +219,23 @@ def server_view(srv: inventory.Server, snap: dict) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"title": config.APP_NAME, "version": config.VERSION})
+    resp = templates.TemplateResponse(request, "index.html", {"title": config.APP_NAME, "version": config.VERSION})
+    # Strict CSP for the app shell: only our own scripts plus the page's exact inline scripts (by hash).
+    hashes = " ".join(f"'sha256-{h}'" for h in _inline_script_hashes(resp.body))
+    resp.headers["Content-Security-Policy"] = (
+        f"default-src 'self'; script-src 'self' {hashes}; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+    return resp
+
+
+def _inline_script_hashes(html: bytes) -> list[str]:
+    import base64
+    import hashlib
+    out = []
+    for m in re.finditer(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, re.S | re.I):
+        out.append(base64.b64encode(hashlib.sha256(m.group(1)).digest()).decode())
+    return out
 
 
 # ---------------------------------------------------------------- read API
@@ -528,7 +544,7 @@ async def upload(request: Request, file: UploadFile = File(...)):
                 f.write(chunk)
         try:
             descs = await run_in_threadpool(inventory.read_descriptors, dest)
-        except (zipfile.BadZipFile, OSError):
+        except Exception:  # noqa: BLE001 - any unreadable/hostile archive is a client error
             raise HTTPException(400, "not a valid jar (zip) file")
         if not descs:
             raise HTTPException(400, "jar has no plugin.yml, paper-plugin.yml, velocity-plugin.json or bungee.yml")

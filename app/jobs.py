@@ -42,6 +42,15 @@ class FifoLock:
 
 
 _mutate_lock = FifoLock()   # only one job that writes to servers at a time
+
+
+def run_exclusive(fn):
+    """Run fn while holding the mutate lock (e.g. retention, so it never races an undo)."""
+    _mutate_lock.acquire()
+    try:
+        return fn()
+    finally:
+        _mutate_lock.release()
 _jobs_lock = threading.Lock()
 _live: dict[str, "Job"] = {}       # jobs started in this process (running or recently finished)
 
@@ -309,8 +318,8 @@ def prune_records(limit: int, keep: set[str] = frozenset()) -> int:
     files = sorted(config.state("jobs").glob("*.json"), reverse=True)
     n = 0
     for f in files[limit:]:
-        if f.stem in keep:
-            continue
+        if f.stem in keep or config.state("backups", f.stem).is_dir():
+            continue  # a record whose backup still exists stays: undo and overlap checks need it
         try:
             f.unlink()
             n += 1
