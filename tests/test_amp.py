@@ -176,3 +176,25 @@ def test_scheduler_auto_restart(ads):
     assert order == ["elChapo01:Core/Restart", "M1-hub01:Core/Restart", "M3-hunger01:Core/Restart"]
     assert scheduler._auto_restart({"auto_restart_canary": False, "auto_restart_rest": False}, "elChapo01",
                                    {"M1-hub01"}) == ""
+
+
+def test_rolling_restart_fails_when_a_plugin_disables_itself_after_start(ads, env):
+    make_jar(env["a"] / "voicechat-bukkit-2.6.6.jar", "voicechat", "2.6.6")
+    jobs.wait(actions.start_rolling("t", {"servers": ["M1-hub01"], "warn_seconds": []}), 30)  # clean baseline start
+    ads.by_name("M1-hub01").disable_after_done = "voicechat"
+    job = jobs.wait(actions.start_rolling("t", {"servers": ["M1-hub01", "M3-hunger01"], "warn_seconds": []}), 30)
+    rows = {r["server"]: r for r in job.results}
+    assert rows["M1-hub01"]["outcome"] == "error" and "disabled itself after startup" in rows["M1-hub01"]["detail"]
+    assert rows["M3-hunger01"]["outcome"] == "skipped"
+
+
+def test_canary_gate_fails_on_self_disable(ads, env):
+    import time as _t
+    make_jar(env["src"] / "voicechat-bukkit-2.6.7.jar", "voicechat", "2.6.7")
+    ads.by_name("elChapo01").disable_after_done = "voicechat"
+    st = {"canary": {"bukkit:voicechat|2.6.7": {"at": _t.time() - 5, "server": "elChapo01"}}}
+    jobs.wait(actions.start_power("t", "elChapo01", "restart"), 30)
+    scheduler.check_canary_health(st, inventory.get_server("elChapo01"))
+    h = st["canary"]["bukkit:voicechat|2.6.7"]["health"]
+    assert h["status"] == "failed" and h["reason"].startswith("disabled itself after startup")
+    assert "bukkit:voicechat|2.6.7" in st["held"]

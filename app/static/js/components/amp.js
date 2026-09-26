@@ -47,12 +47,14 @@ const BUSY = ["starting", "prestart", "configuring", "restarting", "stopping", "
 export const stateLabel = (st) => (STATE[st] || STATE.unknown)[1];
 
 // Small dot + players, for tiles and lists.
+const SHORT = { instance_offline: "Offline", awaiting_input: "Input", preparing_sleep: "Stopping" };
+
 export function AmpBadge({ a }) {
   if (!a) return null;
   const [k, l] = STATE[a.state] || STATE.unknown;
   const busy = BUSY.includes(a.state);
   return html`<span class="amp-badge tip" tabindex="0" data-tip=${`${l}${a.state === "running" ? ` · ${a.players?.online ?? 0}/${a.players?.max ?? "?"} players · up ${uptime(a.uptime_s)}` : ""}`}>
-    <i class=${`dot dot-${k === "muted" ? "muted" : k}${busy ? " pulse" : ""}`}></i>${a.state === "running" ? html`<${Icon} n="user" cls="i-xs" />${a.players?.online ?? 0}` : l}</span>`;
+    <i class=${`dot dot-${k === "muted" ? "muted" : k}${busy ? " pulse" : ""}`}></i>${a.state === "running" ? html`<${Icon} n="user" cls="i-xs" />${a.players?.online ?? 0}` : SHORT[a.state] || l}</span>`;
 }
 
 export function uptime(s) {

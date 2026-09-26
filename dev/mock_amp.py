@@ -58,6 +58,7 @@ class Instance:
         self.cursors: dict[str, int] = {}
         self.pending: list[int] = []  # states still to pass through on the next status polls
         self.fail_plugin: str | None = None
+        self.disable_after_done: str | None = None  # plugin that shuts itself down right after "Done ("
         self.commands: list[str] = []
 
     def say(self, text: str, source: str = "Console") -> None:
@@ -207,6 +208,11 @@ class MockADS:
                              "(Is it up to date?)")
                 lines.append("java.lang.NoSuchMethodError: 'void org.bukkit.Foo.bar()'")
         lines.append(f'[{t}] [Server thread/INFO]: Done (12.345s)! For help, type "help"')
+        if inst.disable_after_done:
+            name = inst.disable_after_done
+            ver = next((v for n, v in self._plugins(inst) if n == name), "1.0")
+            lines.append(f"[{t}] [Server thread/ERROR]: [{name}] Disabling {name} after a fatal error")
+            lines.append(f"[{t}] [Server thread/INFO]: [{name}] Disabling {name} v{ver}")
         for ln in lines:
             inst.say(ln)
         if self.log_root and (self.log_root / inst.name / "Minecraft").is_dir():
