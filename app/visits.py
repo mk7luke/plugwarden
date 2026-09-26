@@ -45,8 +45,10 @@ def since_last_visit(user: str, pending: list[dict]) -> dict:
     at = last_seen(user)
     t = _ts(at)
     if t is None:
-        return {"at": None, "new_updates": [], "new_failures": [], "jobs_by_others": []}
-    first = updates.load_cache().get("first_seen") or {}
+        return {"at": None, "new_updates": [], "new_updates_total": 0, "is_backlog": False, "new_failures": [],
+                "jobs_by_others": []}
+    cache = updates.load_cache()
+    first = cache.get("first_seen") or {}
     new_updates = []
     for u in pending:
         seen = _ts(first.get(f"{u['key']}|{u['to_version']}"))
@@ -54,7 +56,7 @@ def since_last_visit(user: str, pending: list[dict]) -> dict:
             new_updates.append({"key": u["key"], "name": u["name"], "to_version": u["to_version"],
                                 "from_versions": u["from_versions"], "servers": u["servers"],
                                 "first_seen": first[f"{u['key']}|{u['to_version']}"]})
-    new_updates.sort(key=lambda u: u["first_seen"], reverse=True)
+    new_updates.sort(key=lambda u: (u["first_seen"], u["name"].lower()), reverse=True)  # newest first
     failures = []
     for srv in inventory.discover():
         s = health.startup_summary(srv)
@@ -73,5 +75,10 @@ def since_last_visit(user: str, pending: list[dict]) -> dict:
             continue
         others.append({"id": d["id"], "kind": d["kind"], "user": d["user"], "status": d["status"],
                        "finished": d["finished"], "summary": d["summary"], "servers": d["changed_servers"]})
+    # The whole list is "new" (first visit after the first check, or a long absence): the UI words it as a
+    # backlog rather than as news.
+    first_check = _ts(cache.get("first_checked_at"))
+    backlog = bool(new_updates) and (first_check is None or t < first_check or len(new_updates) == len(pending))
     return {"at": at, "new_updates": new_updates[:MAX_ITEMS], "new_updates_total": len(new_updates),
+            "is_backlog": backlog,
             "new_failures": failures[:MAX_ITEMS], "jobs_by_others": others[:MAX_ITEMS]}

@@ -51,7 +51,8 @@ def _iso(dt):
 def test_since_last_visit(env, monkeypatch):
     with client_for(app) as c:
         first = c.get("/api/v2/overview").json()["since_last_visit"]
-        assert first == {"at": None, "new_updates": [], "new_failures": [], "jobs_by_others": []}
+        assert first == {"at": None, "new_updates": [], "new_updates_total": 0, "is_backlog": False,
+                         "new_failures": [], "jobs_by_others": []}
         past = datetime.now(timezone.utc) - timedelta(hours=2)
         assert c.post("/api/v2/seen", json={"at": _iso(past)}).json()["at"] == _iso(past)
         # never moves backwards; "at" in the future is capped at now
@@ -109,8 +110,8 @@ def test_changelog_excerpt_is_plain_text():
           "- `config.yml` <script>alert(1)</script> &lt;img src=x onerror=alert(1)&gt;\n---\n"
           "| a | b |\n|---|---|\n![logo](https://x/y.png)\n> quote\nl7\nl8\n")
     ex = updates.changelog_excerpt(md)
-    assert ex["lines"][:3] == ["What's new", "• Breaking: needs Java 21, see guide", "• config.yml alert(1)"]
-    assert len(ex["lines"]) == 6 and ex["truncated"] is True
+    assert ex["lines"][:2] == ["• Breaking: needs Java 21, see guide", "• config.yml alert(1)"]
+    assert len(ex["lines"]) == 6 and ex["truncated"] is True  # "What's new" is skipped as a bare heading
     assert not any("<" in ln or ">" in ln or "](" in ln for ln in ex["lines"])
     assert updates.changelog_excerpt("") is None and updates.changelog_excerpt(None) is None
     assert updates.changelog_excerpt("<p> </p>") is None
@@ -129,7 +130,7 @@ def test_changelog_from_check_on_updates_and_plan_without_network_on_reads(env):
         u = c.get("/api/v2/updates").json()
         rows = u if isinstance(u, list) else u.get("updates", u.get("items"))
         cp = next(x for x in rows if x["key"] == "bukkit:coreprotect")
-        want = {"lines": ["24.1", "• Fixed rollback", "• Java 21 required"], "truncated": False}
+        want = {"lines": ["• Fixed rollback", "• Java 21 required"], "truncated": False}  # "# 24.1" skipped
         assert cp["changelog"] == want and cp["changelog_url"].startswith("https://modrinth.com/")
         plan = c.post("/api/v2/updates/plan", json={"items": "all"}).json()
         assert plan["rows"][0]["changelog"] == want
@@ -149,7 +150,7 @@ def test_hangar_and_github_changelogs():
             return httpx.Response(200, text="1.2")
         return httpx.Response(200, json=hg_ver)
     with httpx.Client(transport=httpx.MockTransport(handler)) as c:
-        assert updates._resolve_github(c, "o/r", "bukkit", "1.21.6")["changelog"]["lines"] == ["Changes", "• fix"]
+        assert updates._resolve_github(c, "o/r", "bukkit", "1.21.6")["changelog"]["lines"] == ["• fix"]
         assert updates._resolve_hangar(c, "x", "bukkit", "1.21.6")["changelog"]["lines"] == ["New: stuff"]
 
 
@@ -224,3 +225,45 @@ def test_health_report_cached_until_logs_or_jars_change(env, monkeypatch):
     make_jar(env["a"] / "Extra-1.0.jar", "Extra", "1.0")
     health.server_report(srv, None)
     assert len(calls) == 4
+
+
+# ---------------------------------------------------------------- round 8 polish
+
+def test_changelog_unescapes_and_skips_boilerplate():
+    md = ("If you enjoy CoreProtect, please consider supporting development on [Patreon](https://patreon.com/x)!\n"
+          "Join our Discord: https://discord.gg/abc\n## Changelog\n# v24.1\n### Version 24.1\nWhat's new in 24.1\n"
+          "- Added support for Minecraft 26\\.2\\.\n- Fixed container interactions\\. \\(again\\) \\*not italic\\*\n"
+          "- Fixed Discord integration sending twice\n- Donate: https://ko-fi.com/x\n1.21.6\n- Real change\n")
+    assert updates.changelog_excerpt(md)["lines"] == [
+        "• Added support for Minecraft 26.2.", "• Fixed container interactions. (again) *not italic*",
+        "• Fixed Discord integration sending twice", "• Real change"]
+    assert updates.changelog_excerpt("## Changelog\n# 1.0\nSupport us on Patreon!") is None
+
+
+def test_since_last_visit_backlog_flag_and_order(env):
+    new_bytes = make_jar(env["tmp"] / "dl" / "x.jar", "CoreProtect", "24.1").read_bytes()
+    _mock_modrinth(env, new_bytes)
+    with client_for(app) as c:
+        c.post("/api/v2/seen", json={"at": "2020-01-01T00:00:00+00:00"})  # looked long before any check
+        updates.check()
+        s = c.get("/api/v2/overview").json()["since_last_visit"]
+        assert s["new_updates_total"] == 1 and s["is_backlog"] is True
+        c.post("/api/v2/seen", json={})
+        s = c.get("/api/v2/overview").json()["since_last_visit"]
+        assert s["new_updates"] == [] and s["is_backlog"] is False
+    # newest first
+    cache = updates.load_cache()
+    cache["first_seen"] = {"bukkit:coreprotect|24.1": "2030-01-01T00:00:00+00:00"}
+    updates.write_json(updates._cache_file(), cache)
+    pend = [{"key": "bukkit:coreprotect", "name": "CoreProtect", "to_version": "24.1", "from_versions": ["23.1"],
+             "servers": ["M1-hub01"]},
+            {"key": "bukkit:vault", "name": "Vault", "to_version": "1.7.3", "from_versions": ["1.7.0"], "servers": ["M1-hub01"]}]
+    cache["first_seen"]["bukkit:vault|1.7.3"] = "2031-01-01T00:00:00+00:00"
+    cache["first_checked_at"] = "2024-01-01T00:00:00+00:00"  # the visit below is after the first check
+    updates.write_json(updates._cache_file(), cache)
+    visits.mark_seen("x@y", "2025-01-01T00:00:00+00:00")
+    s = visits.since_last_visit("x@y", pend)
+    # every pending update is new since the visit: backlog
+    assert [u["name"] for u in s["new_updates"]] == ["Vault", "CoreProtect"] and s["is_backlog"] is True
+    s = visits.since_last_visit("x@y", pend + [{**pend[0], "key": "bukkit:old", "to_version": "9"}])
+    assert s["new_updates_total"] == 2 and s["is_backlog"] is False  # an older update exists: not the whole list

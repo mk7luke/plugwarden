@@ -130,6 +130,18 @@ _CL_RULES = [
 ]
 
 
+_CL_ESCAPE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|>~<=:])")  # markdown backslash escapes: "26\.2" -> "26.2"
+# Not changes: donation/community plugs and headings that only say "Changelog" or a version number.
+_CL_BOILERPLATE = re.compile(
+    r"patreon|ko-?fi\b|\bdonat(e|ion)|paypal\.me|buymeacoffee|buy me a coffee|github\.com/sponsors|"
+    r"discord(?:app)?\.(?:gg|com/invite)|\b(?:our|my|the) discord\b|consider (?:supporting|sponsoring)|"
+    r"support (the|this|our|my) (project|plugin|development|work)|\bsupport (us|me)\b|"
+    r"^join (our|my|the)\b", re.I)
+_CL_HEADING = re.compile(
+    r"^(?:(?:change ?log|changes|what'?s new|release notes|updates?)(?: (?:in|for) [^\s]+)?"
+    r"|(?:version |release )?v?\d+(?:[.\-_+]\w+)*(?: \(\S+\))?)[:!.]?$", re.I)
+
+
 def changelog_excerpt(md: Any, max_lines: int = CHANGELOG_LINES) -> dict | None:
     """Markdown/HTML release notes -> {lines: first non-empty lines as plain text, truncated}. Never returns
     markup: tags are removed (before and after entity decoding), so the UI can show it as text."""
@@ -147,12 +159,15 @@ def changelog_excerpt(md: Any, max_lines: int = CHANGELOG_LINES) -> dict | None:
         ln = re.sub(r"^#{1,6}\s*", "", ln)
         ln = re.sub(r"^(>\s*)+", "", ln)
         ln = re.sub(r"^[-*+]\s+(\[[ xX]\]\s+)?", "• ", ln)
+        # escaped characters are literal: hide them from the markdown rules, restore them afterwards
+        ln = _CL_ESCAPE.sub(lambda m: chr(0xE000 + ord(m.group(1))), ln)
         if ln.startswith("|"):
             ln = " ".join(c.strip() for c in ln.strip("|").split("|") if c.strip())
         for pat, sub in _CL_RULES:
             ln = pat.sub(sub, ln)
+        ln = re.sub(r"[\ue000-\ue07f]", lambda m: chr(ord(m.group(0)) - 0xE000), ln)
         ln = re.sub(r"\s+", " ", ln).strip()
-        if not ln or ln == "•":
+        if not ln or ln == "•" or _CL_BOILERPLATE.search(ln) or _CL_HEADING.match(ln.removeprefix("• ")):
             continue
         lines.append(ln if len(ln) <= 200 else ln[:199] + "…")
         if len(lines) > max_lines:
@@ -463,6 +478,7 @@ def check(job=None) -> dict:
     with _cache_lock:
         cache = load_cache()
         prev_checked = cache.get("checked_at")
+        cache.setdefault("first_checked_at", prev_checked or now)
         # Keep entries for other (family, mc) combos only if their jars still exist.
         cache["entries"] = entries
         cache["checked_at"] = now
