@@ -55,5 +55,19 @@ export function compactVer(v) {
     .replace(/\+(mc)?1\.\d+(\.\d+)?$/i, "")
     .replace(/-SNAPSHOT-?(\d+)/i, "·$1").replace(/-SNAPSHOT/i, "-S")
     .replace(/\s*\(build (\d+)\)/i, "·$1").replace(/-b(?:uild-?)?(\d+)$/i, "·$1")
+    .replace(/-S·/, "·")
     .trim();
 }
+
+// Fit a string into n characters by eliding the middle: 2.0.40·3990 → 2.0.4…3990.
+export function midTrunc(s, n) {
+  if (!s || s.length <= n) return s;
+  const tail = Math.ceil((n - 1) / 2), head = n - 1 - tail;
+  return s.slice(0, head) + "…" + s.slice(-tail);
+}
+
+// Files that hold live server data rather than configuration (warn before pushing them).
+export const isDataFile = (path) => /(^|\/)(spawn|warps?|saves|homes?|kits?|jails?|worth|usermap|npcs?)\.(ya?ml|json)$|[-_]data\.(ya?ml|json)$|(^|\/)data\.(ya?ml|json)$|(^|\/)(userdata|playerdata|data|warps|players)\//i.test(path || "");
+
+// Third-party links (changelogs, source pages) are only rendered when they're https.
+export const safeUrl = (u) => typeof u === "string" && /^https:\/\//i.test(u) ? u : null;

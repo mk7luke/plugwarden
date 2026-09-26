@@ -269,9 +269,8 @@ def read_lines(path: Path) -> list[str] | None:
 
 
 def _shown(key: str, value: str | None) -> str | None:
-    if value is None:
-        return None
-    return REDACTED if SECRET_NAME.search(key) else _unquote(value)
+    from .redact import shown
+    return shown(key, value)
 
 
 def server_specific(rel: str, src: Parsed, tgt: Parsed, others: list[Parsed]) -> list[dict]:

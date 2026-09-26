@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app import actions, engine, inventory, jobs, plans, settings, updates
 from app.main import app
-from conftest import make_jar
+from conftest import client_for, make_jar
 from test_engine import _mock_modrinth, deploy, jars_of
 
 
@@ -57,7 +57,7 @@ def test_update_plan_expiry_and_exclude(outdated):
 
 
 def test_api_requires_plan_and_maps_409(outdated):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         assert c.post("/api/v2/updates/apply", json={"items": "all"}).status_code == 400
         pid = c.post("/api/v2/updates/plan", json={"items": "all"}).json()["plan_id"]
         make_jar(outdated["a"] / "CoreProtect-23.1.jar", "CoreProtect", "23.1", extra=b"changed")
@@ -107,7 +107,7 @@ def test_pin_scoped_to_one_server(outdated):
     make_jar(outdated["b"] / "CoreProtect-23.1.jar", "CoreProtect", "23.1")
     updates.check()
     assert updates.pending_updates()[0]["servers"] == ["M1-hub01", "M3-hunger01"]
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.post("/api/v2/plugins/bukkit:coreprotect/pin", json={"version": "23.1", "servers": ["M1-hub01"]})
         assert r.json()["pins"] == {"bukkit:coreprotect": {"version": "23.1", "servers": ["M1-hub01"]}}
         assert updates.pending_updates()[0]["servers"] == ["M3-hunger01"]
@@ -139,7 +139,7 @@ def test_counts_match_everywhere(outdated):
     make_jar(outdated["b"] / "CoreProtect-23.1.jar", "CoreProtect", "23.1")
     make_jar(outdated["a"] / "CoreProtect-22.0.jar", "CoreProtect", "22.0")  # duplicate: counts once
     updates.check()
-    with TestClient(app) as c:
+    with client_for(app) as c:
         ov = c.get("/api/v2/overview").json()
         up = c.get("/api/v2/updates").json()
         mx = c.get("/api/v2/matrix").json()
@@ -173,7 +173,7 @@ def _pending(c):
 
 
 def test_pending_restart_recorded_for_every_real_change(outdated):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         assert _pending(c)[0] == set()
         # update apply
         jobs.wait(actions.start_apply("t", updates.create_plan("all", "t")["plan_id"]), 30)
@@ -203,7 +203,7 @@ def test_pending_restart_recorded_for_every_real_change(outdated):
 # ---------------------------------------------------------------- search / diff
 
 def test_search_recursive_and_skips_userdata(env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.get("/api/v2/servers/M1-hub01/search", params={"q": "yml"}).json()
         paths = [x["path"] for x in r["results"]]
         assert "Essentials/config.yml" in paths and "Essentials/stale.yml" in paths
@@ -213,7 +213,7 @@ def test_search_recursive_and_skips_userdata(env):
 
 
 def test_diff(env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.get("/api/v2/diff", params={"source": "elChapo01", "target": "M1-hub01",
                                           "path": "Essentials/config.yml"}).json()
         assert not r["identical"] and "-old-config" in r["diff"] and "+new-config" in r["diff"]
@@ -263,7 +263,7 @@ def test_mirror_plan_tolerates_live_writes_but_not_new_deletions(env):
 
 
 def test_pin_does_not_narrow_or_silently_replace(env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         c.post("/api/v2/plugins/bukkit:vault/pin", json={"version": "1.7.0"})
         r = c.post("/api/v2/plugins/bukkit:vault/pin", json={"version": "1.7.0", "servers": ["M1-hub01"]})
         assert r.json()["pins"]["bukkit:vault"]["servers"] == "*"
@@ -317,14 +317,14 @@ def test_update_plan_conflicts_when_other_version_added(outdated):
     with pytest.raises(plans.PlanError) as e:
         actions.start_apply("t", plan["plan_id"])
     assert e.value.detail["conflicts"][0]["reason"] == "other versions changed"
-    with TestClient(app) as c:
+    with client_for(app) as c:
         pid = c.post("/api/v2/updates/plan", json={"items": "all"}).json()["plan_id"]
         r = c.post("/api/v2/updates/apply", json={"plan_id": pid, "exclude": [[["x"], "y"]]})
         assert r.status_code == 400
 
 
 def test_search_and_diff_edge_cases(env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         assert c.get("/api/v2/servers/M1-hub01/search", params={"q": "   "}).status_code == 400
         r = c.get("/api/v2/diff", params={"source": "elChapo01", "target": "M1-hub01", "path": "nope.yml"})
         assert r.status_code == 404
@@ -367,7 +367,7 @@ def test_diff_redacts_secrets_and_flags_changes(env):
         "data:\n  password: 'new-secret'\n  username: lp\nserver: a\napi-key: same\n")
     (env["a"] / "LuckPerms" / "config.yml").write_text(
         "data:\n  password: 'old-secret'\n  username: lp\nserver: b\napi-key: same\n")
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.get("/api/v2/diff", params={"source": "elChapo01", "target": "M1-hub01", "path": "LuckPerms/config.yml"},
                   headers={"Cf-Access-Authenticated-User-Email": "ops@example.com"}).json()
         assert "new-secret" not in r["diff"] and "old-secret" not in r["diff"] and "same" not in r["diff"]
@@ -380,11 +380,12 @@ def test_diff_redacts_secrets_and_flags_changes(env):
         r = c.get("/api/v2/diff", params={"source": "elChapo01", "target": "M1-hub01", "path": "LuckPerms/config.yml"}).json()
         assert r["diff"] == "" and r["identical"] is False and r["redacted_changed"] is True
         log = c.get("/api/v2/access-log").json()["entries"]
-        assert len(log) == 2 and log[0]["user"] == "local" and log[1]["user"] == "ops@example.com"
+        # the plain email header is never trusted: identity comes from auth (loopback dev mode → "local")
+        assert len(log) == 2 and log[0]["user"] == "local" and log[1]["user"] == "local"
         assert log[1]["servers"] == ["elChapo01", "M1-hub01"] and log[1]["path"] == "LuckPerms/config.yml"
         assert log[1]["action"] == "diff" and "redacted" in log[1]["detail"]
-        filtered = c.get("/api/v2/access-log", params={"user": "OPS@"}).json()["entries"]
-        assert [e["user"] for e in filtered] == ["ops@example.com"]
+        assert c.get("/api/v2/access-log", params={"user": "LOC"}).json()["entries"] == log
+        assert c.get("/api/v2/access-log", params={"user": "ops@"}).json()["entries"] == []
         assert c.get("/api/v2/access-log", params={"server": "M3"}).json()["entries"] == []
 
 
@@ -402,7 +403,7 @@ def test_pinned_installs_are_not_drift(env):
     assert m1["drift_pinned"] == [{"key": "bukkit:coreprotect", "name": "CoreProtect", "version": "23.1",
                                    "expected": "24.1"}]
     assert "bukkit:coreprotect" not in snap["drift"]
-    with TestClient(app) as c:
+    with client_for(app) as c:
         row = next(r for r in c.get("/api/v2/matrix").json()["plugins"] if r["key"] == "bukkit:coreprotect")
     assert row["drift"] is False
     assert row["cells"]["M1-hub01"]["drift"] is False and row["cells"]["M1-hub01"]["drift_pinned"] is True
@@ -412,5 +413,6 @@ def test_pinned_installs_are_not_drift(env):
 def test_redaction_keeps_toggles_visible():
     from app.inventory import redact
     out, found = redact(["BlockWebhooks: false\n", "TokenExpiry: 3600\n", "BotToken: \"abc\"\n"])
-    assert out == ["BlockWebhooks: false\n", "TokenExpiry: 3600\n", "BotToken: «redacted»\n"]
-    assert found == {"BotToken": '"abc"'}
+    # booleans stay visible; numbers under a secret-looking key are treated as secrets (PINs, ids)
+    assert out == ["BlockWebhooks: false\n", "TokenExpiry: «redacted»\n", "BotToken: «redacted»\n"]
+    assert found == {"TokenExpiry": "3600", "BotToken": '"abc"'}

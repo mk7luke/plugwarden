@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 import subprocess
 import threading
 from pathlib import Path
@@ -72,7 +73,7 @@ def _rsync_escape(rel: str) -> str:
 # ---------------------------------------------------------------- rsync
 
 def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: bool = False,
-          excludes: list[str] | None = None) -> tuple[int, list[str], str]:
+          excludes: list[str] | None = None, backup_dir: Path | None = None) -> tuple[int, list[str], str]:
     # --checksum: size+mtime quick-check misses same-size config edits made within the same second.
     # --safe-links: never copy source symlinks that point outside the copied tree.
     cmd = ["rsync", "-a", "--itemize-changes", "--checksum", "--safe-links"]
@@ -84,6 +85,8 @@ def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: b
         cmd.append("--mkpath")
     # Excluded paths are neither copied nor deleted (no --delete-excluded).
     cmd += [f"--exclude={pat}" for pat in excludes or []]
+    if backup_dir is not None:
+        cmd += ["--backup", f"--backup-dir={backup_dir}"]
     if not (src.startswith("/") and dest.startswith("/")):
         raise ValueError("rsync paths must be absolute")
     cmd += [src, dest]  # absolute paths can never be read as options or host:path
@@ -106,10 +109,22 @@ class BackupError(OSError):
     pass
 
 
+def state_sig(path: Path) -> str:
+    """What is at a path now: 'absent', 'dir', 'link:<target>' or 'file:<sha1>'."""
+    if path.is_symlink():
+        return "link:" + os.readlink(path)
+    if not path.exists():
+        return "absent"
+    if path.is_dir():
+        return "dir"
+    return "file:" + inventory.file_hash(path)
+
+
 class Backup:
-    """Per-job backup store. Each entry records a plugins-relative path and whether it existed before
-    the job touched it; undo (in reverse order) removes whatever is there now and restores the saved
-    copy (if any). Every entry gets its own store directory, so overlapping paths never collide."""
+    """Per-job backup store. Each entry records a plugins-relative path, whether it existed before the
+    job touched it, and (after the change) its post-job state. Undo walks the entries in reverse and
+    only touches a path that still has the state the job left behind. Folder pushes record exactly the
+    files rsync changed, created or deleted (never excluded live data), not whole folders."""
 
     def __init__(self, job_id: str, on_record=None):
         self.job_id = job_id
@@ -140,6 +155,69 @@ class Backup:
         if self._on_record:
             self._on_record(entry)
 
+    def _flush(self) -> None:
+        write_json(self.manifest_path, {"job_id": self.job_id, "entries": self.entries})
+
+    def set_post(self, srv: Server, rel: str) -> None:
+        """Record the state the job left at rel (for every entry of this path and its created parents)."""
+        with self._lock:
+            for e in self.entries:
+                if e["server"] == srv.id and (e["rel"] == rel or rel.startswith(e["rel"] + "/")) and "post" not in e:
+                    e["post"] = state_sig(srv.plugins_dir / e["rel"])
+            self._flush()
+
+    def new_store(self, srv: Server, rel: str) -> Path:
+        """A fresh directory for rsync --backup-dir (what rsync replaces or deletes lands here)."""
+        with self._lock:
+            n = len(list((self.root / "rsync").glob("*"))) if (self.root / "rsync").is_dir() else 0
+            d = self.root / "rsync" / str(n) / srv.id / rel
+            d.mkdir(parents=True, exist_ok=False)
+            return d
+
+    def record_rsync(self, srv: Server, base_rel: str, lines: list[str], store: Path,
+                     created: list[str] = ()) -> None:
+        """Entries from rsync's itemized output of a real run with --backup-dir=store.
+        `created` are folders (base_rel and missing parents) that did not exist before the run."""
+        with self._lock:
+            before = list(self.entries)  # only earlier operations of this job "cover" a path
+            for rel in created:
+                if not any(e["server"] == srv.id and (rel == e["rel"] or rel.startswith(e["rel"] + "/"))
+                           for e in before):
+                    self.entries.append({"server": srv.id, "rel": rel, "existed": False, "type": "dir",
+                                         "post": state_sig(srv.plugins_dir / rel)})
+
+            def covered(rel: str) -> bool:
+                return any(e["server"] == srv.id and (rel == e["rel"] or rel.startswith(e["rel"] + "/"))
+                           for e in before)
+
+            for ln in lines:
+                code, name = ln[:11].strip(), ln[12:]
+                if not name or name in ("./", "."):
+                    continue
+                is_dir = name.endswith("/")
+                name = name.rstrip("/")
+                rel = f"{base_rel}/{name}" if base_rel else name
+                if covered(rel):
+                    continue
+                if code.startswith("*deleting"):
+                    entry = {"server": srv.id, "rel": rel, "existed": True, "type": "dir" if is_dir else "file"}
+                    if not is_dir:
+                        entry["store"] = str((store / name).relative_to(self.root))
+                elif "+++++++++" in code:  # created
+                    entry = {"server": srv.id, "rel": rel, "existed": False, "type": "dir" if is_dir else "file"}
+                elif code[:1] in (">", "c") and not is_dir:  # content/link replaced: old copy is in store
+                    if not _exists(store / name):
+                        continue
+                    entry = {"server": srv.id, "rel": rel, "existed": True, "type": "file",
+                             "store": str((store / name).relative_to(self.root))}
+                else:
+                    continue
+                entry["post"] = state_sig(srv.plugins_dir / rel)
+                self.entries.append(entry)
+                if self._on_record:
+                    self._on_record(entry)
+            self._flush()
+
     def save(self, srv: Server, rel: str, move: bool = False) -> None:
         """Back up plugins/<rel> before it is modified (copy) or removed (move)."""
         path = srv.plugins_dir / rel
@@ -150,12 +228,13 @@ class Backup:
                 return
             exists = _exists(path)
             if not exists:
-                # Record the top-most missing ancestor so undo also removes directories we create.
+                # Record each missing ancestor (created folders) and the path itself; undo removes the
+                # created file and then only folders that are empty again.
                 parts = rel.split("/")
                 for i in range(1, len(parts)):
-                    if not (srv.plugins_dir / "/".join(parts[:i])).exists():
-                        rel = "/".join(parts[:i])
-                        break
+                    anc = "/".join(parts[:i])
+                    if not (srv.plugins_dir / anc).exists() and not self._covered(srv.id, anc):
+                        self._record({"server": srv.id, "rel": anc, "existed": False, "type": "dir"})
                 if self._covered(srv.id, rel):
                     return
                 return self._record({"server": srv.id, "rel": rel, "existed": False, "type": None})
@@ -214,11 +293,33 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-def prune_backups(keep: int, keep_ids: set[str] = frozenset()) -> None:
-    dirs = sorted((d for d in config.state("backups").iterdir() if d.is_dir()), reverse=True)
-    for d in dirs[keep:]:
-        if d.name not in keep_ids:
+def prune_backups(keep: int, keep_ids: set[str] = frozenset(), max_age_days: float | None = None,
+                  max_bytes: int | None = None) -> list[str]:
+    """Drop the oldest job backups beyond a count, an age, or a total size (newest are kept first).
+    Jobs whose backup is gone are no longer undoable. Returns the pruned job ids."""
+    root = config.state("backups")
+    dirs = sorted((d for d in root.iterdir() if d.is_dir()), reverse=True)
+    cutoff = time.time() - max_age_days * 86400 if max_age_days else None
+    total, pruned = 0, []
+    for i, d in enumerate(dirs):
+        if d.name in keep_ids:
+            continue
+        drop = i >= keep
+        if not drop and cutoff is not None:
+            try:
+                drop = d.stat().st_mtime < cutoff
+            except OSError:
+                drop = False
+        if not drop and max_bytes is not None:
+            try:
+                total += _tree_size(d)
+            except OSError:
+                pass
+            drop = total > max_bytes and i > 0  # the newest backup is always kept
+        if drop:
             shutil.rmtree(d, ignore_errors=True)
+            pruned.append(d.name)
+    return pruned
 
 
 # ---------------------------------------------------------------- context
@@ -368,7 +469,10 @@ def _sync_dir(ctx: Ctx, src_srv: Server, tgt: Server, rel: str, item: str, actio
 
 def merge_file(ctx: Ctx, src_srv: Server, tgt: Server, rel: str, keep: list[str], item: str) -> None:
     """Write the source config but keep the target's values for `keep` (format-preserving)."""
-    src, dest = src_srv.plugins_dir / rel, tgt.plugins_dir / rel
+    try:
+        src, dest = inventory.resolve_in(src_srv, rel), inventory.resolve_in(tgt, rel)
+    except PathError as e:
+        return ctx.result(tgt.id, item, "merge", "error", str(e), reason_code="merge_unsafe")
     src_lines, tgt_lines = configmerge.read_lines(src), configmerge.read_lines(dest)
     if src_lines is None or tgt_lines is None:
         return ctx.result(tgt.id, item, "merge", "error", "config file unreadable, too large or binary",
@@ -406,9 +510,22 @@ def _rsync_item(ctx: Ctx, tgt: Server, item: str, action: str, src: str, dest: s
         ctx.remember(tgt.id, item, action,
                      ([ln for ln in changes if ln.startswith("*deleting")] if delete else changes) + (fp_extra or []))
         return ctx.result(tgt.id, item, action, "changed", f"{len(changes)} change(s){note}", changes, **fields)
-    if ctx.backup:
+    is_dir = src.endswith("/")
+    store = None
+    parts = rel.split("/")
+    created = [p for p in ("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+               if is_dir and not (tgt.plugins_dir / p).exists()]
+    if ctx.backup and is_dir:
+        # rsync itself saves exactly what it replaces or deletes; excluded live data is never touched.
+        store = ctx.backup.new_store(tgt, rel)
+    elif ctx.backup:
         ctx.backup.save(tgt, rel)
-    rc, done, err = rsync(src, dest, dry_run=False, delete=delete, mkpath=True, excludes=excludes)
+    rc, done, err = rsync(src, dest, dry_run=False, delete=delete, mkpath=True, excludes=excludes, backup_dir=store)
+    if ctx.backup:
+        if is_dir:
+            ctx.backup.record_rsync(tgt, rel, done, store, created)
+        else:
+            ctx.backup.set_post(tgt, rel)
     if rc != 0:
         return ctx.result(tgt.id, item, action, "error", err or f"rsync exited {rc}", done, **fields)
     ctx.result(tgt.id, item, action, "changed", f"{len(done)} change(s){note}", done, **fields)
@@ -443,6 +560,7 @@ def delete_item(ctx: Ctx, tgt: Server, rel: str) -> None:
                           files=n, size=size)
     if ctx.backup:
         ctx.backup.save(tgt, rel, move=True)
+        ctx.backup.set_post(tgt, rel)
     else:
         _remove(path)
     ctx.result(tgt.id, rel, "delete", "changed", f"deleted ({n} file(s))", [f"*deleting {rel}"],
@@ -559,6 +677,9 @@ def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str 
         except OSError as e2:
             detail += f"; ROLLBACK FAILED ({e2}) — use Undo on this job"
         return ctx.result(tgt.id, item, action, "error", detail)
+    if ctx.backup:
+        for n in set(old_names) | {new_jar.name}:
+            ctx.backup.set_post(tgt, n)
     ctx.result(tgt.id, item, action, "changed", detail, changes, **jar_fields)
 
 
@@ -690,6 +811,14 @@ def _preserve_spec(req: dict, rel: str) -> Any:
     return spec
 
 
+def _file_in(srv: Server, rel: str) -> bool:
+    """A regular file inside srv's plugins dir (symlinks resolved and confined)."""
+    try:
+        return inventory.resolve_in(srv, rel).is_file()
+    except PathError:
+        return False
+
+
 def _config_files(src_srv: Server, tgt: Server, rel: str) -> list[str]:
     """Config files (relative to plugins/) that a sync of `rel` would overwrite on tgt."""
     src = src_srv.plugins_dir / rel
@@ -700,7 +829,7 @@ def _config_files(src_srv: Server, tgt: Server, rel: str) -> list[str]:
         dirs[:] = sorted(d for d in dirs if not is_data_dir(d))
         for f in sorted(files):
             fr = os.path.relpath(os.path.join(root, f), src_srv.plugins_dir).replace(os.sep, "/")
-            if configmerge.is_config(fr) and not is_data_file(f) and (tgt.plugins_dir / fr).is_file():
+            if configmerge.is_config(fr) and not is_data_file(f) and _file_in(tgt, fr):
                 out.append(fr)
                 if len(out) > MAX_CONFIG_SCAN:
                     return out
@@ -719,7 +848,7 @@ def analyze_server_specific(req: dict) -> tuple[list[dict], dict[tuple[str, str]
     def parse(srv: Server, rel: str):
         k = (srv.id, rel)
         if k not in parsed:
-            lines = configmerge.read_lines(srv.plugins_dir / rel)
+            lines = configmerge.read_lines(srv.plugins_dir / rel) if _file_in(srv, rel) else None
             parsed[k] = None if lines is None else configmerge.parse(rel, lines)
         return parsed[k]
 
@@ -941,31 +1070,80 @@ def run_undo(ctx: Ctx, original_job_id: str) -> None:
 
 
 def _restore_entry(ctx: Ctx, src: Backup, srv: Server, e: dict) -> None:
+    """Put one path back to its pre-job state, but only if it still has the state the job left
+    (otherwise someone or something changed it since: report a conflict and leave it alone)."""
+    rel = e["rel"]
     try:
-        path = inventory.resolve_in(srv, e["rel"])
+        path = inventory.resolve_in(srv, rel)
     except PathError as err:
-        return ctx.result(srv.id, e["rel"], "restore", "error", str(err))
-    stored = src.store_path(e)
-    if e["existed"] and not _exists(stored):
-        return ctx.result(srv.id, e["rel"], "restore", "error", "backup copy is missing")
+        return ctx.result(srv.id, rel, "restore", "error", str(err))
+    cur = state_sig(path)
+    post = e.get("post")
+    if post is not None and cur != post and not (post == "dir" and cur == "dir"):
+        return ctx.result(srv.id, rel, "restore", "skipped", "changed since the job ran; left as is",
+                          reason_code="changed_since_job")
+    stored = src.store_path(e) if e.get("store") else None
+    if e["existed"] and stored is not None and not _exists(stored):
+        return ctx.result(srv.id, rel, "restore", "error", "backup copy is missing")
+
+    if not e["existed"]:  # the job created it
+        if cur == "absent":
+            return ctx.result(srv.id, rel, "restore", "unchanged", "already absent")
+        if cur == "dir":
+            if any(path.iterdir()):
+                return ctx.result(srv.id, rel, "restore", "skipped", "folder is not empty; left as is",
+                                  reason_code="changed_since_job")
+            if ctx.dry_run:
+                return ctx.result(srv.id, rel, "restore", "changed", "would remove empty folder it created")
+            path.rmdir()
+            ctx.backup._record({"server": srv.id, "rel": rel, "existed": True, "type": "dir", "post": "absent"})
+            return ctx.result(srv.id, rel, "restore", "changed", "removed folder (did not exist before)")
+        if ctx.dry_run:
+            return ctx.result(srv.id, rel, "restore", "changed", "would remove (did not exist before)")
+        ctx.backup.save(srv, rel, move=True)
+        ctx.backup.set_post(srv, rel)
+        return ctx.result(srv.id, rel, "restore", "changed", "removed (did not exist before)")
+
+    if stored is None:  # a folder rsync deleted: recreate it (its files have their own entries)
+        if cur == "dir":
+            return ctx.result(srv.id, rel, "restore", "unchanged", "folder exists")
+        if ctx.dry_run:
+            return ctx.result(srv.id, rel, "restore", "changed", "would recreate folder")
+        path.mkdir(parents=True, exist_ok=True)
+        ctx.backup._record({"server": srv.id, "rel": rel, "existed": False, "type": "dir", "post": "dir"})
+        return ctx.result(srv.id, rel, "restore", "changed", "recreated folder")
+
+    if "/" not in rel and rel.lower().endswith(".jar") and stored.is_file():
+        other = [j for j in _other_versions(srv, stored, rel)
+                 if not any(x["server"] == srv.id and x["rel"] == j for x in src.entries)]
+        if other:
+            return ctx.result(srv.id, rel, "restore", "skipped",
+                              f"another version of this plugin is installed ({', '.join(other)}); not restored",
+                              reason_code="changed_since_job")
     if ctx.dry_run:
-        return ctx.result(srv.id, e["rel"], "restore", "changed",
-                          "would restore previous version" if e["existed"] else "would remove (did not exist before)")
-    had_current = _exists(path)
+        return ctx.result(srv.id, rel, "restore", "changed", "would restore previous version")
+    had_current = cur != "absent"
     # Move the current state aside (into this undo job's backup), so the undo is itself undoable.
-    ctx.backup.save(srv, e["rel"], move=had_current)
-    if not e["existed"]:
-        return ctx.result(srv.id, e["rel"], "restore", "changed", "removed (did not exist before)")
+    ctx.backup.save(srv, rel, move=had_current)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _copy(stored, path)
     except (OSError, subprocess.CalledProcessError) as err:
-        # Put the current state back rather than leave nothing there.
-        cur = ctx.backup.stored(srv.id, e["rel"])
-        if had_current and cur and not _exists(path):
-            _copy(cur, path)
-        return ctx.result(srv.id, e["rel"], "restore", "error", f"restore failed: {err}")
-    ctx.result(srv.id, e["rel"], "restore", "changed", "restored previous version")
+        back = ctx.backup.stored(srv.id, rel)
+        if had_current and back and not _exists(path):
+            _copy(back, path)  # put the current state back rather than leave nothing there
+        return ctx.result(srv.id, rel, "restore", "error", f"restore failed: {err}")
+    ctx.backup.set_post(srv, rel)
+    ctx.result(srv.id, rel, "restore", "changed", "restored previous version")
+
+
+def _other_versions(srv: Server, stored_jar: Path, rel: str) -> list[str]:
+    """Jars of the same plugin that the undo would sit next to (installed after the job)."""
+    try:
+        key = inventory.describe_jar(stored_jar, srv.family)["key"]
+    except Exception:  # noqa: BLE001
+        return []
+    return [p["jar"] for p in inventory.list_plugins(srv) if p["key"] == key and p["jar"] != rel]
 
 
 def overlapping_later_jobs(job_id: str) -> list[str]:

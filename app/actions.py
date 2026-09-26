@@ -93,6 +93,27 @@ def _finish(job: jobs.Job) -> None:
     mark_changed(job)
 
 
+JOB_RECORDS_KEEP = 500
+TEMP_MAX_AGE_DAYS = 1.0
+
+
+def housekeeping(keep_ids: set[str] = frozenset()) -> dict:
+    """Retention: backups by count/age/total size, uploads + staging after 24 h, job records (keep 500)."""
+    st = settings.load_raw()
+    out = {"backups": [], "jobs": 0}
+    try:
+        active = {j.id for j in jobs.active_jobs()}
+        out["backups"] = engine.prune_backups(st["backup_keep_jobs"], keep_ids=set(keep_ids) | active,
+                                              max_age_days=st["backup_max_age_days"],
+                                              max_bytes=int(st["backup_max_gb"] * 1024 ** 3))
+        for sub in ("staging", "uploads"):
+            _prune_dir(config.state(sub), max_age_days=TEMP_MAX_AGE_DAYS)
+        out["jobs"] = jobs.prune_records(JOB_RECORDS_KEEP, keep=active | set(keep_ids))
+    except OSError:
+        pass
+    return out
+
+
 def _prune_dir(root: Path, max_age_days: float) -> None:
     cutoff = time.time() - max_age_days * 86400
     for d in root.iterdir():
@@ -118,11 +139,7 @@ def _mutating_body(job: jobs.Job, fn) -> None:
     finally:
         job.has_backup = bool(backup and backup.used)
         if not job.dry_run:
-            try:
-                engine.prune_backups(settings.load_raw()["backup_keep_jobs"], keep_ids={job.id})
-                _prune_dir(config.state("staging"), max_age_days=7)
-            except OSError:
-                pass
+            housekeeping(keep_ids={job.id})
 
 
 def start_check(user: str) -> jobs.Job:
@@ -216,14 +233,12 @@ def start_undo(user: str, job_id: str) -> jobs.Job:
             raise engine.DeployError("unknown job")
         if not original.undoable or job_id in _undo_pending:
             raise engine.DeployError("this job cannot be undone (no backups, dry run, still running, or already undone)")
-        later = engine.overlapping_later_jobs(job_id)
-        if later:
-            n = len(later)
-            raise plans.PlanError(400, {
-                "code": "later_jobs",
-                "message": f"{n} later job{'s' * (n != 1)} changed the same files; undo "
-                           f"{'them' if n != 1 else 'it'} first, newest first",
-                "jobs": sorted(later, reverse=True)})
+        busy = [j.id for j in jobs.active_jobs() if j.mutating]
+        if busy:
+            raise plans.PlanError(409, {"code": "busy", "jobs": busy,
+                                        "message": "another job that changes servers is running or queued; "
+                                                   "undo once it has finished"})
+        _raise_if_later(job_id)
         _undo_pending.add(job_id)
 
     def done(job: jobs.Job) -> None:
@@ -235,6 +250,26 @@ def start_undo(user: str, job_id: str) -> jobs.Job:
                     jobs.mark_undone(original.undo_of, None)
         _finish(job)
 
-    return jobs.submit("undo", user, {"undo_of": job_id},
-                       lambda job: _mutating_body(job, lambda ctx: engine.run_undo(ctx, job_id)),
-                       on_done=done)
+    def body(job: jobs.Job) -> None:
+        # Re-check under the mutate lock: a job queued before this undo may have touched the same files.
+        later = [j for j in engine.overlapping_later_jobs(job_id) if j != job.id]
+        if later:
+            job.add_result("-", "-", "restore", "error",
+                           f"{len(later)} later job(s) changed the same files since this undo was requested; "
+                           "nothing was restored")
+            job.params["blocked_by"] = later
+            return
+        _mutating_body(job, lambda ctx: engine.run_undo(ctx, job_id))
+
+    return jobs.submit("undo", user, {"undo_of": job_id}, body, on_done=done)
+
+
+def _raise_if_later(job_id: str) -> None:
+    later = engine.overlapping_later_jobs(job_id)
+    if later:
+        n = len(later)
+        raise plans.PlanError(400, {
+            "code": "later_jobs",
+            "message": f"{n} later job{'s' * (n != 1)} changed the same files; undo "
+                       f"{'them' if n != 1 else 'it'} first, newest first",
+            "jobs": sorted(later, reverse=True)})

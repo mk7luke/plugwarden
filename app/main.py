@@ -13,7 +13,6 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -21,13 +20,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import actions, audit, config, configmerge, engine, inventory, jobs, plans, scheduler, settings, updates
+from . import actions, audit, auth, config, configmerge, engine, inventory, jobs, plans, scheduler, settings, updates
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
 HERE = Path(__file__).parent
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    auth.check_startup()
     config.ensure_dirs()
     jobs.recover_interrupted()
     scheduler.start()
@@ -38,8 +38,9 @@ async def lifespan(_: FastAPI):
     inventory.flush_cache()
 
 
-app = FastAPI(lifespan=lifespan, title=config.APP_NAME, version=config.VERSION, docs_url="/api/v2/docs", redoc_url=None,
-              openapi_url="/api/v2/openapi.json")
+app = FastAPI(lifespan=lifespan, title=config.APP_NAME, version=config.VERSION, redoc_url=None,
+              docs_url="/api/v2/docs" if config.DOCS_ENABLED else None,
+              openapi_url="/api/v2/openapi.json" if config.DOCS_ENABLED else None)
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
@@ -54,6 +55,11 @@ async def _unknown_server(_: Request, exc: UnknownServer):
 @app.exception_handler(inventory.NotFound)
 async def _not_found(_: Request, exc: inventory.NotFound):
     return JSONResponse({"detail": str(exc)}, status_code=404)
+
+
+@app.exception_handler(jobs.InsufficientSpace)
+async def _no_space(_: Request, exc: jobs.InsufficientSpace):
+    return JSONResponse({"detail": str(exc), "code": "insufficient_space"}, status_code=507)
 
 
 @app.exception_handler(PathError)
@@ -77,20 +83,35 @@ async def _settings_error(_: Request, exc: SettingsError):
 
 
 @app.middleware("http")
-async def _same_origin_writes(request: Request, call_next):
-    """Refuse cross-site state-changing requests (CSRF), since auth is a Cloudflare Access cookie."""
-    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/api/"):
-        if request.headers.get("sec-fetch-site") == "cross-site":
-            return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
-        origin = request.headers.get("origin")
-        if origin and origin != "null" and urlparse(origin).netloc != request.headers.get("host"):
-            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
-    return await call_next(request)
+async def _security(request: Request, call_next):
+    """Host allowlist (DNS rebinding) → authentication → CSRF → upload size, then hardening headers."""
+    if not auth.host_ok(request.headers.get("host")):
+        return JSONResponse({"detail": "host not allowed"}, status_code=400)
+    try:
+        client = request.client.host if request.client else None
+        request.state.user = await run_in_threadpool(auth.authenticate, request.headers, request.cookies, client)
+    except auth.AuthError as e:
+        return JSONResponse({"detail": e.detail}, status_code=e.status)
+    err = auth.csrf_ok(request.method, request.url.path, request.headers)
+    if err:
+        return JSONResponse({"detail": err}, status_code=403)
+    if request.url.path == "/api/v2/upload" and request.method == "POST":
+        try:
+            length = int(request.headers.get("content-length", ""))
+        except ValueError:
+            return JSONResponse({"detail": "Content-Length required"}, status_code=411)
+        if length > config.MAX_UPLOAD_BYTES + 1024 * 1024:
+            return JSONResponse({"detail": "file too large"}, status_code=413)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", "object-src 'none'; frame-ancestors 'none'; base-uri 'self'")
+    return response
 
 
 def user_of(request: Request) -> str:
-    u = (request.headers.get(config.USER_HEADER) or "").strip()
-    return u[:200] if u else "local"
+    """The authenticated identity (verified Cloudflare Access email, or "local" in loopback dev mode)."""
+    return getattr(request.state, "user", None) or "local"
 
 
 def job_ref(job: jobs.Job) -> dict:
@@ -321,6 +342,21 @@ def _check_key(key: str) -> str:
     return key
 
 
+class _AuditAfter:
+    """Records the before/after of one plugin's pin or ignore once the settings call returned."""
+
+    def __init__(self, user: str, action: str, before: dict, key: str):
+        self.user, self.action, self.before, self.key = user, action, before, key
+
+    def __call__(self, result: dict) -> dict:
+        field = "pins" if self.action == "pin" else "ignores"
+        after = settings.load_raw()
+        audit.record(self.user, self.action, servers=[], path=self.key,
+                     detail=f"{field}[{self.key}] changed", before=self.before[field].get(self.key),
+                     after=after[field].get(self.key))
+        return result
+
+
 def _scope_arg(body: dict) -> Any:
     servers = body.get("servers", "*")
     if servers == "*":
@@ -332,7 +368,7 @@ def _scope_arg(body: dict) -> Any:
 
 
 @app.post("/api/v2/plugins/{key}/pin")
-def plugin_pin(key: str, body: dict = Body(default={})):
+def plugin_pin(key: str, request: Request, body: dict = Body(default={})):
     """{version: str|null, servers: [ids]|"*"}. null unpins on those servers ('*' = everywhere)."""
     _check_key(key)
     body = body if isinstance(body, dict) else {}
@@ -341,19 +377,23 @@ def plugin_pin(key: str, body: dict = Body(default={})):
         raise HTTPException(400, "version must be a string or null")
     scope = _scope_arg(body)
     all_ids = [s.id for s in inventory.discover()]
-    return settings.mutate(lambda raw: settings.set_hold(raw["pins"], key, scope, version is not None,
-                                                         version=version, all_ids=all_ids))
+    before = settings.load_raw()
+    audit_after = _AuditAfter(user_of(request), "pin", before, key)
+    return audit_after(settings.mutate(lambda raw: settings.set_hold(raw["pins"], key, scope, version is not None,
+                                                         version=version, all_ids=all_ids)))
 
 
 @app.post("/api/v2/plugins/{key}/ignore")
-def plugin_ignore(key: str, body: dict = Body(default={})):
+def plugin_ignore(key: str, request: Request, body: dict = Body(default={})):
     """{ignored: bool, servers: [ids]|"*"}."""
     _check_key(key)
     body = body if isinstance(body, dict) else {}
     scope = _scope_arg(body)
     all_ids = [s.id for s in inventory.discover()]
-    return settings.mutate(lambda raw: settings.set_hold(raw["ignores"], key, scope, bool(body.get("ignored", True)),
-                                                         all_ids=all_ids))
+    before = settings.load_raw()
+    audit_after = _AuditAfter(user_of(request), "ignore", before, key)
+    return audit_after(settings.mutate(lambda raw: settings.set_hold(raw["ignores"], key, scope, bool(body.get("ignored", True)),
+                                                         all_ids=all_ids)))
 
 
 @app.post("/api/v2/plugins/{key}/remove")
@@ -391,7 +431,13 @@ def updates_apply(request: Request, body: dict = Body(...)):
 
 @app.post("/api/v2/deploy/plan")
 def deploy_plan(request: Request, body: dict = Body(...)):
-    return engine.plan(body, user_of(request))
+    out = engine.plan(body, user_of(request))
+    shown = [w for w in out["warnings"] if w.get("type") == "server_specific"]
+    if shown:  # plan warnings carry (redacted) config values: they are a read like /diff
+        audit.record(user_of(request), "plan-values", servers=sorted({w["server"] for w in shown}),
+                     path=", ".join(sorted({w["path"] for w in shown}))[:500],
+                     detail=f"{sum(len(w['keys']) for w in shown)} server-specific value(s) shown")
+    return out
 
 
 @app.post("/api/v2/deploy")
@@ -464,7 +510,7 @@ UPLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._+\-() ]")
 
 
 @app.post("/api/v2/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(request: Request, file: UploadFile = File(...)):
     name = UPLOAD_NAME_RE.sub("_", Path(file.filename or "").name).strip().lstrip(".")
     if not name.lower().endswith(".jar") or len(name) > 150:
         raise HTTPException(400, "only .jar files can be uploaded")
@@ -489,23 +535,19 @@ async def upload(file: UploadFile = File(...)):
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)
         raise
-    await run_in_threadpool(_prune_uploads)
+
     main = descs.get("bukkit") or descs.get("velocity") or descs.get("bungee")
     families = [f for f in ("bukkit", "velocity") if f in descs]
+    sha1 = await run_in_threadpool(inventory.file_hash, dest)
+    audit.record(user_of(request), "upload", servers=[], path=name,
+                 detail=f"{main['name']} {main['version']} · sha1 {sha1} · {size} bytes")
     return {
         "upload_id": upload_id, "name": name, "plugin_name": main["name"], "version": main["version"],
         "families": families,
         "keys": {f: inventory.plugin_key(f, descs[f]["id"] if f == "velocity" else descs[f]["name"])
                  for f in families},
-        "sha1": await run_in_threadpool(inventory.file_hash, dest), "size": size,
+        "sha1": sha1, "size": size,
     }
-
-
-def _prune_uploads(max_age_days: float = 7) -> None:
-    cutoff = time.time() - max_age_days * 86400
-    for d in config.state("uploads").iterdir():
-        if d.is_dir() and d.stat().st_mtime < cutoff:
-            shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- jobs
@@ -579,8 +621,26 @@ def settings_get():
 
 
 @app.put("/api/v2/settings")
-def settings_put(body: dict = Body(...)):
-    return settings.update(body)
+def settings_put(request: Request, body: dict = Body(...)):
+    """Partial update. Switching auto_update.mode to "apply" requires confirm_apply: true."""
+    before = settings.load_raw()
+    au = body.get("auto_update") if isinstance(body, dict) else None
+    if isinstance(au, dict) and au.get("mode") == "apply" and before["auto_update"]["mode"] != "apply" \
+            and body.get("confirm_apply") is not True:
+        raise HTTPException(400, "switching auto-update to 'apply' installs updates unattended; "
+                                 "send confirm_apply: true to confirm")
+    out = settings.update({k: v for k, v in body.items() if k != "confirm_apply"})
+    _audit_settings(user_of(request), "settings", before, settings.load_raw())
+    return out
+
+
+def _audit_settings(user: str, action: str, before: dict, after: dict, path: str = "") -> None:
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    if not changed:
+        return
+    audit.record(user, action, servers=[], path=path or ", ".join(changed),
+                 detail="changed " + ", ".join(changed),
+                 before={k: before.get(k) for k in changed}, after={k: after.get(k) for k in changed})
 
 
 @app.get("/api/v2/health")

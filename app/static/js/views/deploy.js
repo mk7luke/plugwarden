@@ -6,7 +6,7 @@ import { api, get, post, searchFiles } from "../api.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "../components/overlays.js";
 import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Check, Skel } from "../components/ui.js";
-import { bytes, plural } from "../fmt.js";
+import { bytes, plural, midTrunc, isDataFile } from "../fmt.js";
 
 const ACTIONS = [
   ["sync", "Sync existing", "refresh-cw", "Overwrite items that already exist on targets"],
@@ -72,7 +72,8 @@ export function Deploy({ query }) {
     source, targets: tgt, action,
     items: { jars: items.jars, folders: items.folders, paths: items.paths, uploads: items.uploads.map(u => u.upload_id) },
     options: opts, ...(force && action === "delete" ? { force: true } : {}),
-    ...(identity === "keep" ? { preserve_keys: "server_specific" } : identity === "overwrite" ? { overwrite_server_specific: true } : {}),
+    ...(identity === "keep" || identity === "keep_skip" ? { preserve_keys: "server_specific" } : identity === "overwrite" ? { overwrite_server_specific: true } : {}),
+    ...(identity === "keep_skip" ? { skip_unmergeable: true } : {}),
   }), [source, tgt.join(","), action, items, opts, force, identity]);
 
   const running = useStore(s => s.jobs.find(j => j.id === jobId));
@@ -82,6 +83,16 @@ export function Deploy({ query }) {
   const execute = async (plan) => {
     const changes = plan.servers.reduce((a, s) => a + s.changed, 0);
     const affected = plan.servers.filter(s => s.changed);
+    const failing = plan.servers.flatMap(s => s.rows.filter(r => r.outcome === "error"));
+    if (failing.length && action !== "delete") {
+      const ok = await confirmDialog({
+        title: `Execute ${plural(changes, "change")} and skip ${failing.length} that would fail?`,
+        body: "These items can't be applied as planned. They'll be left untouched on their servers; everything else runs. Backups are kept for undo.",
+        list: failing.map(r => `${r.server}: ${r.item} — ${r.detail}`),
+        confirmLabel: `Execute ${changes} · skip ${failing.length}`,
+      });
+      if (!ok) return;
+    }
     if (action === "delete") {
       const ok = await confirmDialog({
         danger: true, title: `Delete from ${plural(affected.length, "server")}?`, confirmLabel: "Delete",
@@ -95,7 +106,8 @@ export function Deploy({ query }) {
       if (!ok) return;
     }
     try {
-      const r = await post("/deploy", { plan_id: plan.plan_id });
+      const failingNow = plan.servers.some(s => s.rows.some(r => r.outcome === "error"));
+      const r = await post("/deploy", { plan_id: plan.plan_id, ...(failingNow ? { skip_failing: true } : {}) });
       setJobId(r.job_id);
       trackJob(r.job_id, { title: `Deploy · ${ACTIONS.find(a => a[0] === action)[1]}` });
     } catch (e) {
@@ -116,7 +128,8 @@ export function Deploy({ query }) {
         ${jobId ? html`<${Execution} job=${running} jobId=${jobId} onNew=${reset} />`
           : replaceBlocked ? html`<${ReplaceBlocked} nonJars=${nonJars} onRemove=${() => setItems(it => ({ ...it, folders: [], paths: it.paths.filter(p => /\.jar$/i.test(p)) }))} onSync=${() => setAction("sync")} />`
           : html`<${PlanCol} body=${body} nonce=${nonce} ready=${count > 0 && tgt.length > 0} count=${count} targets=${tgt.length} onExecute=${execute} action=${action}
-              force=${force} setForce=${setForce} identity=${identity} setIdentity=${setIdentity} onInstall=${() => setOpts(o => ({ ...o, install: true }))} onSummary=${setPlanInfo} />`}
+              force=${force} setForce=${setForce} identity=${identity} setIdentity=${setIdentity}
+              onRemoveFailing=${(paths) => setItems(it => ({ ...it, jars: it.jars.filter(j => !paths.includes(j)), paths: it.paths.filter(p => !paths.includes(p)), folders: it.folders.filter(f => !paths.includes(f + "/") && !paths.includes(f)) }))} onInstall=${() => setOpts(o => ({ ...o, install: true }))} onSummary=${setPlanInfo} />`}
       </div>
     </div>
     ${!jobId && (count > 0 || tgt.length > 0) && html`<div class="plan-bar only-sm" role="region" aria-label="Plan summary">
@@ -225,6 +238,7 @@ function SourceCol({ source, setSource, servers, items, setItems, setAction, aut
             <${Check} label=${`Pick ${e.name}`} checked=${pk} disabled=${blocked(e.kind)} onChange=${() => toggle(e)} />
             <${Icon} n=${ico[0]} cls=${"i-sm " + ico[1]} />
             <span class=${"name" + (e.kind !== "dir" ? " mono" : "") + (e.name.startsWith(".") ? " muted" : "")} title=${e.name}>${e.name}</span>
+            ${e.kind === "file" && isDataFile(full(e.name)) && html`<span class="tag tag-warn" title="Live server data (spawns, saves, per-player records), not configuration">data file</span>`}
             ${e.size != null && html`<span class="size">${bytes(e.size)}</span>`}
             ${e.kind === "dir" && html`<${Btn} size="sm" kind="ghost" icon="chevron-right" cls="open" aria-label=${`Open ${e.name}`} onClick=${() => { setPath(full(e.name)); setFilter(""); }} />`}
           </div>`;
@@ -319,7 +333,7 @@ function sharedGroups(rows) {
   return [...m.values()];
 }
 
-function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force, setForce, identity, setIdentity, onInstall, onSummary }) {
+function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force, setForce, identity, setIdentity, onRemoveFailing, onInstall, onSummary }) {
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -337,6 +351,10 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
   const changes = plan ? plan.servers.reduce((a, s) => a + s.changed, 0) : 0;
   const affected = plan ? plan.servers.filter(s => s.changed).length : 0;
   const errors = plan ? plan.servers.reduce((a, s) => a + s.errors, 0) : 0;
+  // Failing items the user picked directly (not files inside a picked folder) can simply be dropped.
+  const picked = [...body.items.jars, ...body.items.paths, ...body.items.folders.map(f => f + "/")];
+  const removable = plan ? [...new Set(plan.servers.flatMap(s => s.rows.filter(r => r.outcome === "error").map(r => r.item)).filter(i => picked.includes(i)))] : [];
+  const unmergeable = plan ? plan.servers.some(s => s.rows.some(r => r.reason_code === "merge_unsafe")) || (plan.identity || []).some(w => w.keys.some(k => k.reason === "complex")) : false;
   return html`<section class="panel plan" aria-labelledby="pl-h" aria-busy=${loading ? "true" : "false"}>
     <div class="panel-head"><span class=${"step-n" + (plan && changes ? " done" : plan ? " idle" : "")}>${plan && changes ? html`<${Icon} n="check" cls="i-xs" />` : plan ? "–" : "3"}</span><h2 id="pl-h">Plan preview</h2>
       <span class="sub">${loading ? html`<span class="row" style="gap:4px"><${Icon} n="loader-circle" cls="i-xs spin" />dry run…</span>` : plan ? "automatic dry run" : ""}</span></div>
@@ -349,11 +367,13 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
     </div>`}
     ${plan?.unchecked.length > 0 && html`<div class="plan-warn is-info"><${Icon} n="info" cls="i-sm" /><span>Not checked for server-specific values: ${plan.unchecked.map(w => `${w.path || "config files"} on ${w.server} (${w.reason})`).join("; ")}</span></div>`}
     ${plan?.dataWarn && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plan.dataWarn.message}</div>`}
-    ${errors > 0 && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plural(errors, "item")} would fail — see details below.</div>`}
+    ${errors > 0 && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />
+      <span class="grow">${plural(errors, "item")} would fail${changes ? " — they'll be skipped if you execute" : ""}. Details below.</span>
+      ${removable.length > 0 && html`<button type="button" class="linkbtn" onClick=${() => onRemoveFailing(removable)}>Remove failing items</button>`}</div>`}
     <div class="plan-body">
       ${plan?.servers.some(sv => sv.rows.some(r => r.data_excluded)) && html`<div class="data-note small"><${Icon} n="shield" cls="i-sm" />
         <span><b>Player data, logs and databases are protected.</b> Databases, userdata/playerdata, per-player files, logs, caches, backups and LuckPerms storage inside folders are left untouched. Turn on “Include player data, logs and databases” to mirror them too.</span></div>`}
-      ${plan?.identity.length > 0 && html`<${IdentityBlock} warnings=${plan.identity} choice=${identity} setChoice=${setIdentity} />`}
+      ${plan?.identity.length > 0 && html`<${IdentityBlock} warnings=${plan.identity} choice=${identity} setChoice=${setIdentity} unmergeable=${unmergeable || identity === "keep_skip"} />`}
       ${!ready ? html`<${Empty} icon="list-checks" title="Nothing planned yet">
           ${!count && !targets ? "Pick items on the left and target servers, and a dry-run plan appears here automatically."
             : !count ? "Now pick at least one jar, folder or file to deploy." : "Now pick at least one target server."}<//>`
@@ -372,10 +392,13 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
             </div></details>`)}
     </div>
     <div class="panel-foot exec-bar" style="align-items:stretch">
-      <span class="summary">${plan ? (changes ? `${plural(changes, "change")} on ${plural(affected, "server")} · backed up for undo` : "Targets already match. Nothing to do.") : "Execute unlocks when the plan has changes."}</span>
+      <span class="summary">${!plan ? "Execute unlocks when the plan has changes."
+        : changes ? `${plural(changes, "change")} on ${plural(affected, "server")} · backed up for undo`
+        : errors ? html`<span style="color:var(--warn)">Nothing can be pushed${identity === "keep" ? " with “Keep”" : ""} — ${plural(errors, "file")} can't be applied safely. ${identity === "keep" ? "Overwrite, skip them, or remove them." : "Remove them or change the plan."}</span>`
+        : "Targets already match. Nothing to do."}</span>
       ${plan?.needsDecision && html`<span class="summary" style="color:var(--warn)">Choose how to handle server-specific values above.</span>`}
-      <${Btn} kind=${action === "delete" ? "danger-solid" : "primary"} size="lg" icon=${action === "delete" ? "trash-2" : "play"} disabled=${!plan || !changes || loading || plan.needsDecision} onClick=${() => onExecute(plan)}>
-        ${action === "delete" ? "Delete…" : "Execute"}${plan && changes ? ` ${plural(changes, "change")}` : ""}<//>
+      <${Btn} kind=${action === "delete" ? "danger-solid" : errors ? "warn" : "primary"} size="lg" icon=${action === "delete" ? "trash-2" : "play"} disabled=${!plan || !changes || loading || plan.needsDecision} onClick=${() => onExecute(plan)}>
+        ${action === "delete" ? "Delete…" : "Execute"}${plan && changes ? ` ${plural(changes, "change")}` : ""}${plan && changes && errors ? ` · skip ${errors} that would fail` : ""}<//>
     </div>
   </section>`;
 }
@@ -384,6 +407,7 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
 function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity }) {
   const [diff, setDiff] = useState(null); // null | "loading" | {lines} | Error
   // Rows that change server-specific keys open their diff straight away.
+  const refused = r.outcome === "error" && r.reason_code === "merge_unsafe";
   useEffect(() => { if (idKeys.length && r.outcome === "changed" && !diff && !r.item.endsWith("/")) loadDiff(); }, [idKeys.length]);
   // An open diff follows the Keep/Overwrite choice: with Keep it shows the merged file that would be written.
   useEffect(() => { if (diff && diff !== "loading") { setDiff(null); setTimeout(() => loadDiffRef.current?.(), 0); } }, [identity]);
@@ -396,23 +420,27 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
     if (diff && diff !== "loading") { setDiff(null); return; }
     setDiff("loading");
     try {
-      const keep = identity === "keep" ? "&preserve_keys=server_specific" : "";
+      const keep = (identity === "keep" || identity === "keep_skip") && !refused ? "&preserve_keys=server_specific" : "";
       const d = await get(`/diff?source=${encodeURIComponent(source)}&target=${encodeURIComponent(r.server)}&path=${encodeURIComponent(r.item)}${keep}`);
       setDiff(d);
     } catch (e) { setDiff(e); }
   };
   loadDiffRef.current = loadDiff;
   return html`<div class=${"plan-op-wrap" + (idKeys.length ? " has-identity" : "")}>
-    ${idKeys.length > 0 && html`<div class="id-chip"><${Icon} n="triangle-alert" cls="i-xs" />${identity === "keep" ? "Keeps" : identity === "overwrite" ? "Overwrites" : "Changes"} ${idKeys.flatMap(w => w.keys.map(k => `${k.key}: ${k.target_value}`)).join(", ")}</div>`}
+    ${idKeys.length > 0 && !refused && r.outcome !== "skipped" && html`<div class="id-chip"><${Icon} n="triangle-alert" cls="i-xs" />${identity === "overwrite" ? "Overwrites" : identity ? "Keeps" : "Changes"} ${(() => { const all = idKeys.flatMap(w => w.keys.map(k => `${k.key}: ${midTrunc(String(k.target_value), 18)}`)); return all.slice(0, 3).join(", ") + (all.length > 3 ? ` +${all.length - 3} more` : ""); })()}</div>`}
+
     <div class="plan-op"><${Icon} n=${i} cls=${"i-xs " + cl} />
       ${swap ? html`<div class="jar-swap">${(r.old_jars || []).map((j, k) => html`<span class="old">${j}${r.old_versions?.[k] ? ` (${r.old_versions[k]})` : ""}</span>`)}
           ${!(r.old_jars || []).length && html`<span class="small muted" style="font-family:var(--font-sans)">new install</span>`}
           <span class="new"><${Icon} n="arrow-right" cls="i-xs" />${r.new_jar}${r.new_version ? ` (${r.new_version})` : ""}</span></div>`
         : html`<span class="op-text"><span class=${r.outcome === "skipped" || r.outcome === "unchanged" ? "muted" : ""}>${r.item}</span>
+          ${isDataFile(r.item) && html`<span class="tag tag-warn">data file</span>`}
           ${r.detail && html`<span class=${"op-detail" + (r.outcome === "skipped" ? " is-skip" : r.outcome === "error" ? " is-err" : "")}>${r.outcome === "skipped" ? "Skipped: " : ""}${r.detail}</span>`}
           ${r.reason_code === "not_installed" && !install && action !== "delete" && html`<button type="button" class="linkbtn" onClick=${onInstall}>Also install where missing</button>`}
           ${diffable && html`<button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide diff" : "Show diff"}</button>`}</span>`}
     </div>
+    ${refused && html`<div class="refused small"><${Icon} n="circle-x" cls="i-xs" />Nothing will be written to this file on ${r.server}.
+      <button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide" : "Show what Overwrite would do"}</button></div>`}
     ${r.delete_count > 0 && html`<${Deletions} r=${r} />`}
     ${diff && html`<${DiffView} d=${diff} />`}
   </div>`;
@@ -458,18 +486,31 @@ function SearchResults({ found, q, picked, toggle, open, blocked }) {
         <${Check} label=${`Pick ${r.path}`} checked=${pk} disabled=${off} onChange=${() => toggle(r.path, r.kind)} />
         <${Icon} n=${r.kind === "jar" ? "package" : r.kind === "dir" ? "folder" : "file-code"} cls=${"i-sm " + (r.kind === "jar" ? "ico-jar" : r.kind === "dir" ? "ico-dir" : "ico-file")} />
         <span class="name mono" title=${r.path}><span class="muted">${dir}</span>${r.path.slice(dir.length)}</span>
+        ${r.kind === "file" && isDataFile(r.path) && html`<span class="tag tag-warn" title="Live server data (spawns, saves, per-player records), not configuration">data file</span>`}
         ${r.size != null && html`<span class="size">${bytes(r.size)}</span>`}
         ${r.kind === "dir" && html`<${Btn} size="sm" kind="ghost" icon="chevron-right" cls="open" aria-label=${`Open ${r.path}`} onClick=${() => open(r.path)} />`}
       </div>`; })}`;
 }
 
+// Long values (UUIDs, channel ids) are shown middle-truncated; click copies the full value.
+function Val({ v }) {
+  const s = String(v);
+  if (s.length <= 24) return html`<span class="mono">${s}</span>`;
+  return html`<button type="button" class="val-copy mono" title=${`${s} — click to copy`} onClick=${() => { navigator.clipboard?.writeText(s); toast({ kind: "ok", title: "Value copied" }); }}>${midTrunc(s, 20)}</button>`;
+}
+
 // Per-file block listing keys whose value is this server's own (identity, ports, DB names…).
-function IdentityBlock({ warnings, choice, setChoice }) {
+function IdentityBlock({ warnings, choice, setChoice, unmergeable }) {
   const [editing, setEditing] = useState(false);
-  const nKeys = new Set(warnings.flatMap(w => w.keys.map(k => w.path + k.key))).size;
+  // "server (hub, hungergames, skyblock, +4)" per key, so the kept values stay visible after choosing.
+  const byKey = new Map();
+  for (const w of warnings) for (const k of w.keys) (byKey.get(k.key) || byKey.set(k.key, []).get(k.key)).push(k.target_value);
+  const keys = [...byKey];
+  const named = keys.slice(0, 3).map(([k, vs]) => `${k} (${vs.slice(0, 3).map(v => midTrunc(String(v), 16)).join(", ")}${vs.length > 3 ? `, +${vs.length - 3}` : ""})`).join("; ")
+    + (keys.length > 3 ? ` +${keys.length - 3} more keys` : "");
   if (choice && !editing) return html`<div class=${"identity is-chosen" + (choice === "overwrite" ? " is-overwrite" : "")} role="status">
-    <${Icon} n=${choice === "keep" ? "shield" : "triangle-alert"} cls="i-sm" />
-    <span class="grow small">${choice === "keep" ? `Keeping each server's own value for ${plural(nKeys, "server-specific key")}` : `Overwriting ${plural(nKeys, "server-specific key")} with the source's values`}</span>
+    <${Icon} n=${choice === "overwrite" ? "triangle-alert" : "shield"} cls="i-sm" />
+    <span class="grow small">${choice === "overwrite" ? `Overwriting with the source's values: ${named}` : `Keeping ${named}${choice === "keep_skip" ? " · skipping files that can't be merged" : ""}`}</span>
     <button type="button" class="linkbtn" onClick=${() => setEditing(true)}>Change</button></div>`;
   const files = new Map();
   for (const w of warnings) for (const k of w.keys) {
@@ -484,15 +525,17 @@ function IdentityBlock({ warnings, choice, setChoice }) {
       <table class="id-tbl"><thead><tr><th scope="col">Key</th><th scope="col">This server now</th><th scope="col">Source value</th></tr></thead>
         <tbody>${[...keys].map(([key, v]) => v.targets.map(([srv, tv, reason], i) => html`<tr>
           ${i === 0 && html`<th scope="row" rowspan=${v.targets.length} class="mono">${key}</th>`}
-          <td><span class="small muted">${srv}</span> <span class="mono">${tv}</span>
+          <td><span class="small muted">${srv}</span> <${Val} v=${tv} />
             ${reason === "target_only" && html`<div class="small id-why">not in the source file — overwriting drops it</div>`}
             ${reason === "complex" && html`<div class="small id-why">list or multi-line value</div>`}</td>
-          ${i === 0 && html`<td rowspan=${v.targets.length} class="mono">${v.source ?? "—"}</td>`}</tr>`))}</tbody></table></div>`)}
+          ${i === 0 && html`<td rowspan=${v.targets.length}>${v.source == null ? "—" : html`<${Val} v=${v.source} />`}</td>`}</tr>`))}</tbody></table></div>`)}
     <div class="id-choice" role="radiogroup" aria-label="Server-specific values" aria-required="true">
       <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "keep"} onChange=${() => { setChoice("keep"); setEditing(false); }} />
         <div><b>Keep each server's own values <span class="tag tag-ok">recommended</span></b><span>Push everything else; these keys stay as they are on every target.</span></div></label>
       <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "overwrite"} onChange=${() => { setChoice("overwrite"); setEditing(false); }} />
         <div><b>Overwrite with source values</b><span>Every target gets the source's values above — only if you really want them identical.</span></div></label>
+      ${unmergeable && html`<label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "keep_skip"} onChange=${() => { setChoice("keep_skip"); setEditing(false); }} />
+        <div><b>Keep, and skip files that can't be merged</b><span>Files whose values can't be kept safely (lists, multi-line values) are left untouched on those servers.</span></div></label>`}
     </div>
   </section>`;
 }

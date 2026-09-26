@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app import actions, engine, inventory, jobs, updates
 from app.main import app
-from conftest import make_jar, snapshot_tree
+from conftest import client_for, make_jar, snapshot_tree
 
 
 def deploy(body):
@@ -36,7 +36,7 @@ def test_symlink_escape_rejected(env, tmp_path):
 
 
 def test_api_rejects_traversal_and_unknown_servers(env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         assert c.get("/api/v2/servers/M1-hub01/tree", params={"path": "../../"}).status_code == 400
         assert c.get("/api/v2/servers/M1-hub01/tree", params={"path": "/etc"}).status_code == 400
         assert c.get("/api/v2/servers/..%2F..%2Fetc/plugins").status_code == 404
@@ -161,7 +161,7 @@ def test_undo_restores_sync_folder_and_delete(env):
 
 
 def test_upload_rejects_non_jars(env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.post("/api/v2/upload", files={"file": ("x.txt", b"hi")})
         assert r.status_code == 400
         r = c.post("/api/v2/upload", files={"file": ("x.jar", b"not a zip")})

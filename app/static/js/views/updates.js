@@ -1,12 +1,12 @@
 // Updates — the queue of available updates, plus the auto-update schedule and policy.
 import { html, useState, useEffect, useMemo } from "../lib.js";
-import { useQuery, invalidate, toast } from "../store.js";
+import { useQuery, invalidate, toast, confirmDialog } from "../store.js";
 import { put } from "../api.js";
 import { Icon, Btn, Tag, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, ServerChip, Skel } from "../components/ui.js";
 import { checkUpdates, openUpdateAll } from "../actions.js";
 import { openChangeset, CompatChip } from "../components/changeset.js";
 import { updateCounts, checkLine, updatesOf, compatOf } from "../summary.js";
-import { relTime, absTime, plural } from "../fmt.js";
+import { relTime, absTime, plural, safeUrl } from "../fmt.js";
 
 export function Updates() {
   const q = useQuery("/updates");
@@ -42,8 +42,10 @@ export function Updates() {
               <${Check} label=${`Select ${u.name}`} checked=${sel.has(u.key)} onChange=${v => setSel(s => { const n = new Set(s); v ? n.add(u.key) : n.delete(u.key); return n; })} />
               <div style="min-width:0">
                 <div class="row wrap" style="gap:8px"><b style="font-weight:620">${u.name}</b>
-                  ${u.changelog_url && html`<a class="link small" href=${u.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${u.name} (opens in new tab)</span></a>`}</div>
+                  ${safeUrl(u.changelog_url) && html`<a class="link small" href=${safeUrl(u.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${u.name} (opens in new tab)</span></a>`}</div>
                 <${VerArrow} from=${u.from_versions} to=${u.to_version} />
+                ${u.source?.overrides_modrinth && html`<div style="margin-top:4px"><${Tag} kind="warn" icon="triangle-alert">manual source overrides Modrinth (${u.source.overrides_modrinth.name || u.source.overrides_modrinth.slug})<//></div>`}
+                ${u.source?.manual && !u.source?.auto_apply && html`<div class="small muted" style="margin-top:2px">Manual source — never applied automatically</div>`}
                 <${CompatSummary} u=${u} mcOf=${mcOf} />
               </div>
               <${Chips} ids=${u.servers} />
@@ -71,6 +73,20 @@ function CompatSummary({ u, mcOf }) {
     : html`<${Tag} kind="ok" icon="check">supports MC ${mcs.join(", ")}<//>`}</div>`;
 }
 
+// What the scheduler did last time, and why the rest is waiting.
+function LastRun({ au }) {
+  const ls = au?.last_selection;
+  const canary = au?.canary || [];
+  if (!ls && !canary.length) return null;
+  const waiting = ls?.waiting || [];
+  const reasons = [...waiting.reduce((m, w) => m.set(w.reason, (m.get(w.reason) || 0) + 1), new Map())];
+  return html`<div class="last-run small">
+    ${canary.length > 0 && html`<p><b>Canary:</b> ${canary.map(c => `${c.key.split(":").pop()} ${c.version} on ${c.server}${c.soak_hours_left ? ` · ${Math.ceil(c.soak_hours_left)} h left` : ""}`).join("; ")}</p>`}
+    ${ls && html`<p><b>Last automatic run ${relTime(ls.at)}:</b> ${plural((ls.applied || []).length, "update")} applied${waiting.length ? `, ${waiting.length} waiting` : ""}.</p>`}
+    ${reasons.length > 0 && html`<ul>${reasons.map(([r, n]) => html`<li>${n} × ${r}</li>`)}</ul>`}
+  </div>`;
+}
+
 function Chips({ ids, max = 4 }) {
   const [open, setOpen] = useState(false);
   const shown = open ? ids : ids.slice(0, max);
@@ -86,14 +102,26 @@ const MODES = [
 
 export function Policy({ au }) {
   const next = au?.next_run;
+  const servers = (useQuery("/servers").data || []).filter(x => x.plugin_count > 0 && x.family !== "velocity").map(x => x.id);
   const q = useQuery("/settings");
+  const defSrc = q.data?.default_source;
   const [p, setP] = useState(null);
   const [saving, setSaving] = useState(false);
   useEffect(() => { if (q.data) setP({ ...q.data.auto_update }); }, [q.data]);
   const dirty = p && q.data && JSON.stringify(p) !== JSON.stringify(q.data.auto_update);
   const save = async () => {
+    // Turning on automatic installs needs an explicit confirmation (the API requires confirm_apply).
+    const enablingApply = p.mode === "apply" && q.data.auto_update.mode !== "apply";
+    if (enablingApply) {
+      const ok = await confirmDialog({
+        title: "Install updates automatically?",
+        body: `Updates will be installed without review inside the window${p.window ? ` (${p.window})` : ""}, starting with the canary server. Everything is backed up and can be undone.`,
+        confirmLabel: "Turn on automatic updates",
+      });
+      if (!ok) return;
+    }
     setSaving(true);
-    try { await put("/settings", { auto_update: { ...p, window: p.window || null } }); toast({ kind: "ok", title: "Auto-update policy saved" }); invalidate("/settings", "/overview"); }
+    try { await put("/settings", { auto_update: { ...p, window: p.window || null, max_changes_per_run: p.max_changes_per_run || null }, ...(enablingApply ? { confirm_apply: true } : {}) }); toast({ kind: "ok", title: "Auto-update policy saved" }); invalidate("/settings", "/overview"); }
     catch (e) { toast({ kind: "err", title: "Couldn't save policy", body: e.message }); }
     setSaving(false);
   };
@@ -117,6 +145,27 @@ export function Policy({ au }) {
               <input id="au-win" class="input mono" placeholder="04:00-06:00" disabled=${p.mode !== "apply"} value=${p.window || ""} onInput=${e => setP({ ...p, window: e.currentTarget.value })} /></div>
           </div>
           <label class="switch"><input type="checkbox" checked=${!!p.dry_run_first} disabled=${p.mode !== "apply"} onChange=${e => setP({ ...p, dry_run_first: e.currentTarget.checked })} />Dry run first, apply only if it succeeds</label>
+          <fieldset class="policy-safety" disabled=${p.mode === "off"}>
+            <legend>Safety</legend>
+            <label class="switch"><input type="checkbox" checked=${p.skip_prereleases !== false} onChange=${e => setP({ ...p, skip_prereleases: e.currentTarget.checked })} />Skip pre-releases (alpha, beta, snapshot)</label>
+            <div class="row wrap" style="gap:12px;align-items:flex-end">
+              <div class="field grow" style="min-width:130px"><label for="au-age">Minimum release age</label>
+                <select id="au-age" class="select" value=${p.min_release_age_hours ?? 0} onChange=${e => setP({ ...p, min_release_age_hours: +e.currentTarget.value })}>
+                  ${[[0, "No minimum"], [12, "12 hours"], [24, "1 day"], [48, "2 days"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
+              <div class="field grow" style="min-width:130px"><label for="au-max">Max changes per run</label>
+                <input id="au-max" class="input" type="number" min="0" placeholder="No limit" value=${p.max_changes_per_run || ""} onInput=${e => setP({ ...p, max_changes_per_run: e.currentTarget.value ? +e.currentTarget.value : null })} /></div>
+            </div>
+            <div class="row wrap" style="gap:12px;align-items:flex-end">
+              <div class="field grow" style="min-width:150px"><label for="au-can">Canary server</label>
+                <select id="au-can" class="select" disabled=${p.mode !== "apply"} value=${p.canary_server || ""} onChange=${e => setP({ ...p, canary_server: e.currentTarget.value || null })}>
+                  <option value="">Default (${defSrc || "source"})</option>${servers.map(sv => html`<option value=${sv}>${sv}</option>`)}</select></div>
+              <div class="field grow" style="min-width:120px"><label for="au-soak">Soak before the rest</label>
+                <select id="au-soak" class="select" disabled=${p.mode !== "apply"} value=${p.canary_soak_hours ?? 24} onChange=${e => setP({ ...p, canary_soak_hours: +e.currentTarget.value })}>
+                  ${[[1, "1 hour"], [2, "2 hours"], [6, "6 hours"], [12, "12 hours"], [24, "1 day"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
+            </div>
+            <p class="small muted">Automatic updates go to ${p.canary_server || defSrc || "the canary"} first; the rest follow after ${p.canary_soak_hours ?? 24} h if it stays healthy. Manual sources are only auto-applied when their mapping allows it.</p>
+          </fieldset>
+          <${LastRun} au=${au} />
           <p class="small muted">Pinned and ignored plugins are always skipped. Manage them per server or in <a class="link" href="#/settings/sources">Settings → Update sources</a>.</p>
         </div>`}
     </div>

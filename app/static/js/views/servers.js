@@ -4,7 +4,7 @@ import { useQuery, invalidate, toast, setState, useStore, getState } from "../st
 import { post, put } from "../api.js";
 import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
-import { relTime, bytes, plural } from "../fmt.js";
+import { relTime, bytes, plural, safeUrl } from "../fmt.js";
 import { navigate } from "../router.js";
 
 export function ServersList() {
@@ -113,9 +113,9 @@ export function ServerDetail({ id }) {
               ${p.current_compat?.ok === false && html`<div><${Tag} kind="warn" icon="triangle-alert" title=${`${p.jar} lists ${p.current_compat.mc_versions.join(", ")}; this server runs ${p.current_compat.mc}`}>built for MC ${p.current_compat.mc_versions.slice(-1)[0]}<//></div>`}
               ${p.drift && p.expected_version && html`<div class="small" style="color:var(--drift)">network runs ${p.expected_version}</div>`}</td>
             <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
-                ${p.latest.changelog_url && p.status === "outdated" && html` <a class="link small" href=${p.latest.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
+                ${safeUrl(p.latest.changelog_url) && p.status === "outdated" && html` <a class="link small" href=${safeUrl(p.latest.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
               : html`<span class="muted small">—</span>`}</td>
-            <td class="hide-sm"><${Status} p=${p} id=${id} /></td>
+            <td class="hide-sm"><${Status} p=${p} id=${id} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
             <td class="col-actions"><div class="row-actions">
               ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => review([p], `Update ${p.name} on ${id}`)} aria-label=${`Review ${p.name} update`}><span class="hide-sm">Review</span><//>`}
               <${RowMenu} p=${p} id=${id} cells=${cellsOf(p.key)} />
@@ -132,6 +132,7 @@ export function ServerDetail({ id }) {
 
 // Status chip; says where a pin/ignore applies. Untracked rows get one "No source · Map…" action.
 function Status({ p, id }) {
+  if (p.valid === false || p.descriptor_error) return html`<${Tag} kind="warn" icon="file-code" title=${p.descriptor_error || "The jar's plugin.yml could not be read"}>unreadable plugin.yml<//>`;
   const where = (scope) => scope === "*" ? "network-wide" : Array.isArray(scope) && scope.length > 1 ? `on ${plural(scope.length, "server")}` : "this server";
   if (p.status === "pinned") return html`<${Tag} kind="plain" icon="pin" title=${`Pinned ${where(p.pin_scope)}`}>Pinned ${p.pinned_version || p.version} · ${where(p.pin_scope)}<//>`;
   if (p.status === "ignored") return html`<${Tag} kind="plain" icon="eye-off">Ignored · ${where(p.ignore_scope)}<//>`;
@@ -204,6 +205,7 @@ function SourceDialog() {
   const st = useQuery(p ? "/settings" : null);
   const [kind, setKind] = useState("modrinth");
   const [id, setId] = useState("");
+  const [autoApply, setAutoApply] = useState(false);
   const [busy, setBusy] = useState(false);
   const ref = useRef();
   useEffect(() => {
@@ -211,6 +213,7 @@ function SourceDialog() {
     const cur = getState().mapSource && st.data?.source_map?.[p.key];
     setKind(cur?.kind || "modrinth");
     setId(cur?.id || p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    setAutoApply(!!cur?.auto_apply);
     const prev = document.activeElement;
     setTimeout(() => ref.current?.querySelector("select")?.focus(), 0);
     const k = (e) => e.key === "Escape" && setState({ mapSource: null });
@@ -223,7 +226,7 @@ function SourceDialog() {
     e.preventDefault();
     setBusy(true);
     try {
-      await put("/settings", { source_map: { ...(st.data?.source_map || {}), [p.key]: { kind, id: id.trim() } } });
+      await put("/settings", { source_map: { ...(st.data?.source_map || {}), [p.key]: { kind, id: id.trim(), ...(autoApply ? { auto_apply: true } : {}) } } });
       toast({ kind: "ok", title: `${p.name} mapped to ${KINDS.find(k => k[0] === kind)[1]}`, body: "Run an update check to fetch its latest version." });
       invalidate("/settings", "/servers", "/matrix", "/updates");
       close();
@@ -243,6 +246,8 @@ function SourceDialog() {
             <input id="ms-i" class="input mono" required value=${id} placeholder=${KINDS.find(k => k[0] === kind)[2]} onInput=${e => setId(e.currentTarget.value)} /></div>
         </div>
         <p class="small muted">${KINDS.find(k => k[0] === kind)[2]}</p>
+        <label class="check"><input type="checkbox" checked=${autoApply} onChange=${e => setAutoApply(e.currentTarget.checked)} />Allow automatic updates from this source</label>
+        ${p.source?.kind === "modrinth" && kind !== "modrinth" && html`<p class="small" style="color:var(--warn)">This replaces the Modrinth match (${p.source.name || p.source.slug || p.source.id}).</p>`}
       </div>
       <div class="dialog-foot"><button type="button" class="btn" onClick=${close}>Cancel</button><${Btn} type="submit" kind="primary" busy=${busy}>Save mapping<//></div>
     </form>

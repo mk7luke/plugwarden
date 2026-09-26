@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -176,6 +177,23 @@ def _from_disk(d: dict) -> Job:
     return j
 
 
+class InsufficientSpace(JobError):
+    pass
+
+
+def check_free_space() -> None:
+    """Refuse to start changing servers when the state dir or the datastore is nearly full."""
+    for label, path in (("state directory", config.STATE_DIR), ("server datastore", config.BASE)):
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError:
+            continue
+        if free < config.MIN_FREE_BYTES:
+            raise InsufficientSpace(f"only {free / 1024 ** 3:.1f} GB free on the {label} ({path}); at least "
+                                    f"{config.MIN_FREE_BYTES / 1024 ** 3:.0f} GB are needed for backups. "
+                                    "Free space or lower the backup retention in Settings.")
+
+
 def get(job_id: str) -> Job | None:
     if not JOB_ID_RE.match(job_id or ""):
         return None
@@ -227,6 +245,8 @@ def submit(kind: str, user: str, params: dict, body: Callable[[Job], str | None]
            mutating: bool = True, dry_run: bool = False,
            on_done: Callable[[Job], None] | None = None) -> Job:
     """Start a background job. body(job) does the work and returns a summary string."""
+    if mutating and not dry_run:
+        check_free_space()
     job = Job(kind, user, params, mutating=mutating and not dry_run, dry_run=dry_run)
     with _jobs_lock:
         _live[job.id] = job
@@ -282,6 +302,23 @@ def _default_summary(job: Job) -> str:
     words = {"changed": "would change"} if job.dry_run else {}
     text = ", ".join(f"{v} {words.get(k, k)}" for k, v in sorted(counts.items()))
     return f"Dry run: {text}" if job.dry_run else text
+
+
+def prune_records(limit: int, keep: set[str] = frozenset()) -> int:
+    """Delete the oldest job records beyond `limit` (never the ids in `keep`). Returns how many went."""
+    files = sorted(config.state("jobs").glob("*.json"), reverse=True)
+    n = 0
+    for f in files[limit:]:
+        if f.stem in keep:
+            continue
+        try:
+            f.unlink()
+            n += 1
+        except OSError:
+            pass
+        with _jobs_lock:
+            _live.pop(f.stem, None)
+    return n
 
 
 def recover_interrupted() -> None:

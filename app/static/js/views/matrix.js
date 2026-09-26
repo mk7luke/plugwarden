@@ -2,17 +2,18 @@
 // Cells are selectable (click, shift-click for a range in a row); a floating bar acts on the selection.
 // A plugin's name opens a drawer with its per-server versions and actions.
 import { html, useState, useMemo, useEffect, useRef } from "../lib.js";
-import { useQuery, setState, useStore, getState } from "../store.js";
+import { useQuery, setState, useStore, getState, toast } from "../store.js";
 import { openRemove } from "../components/removedialog.js";
 import { openChangeset } from "../components/changeset.js";
 import { Icon, Btn, Tag, StatusTag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
 import { navigate } from "../router.js";
-import { plural, compactVer } from "../fmt.js";
+import { plural, compactVer, midTrunc } from "../fmt.js";
 import { ineligible } from "./deploy.js";
 
 const FILTERS = [["all", "All"], ["outdated", "Updates"], ["drift", "Drift"], ["unknown", "Untracked"]];
 const LABEL = { current: "up to date", outdated: "update available", drift: "differs from other servers", unknown: "source unknown", pinned: "pinned", ignored: "ignored" };
-const shortVer = (v) => compactVer(v) || "?";
+// Matrix cells hold 11 characters; compact first, then elide the middle (the tooltip has the full string).
+const shortVer = (v) => midTrunc(compactVer(v), 11) || "?";
 const cid = (key, server) => `${key}\u0000${server}`;
 
 export function Matrix({ query }) {
@@ -68,7 +69,12 @@ export function Matrix({ query }) {
       const cand = cells.filter(x => d[0] ? Math.sign(+x.dataset.r - r) === d[0] : (+x.dataset.r === r && Math.sign(+x.dataset.c - c) === d[1]));
       const dist = (x) => Math.abs(+x.dataset.r - r) * 100 + Math.abs(+x.dataset.c - c);
       cand.sort((a, b) => dist(a) - dist(b))[0]?.focus();
-    } else if (e.key === "u" && sel.size) { e.preventDefault(); document.querySelector(".mx-bar .btn-primary")?.click(); }
+    } else if (e.key === "u" && sel.size) {
+      e.preventDefault();
+      const btn = document.querySelector(".mx-bar .btn-primary");
+      if (btn && !btn.disabled) btn.click();
+      else toast({ kind: "info", title: `None of the ${plural(sel.size, "selected cell")} has an update` });
+    }
   };
   const picked = [...sel].map(x => { const [key, server] = x.split("\u0000"); return { key, server, p: byKey[key], c: byKey[key]?.cells[server] }; }).filter(x => x.c);
 

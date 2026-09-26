@@ -18,7 +18,12 @@ BUILTIN_GROUPS = ("Game servers", "M1–M8")
 DEFAULTS: dict[str, Any] = {
     "groups": {},
     "default_source": "elChapo01",
-    "auto_update": {"mode": "off", "interval_hours": 24, "window": None, "dry_run_first": True},
+    "auto_update": {"mode": "off", "interval_hours": 24, "window": None, "dry_run_first": True,
+                    # unattended "apply" safety policy
+                    "min_release_age_hours": 48, "canary_server": None, "canary_soak_hours": 24,
+                    "max_changes_per_run": 20},
+    "backup_max_age_days": 30,
+    "backup_max_gb": 5,
     "pins": {},      # key -> {"version": str, "servers": [ids] | "*"}
     "ignores": {},   # key -> {"servers": [ids] | "*"}
     "source_map": {},
@@ -120,6 +125,20 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 raise SettingsError("window must be null or 'HH:MM-HH:MM'")
         if "dry_run_first" in au:
             cur["dry_run_first"] = bool(au["dry_run_first"])
+        for fld, lo, hi in (("min_release_age_hours", 0, 24 * 90), ("canary_soak_hours", 0, 24 * 30),
+                            ("max_changes_per_run", 1, 500)):
+            if fld in au:
+                try:
+                    v = float(au[fld])
+                except (TypeError, ValueError):
+                    raise SettingsError(f"auto_update.{fld} must be a number")
+                if not lo <= v <= hi:
+                    raise SettingsError(f"auto_update.{fld} must be between {lo} and {hi}")
+                cur[fld] = int(v) if fld == "max_changes_per_run" else v
+        if "canary_server" in au:
+            if au["canary_server"] not in (None, "") and au["canary_server"] not in known_ids:
+                raise SettingsError(f"unknown canary_server: {au['canary_server']!r}")
+            cur["canary_server"] = au["canary_server"] or None
         out["auto_update"] = cur
     if "pins" in new or "ignores" in new:
         pins, ignores = migrate_holds(new.get("pins", out["pins"]), new.get("ignores", out["ignores"]))
@@ -153,6 +172,8 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
             if v["kind"] == "spiget" and not sid.isdigit():
                 raise SettingsError("spiget id must be the numeric resource id")
             entry = {"kind": v["kind"], "id": sid}
+            if v.get("auto_apply") is True:
+                entry["auto_apply"] = True  # scheduler may auto-apply from this manual source
             if v.get("asset"):
                 try:
                     re.compile(str(v["asset"]))
@@ -161,6 +182,15 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 entry["asset"] = str(v["asset"])[:200]
             clean[k] = entry
         out["source_map"] = clean
+    for fld, lo, hi in (("backup_max_age_days", 1, 3650), ("backup_max_gb", 0.1, 10000)):
+        if fld in new:
+            try:
+                v = float(new[fld])
+            except (TypeError, ValueError):
+                raise SettingsError(f"{fld} must be a number")
+            if not lo <= v <= hi:
+                raise SettingsError(f"{fld} must be between {lo} and {hi}")
+            out[fld] = v
     if "backup_keep_jobs" in new:
         try:
             n = int(new["backup_keep_jobs"])

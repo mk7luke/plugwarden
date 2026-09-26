@@ -71,7 +71,8 @@ function Headline({ d, c, restarts }) {
     <div class="grow" style="min-width:220px">
       <p class="hl-title">${updateHeadline(c)}${has && html`<span class="hl-detail"> · ${updateDetail(c)}</span>`}</p>
       <p class="hl-meta">${checkLine(d)} · auto-update <a class="link" href="#/updates">${(MODE[d.auto_update?.mode] || "off").toLowerCase()}</a>
-        ${d.auto_update?.next_run ? ` · next ${relTime(d.auto_update.next_run)}` : ""}</p>
+        ${d.auto_update?.next_run ? ` · next ${relTime(d.auto_update.next_run)}` : ""}
+        ${d.auto_update?.mode === "apply" && d.auto_update?.effective_canary && html` · canary <b>${d.auto_update.effective_canary}</b>${(d.auto_update.canary || []).length ? ` soaking ${plural(d.auto_update.canary.length, "update")}, ${Math.ceil(Math.max(...d.auto_update.canary.map(c => c.soak_hours_left || 0)))} h left` : ""}`}</p>
 ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
         <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
@@ -136,7 +137,9 @@ function Feed({ q }) {
   const [all, setAll] = useState(() => pref("amp.feed.all", "0") === "1");
   const toggle = (v) => { setAll(v); save("amp.feed.all", v ? "1" : "0"); };
   const list = useMemo(() => {
-    const src = (q.data || []).filter(j => all || isActive(j.status) || (!j.dry_run && j.kind !== "update-check"));
+    // Real changes only by default: no checks, dry runs, or jobs that changed nothing.
+    const noop = (j) => !isActive(j.status) && j.counts && !j.counts.changed && j.kind !== "update-check";
+    const src = (q.data || []).filter(j => all || isActive(j.status) || (!j.dry_run && j.kind !== "update-check" && !noop(j)));
     const out = [];
     for (const j of src) {
       const prev = out[out.length - 1];

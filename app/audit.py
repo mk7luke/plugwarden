@@ -1,4 +1,5 @@
-"""Lightweight read-access log (JSON lines in STATE_DIR/access.log), e.g. who viewed which config diff."""
+"""Append-only audit log (JSON lines in STATE_DIR/access.log): who read config values (diffs, plan
+warnings) and who changed settings, pins, ignores, source mappings or uploaded jars (with before/after)."""
 from __future__ import annotations
 
 import json
@@ -16,9 +17,12 @@ def _path():
     return config.state("access.log")
 
 
-def record(user: str, action: str, servers: list[str], path: str, detail: str = "") -> None:
+def record(user: str, action: str, servers: list[str], path: str, detail: str = "",
+           before=None, after=None) -> None:
     entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "user": user, "action": action,
              "servers": servers, "path": path, "detail": detail}
+    if before is not None or after is not None:
+        entry["before"], entry["after"] = before, after
     p = _path()
     with _lock:
         try:
@@ -49,7 +53,7 @@ def read(limit: int = 200, user: str | None = None, server: str | None = None, p
             continue
         if server and not any(server.lower() in s.lower() for s in e["servers"]):
             continue
-        if path and path.lower() not in e["path"].lower():
+        if path and path.lower() not in (e.get("path") or "").lower():
             continue
         if action and action != e["action"]:
             continue

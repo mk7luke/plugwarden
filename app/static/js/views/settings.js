@@ -2,7 +2,7 @@
 import { html, useState, useEffect, useMemo } from "../lib.js";
 import { useQuery, invalidate, toast, confirmDialog } from "../store.js";
 import { put, post } from "../api.js";
-import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
+import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Skel, Check } from "../components/ui.js";
 import { Policy } from "./updates.js";
 import { plural } from "../fmt.js";
 
@@ -22,14 +22,14 @@ export function Settings({ tab }) {
     setSaving(true);
     // Only send the editable sections that changed; the server merges them.
     const body = {};
-    for (const k of ["groups", "default_source", "source_map"]) if (JSON.stringify(draft[k]) !== JSON.stringify(q.data[k])) body[k] = draft[k];
+    for (const k of ["groups", "default_source", "source_map", "backup_keep_jobs", "backup_max_age_days", "backup_max_gb"]) if (JSON.stringify(draft[k]) !== JSON.stringify(q.data[k])) body[k] = draft[k];
     if (body.groups) body.groups = Object.fromEntries(Object.entries(body.groups).filter(([g]) => !(draft.builtin_groups || []).includes(g)));
     try { await put("/settings", body); toast({ kind: "ok", title: "Settings saved" }); invalidate("/settings", "/overview", "/servers", "/matrix", "/updates"); }
     catch (e) { toast({ kind: "err", title: "Couldn't save settings", body: e.message }); }
     setSaving(false);
   };
 
-  return html`<${PageHead} title="Settings" sub=${ov.data?.user && ov.data.user !== "local" ? `Signed in as ${ov.data.user} via Cloudflare Access. Changes apply to everyone.` : "Local session (no Cloudflare Access identity). Changes apply to everyone."} />
+  return html`<${PageHead} title="Settings" sub=${ov.data?.user && ov.data.user !== "local" && ov.data.auth !== "none" ? `Signed in as ${ov.data.user} via Cloudflare Access. Changes are recorded in Activity → Audit.` : "Development session (no Cloudflare Access identity). Changes are recorded in Activity → Audit."} />
     <nav class="settings-nav" aria-label="Settings sections">
       ${TABS.map(([k, l]) => html`<a href=${`#/settings/${k}`} aria-current=${tab === k ? "page" : undefined}>${l}</a>`)}
     </nav>
@@ -57,8 +57,12 @@ function General({ d, set, servers }) {
     <div class="field-row"><label class="field-label" for="def-src">Default source<small>Pre-selected in Deploy. Usually the staging server.</small></label>
       <div><select id="def-src" class="select" style="max-width:320px" value=${d.default_source || ""} onChange=${e => set({ ...d, default_source: e.currentTarget.value })}>
         ${servers.filter(s => s.plugin_count > 0).map(s => html`<option value=${s.id}>${s.id} (${s.platform})</option>`)}</select></div></div>
-    ${d.backup_keep_jobs != null && html`<div class="field-row"><div class="field-label">Backups<small>Old jars and files are kept so jobs can be undone.</small></div>
-      <div class="small muted" style="padding-top:7px">Backups are kept for the last <b style="color:var(--fg)">${d.backup_keep_jobs}</b> jobs.</div></div>`}
+    <div class="field-row"><div class="field-label">Backups<small>Old jars and files are kept so jobs can be undone. The oldest are pruned first when a limit is hit.</small></div>
+      <div class="row wrap" style="gap:12px">
+        <div class="field" style="width:130px"><label for="bk-jobs">Last N jobs</label><input id="bk-jobs" class="input" type="number" min="1" value=${d.backup_keep_jobs ?? ""} onInput=${e => set({ ...d, backup_keep_jobs: +e.currentTarget.value || null })} /></div>
+        <div class="field" style="width:130px"><label for="bk-age">Max age (days)</label><input id="bk-age" class="input" type="number" min="1" value=${d.backup_max_age_days ?? ""} onInput=${e => set({ ...d, backup_max_age_days: +e.currentTarget.value || null })} /></div>
+        <div class="field" style="width:130px"><label for="bk-gb">Max size (GB)</label><input id="bk-gb" class="input" type="number" min="1" step="0.5" value=${d.backup_max_gb ?? ""} onInput=${e => set({ ...d, backup_max_gb: +e.currentTarget.value || null })} /></div>
+      </div></div>
     <div class="field-row"><div class="field-label">Keyboard<small>Everything is reachable without a mouse.</small></div>
       <div class="small muted stack" style="gap:6px">
         <span><kbd class="kbd">Ctrl</kbd> <kbd class="kbd">K</kbd> or <kbd class="kbd">/</kbd> command palette</span>
@@ -118,12 +122,13 @@ function Sources({ d, set }) {
     </div>`}
     <div class="input-wrap" style="max-width:300px"><${Icon} n="search" cls="i-sm" /><input class="input" type="search" placeholder="Filter plugins" aria-label="Filter plugins" value=${filter} onInput=${e => setFilter(e.currentTarget.value)} /></div>
     ${mx.error ? html`<${ErrorState} error=${mx.error} retry=${mx.reload} />` : mx.loading ? html`<${SkelRows} n=${6} />` : html`<div class="panel tbl-wrap" style="max-height:520px">
-      <table class="tbl"><thead><tr><th scope="col">Plugin</th><th scope="col">Detected</th><th scope="col">Manual source</th><th scope="col">Id / slug</th></tr></thead>
+      <table class="tbl"><thead><tr><th scope="col">Plugin</th><th scope="col">Detected</th><th scope="col">Manual source</th><th scope="col" title="Allow the scheduler to auto-apply from the manual source">Auto</th><th scope="col">Id / slug</th></tr></thead>
       <tbody>${rows.map(p => { const m = sm[p.key] || {}; return html`<tr key=${p.key}>
         <td><span class="strong">${p.name}</span>${p.family && p.family !== "bukkit" ? html` <span class="small muted">· ${p.family}</span>` : ""}</td>
-        <td>${m.kind ? html`<${Tag} kind="accent">manual<//>` : p.unknown ? html`<${Tag} icon="circle-dashed">untracked<//>` : html`<span class="row" style="gap:6px"><${Tag} kind="ok" icon="check">auto<//><span class="small muted">${p.source?.kind}</span></span>`}</td>
+        <td>${m.kind ? html`<${Tag} kind="accent" title="A manual source is used instead of the automatic match">${p.source && p.source.kind !== m.kind ? `manual · overrides ${p.source.kind}` : "manual"}<//>` : p.unknown ? html`<${Tag} icon="circle-dashed">untracked<//>` : html`<span class="row" style="gap:6px"><${Tag} kind="ok" icon="check">auto<//><span class="small muted">${p.source?.kind}</span></span>`}</td>
         <td style="width:150px"><select class="select" style="height:28px" aria-label=${`Source for ${p.name}`} value=${m.kind || ""} onChange=${e => setMap(p.key, { ...m, kind: e.currentTarget.value })}>
           <option value="">—</option>${KINDS.map(k => html`<option value=${k}>${k}</option>`)}</select></td>
+        <td style="width:70px;text-align:center"><${Check} label=${`Allow automatic updates for ${p.name}`} disabled=${!m.kind} checked=${!!m.auto_apply} onChange=${v => setMap(p.key, { ...m, auto_apply: v || undefined })} /></td>
         <td style="min-width:180px"><input class="input mono" style="height:28px" aria-label=${`Id for ${p.name}`} placeholder=${m.kind === "github" ? "owner/repo" : m.kind === "spiget" ? "resource id" : "slug"} value=${m.id || ""} disabled=${!m.kind} onInput=${e => setMap(p.key, { ...m, id: e.currentTarget.value })} /></td>
       </tr>`; })}</tbody></table></div>`}
   </div>`;

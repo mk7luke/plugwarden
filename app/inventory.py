@@ -116,12 +116,17 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def _bad_name(name: str) -> bool:
+    """Names with control characters could spoof listings/logs; they are never shown or used."""
+    return bool(re.search(r"[\x00-\x1f\x7f\\]", name))
+
+
 def check_rel(rel: str, allow_empty: bool = False, single: bool = False) -> str:
     """Validate a client-supplied path relative to plugins/. Returns the normalized relative path."""
     if not isinstance(rel, str):
         raise PathError("path must be a string")
-    if "\x00" in rel or "\\" in rel:
-        raise PathError(f"invalid path: {rel!r}")
+    if "\\" in rel or re.search(r"[\x00-\x1f\x7f]", rel):
+        raise PathError(f"invalid path (control characters or backslash): {rel!r}")
     if rel.startswith("/") or rel.startswith("~"):
         raise PathError(f"absolute paths are not allowed: {rel!r}")
     parts = [p for p in rel.split("/") if p not in ("", ".")]
@@ -191,39 +196,69 @@ def file_hash(path: Path, algo: str = "sha1") -> str:
     return h.hexdigest()
 
 
+class _DescriptorLoader(yaml.SafeLoader):
+    """SafeLoader without aliases (no billion-laughs expansion) and with bounded nesting depth."""
+    MAX_DEPTH = 40
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.events.AliasEvent):
+            raise yaml.composer.ComposerError(None, None, "YAML aliases are not allowed in plugin descriptors")
+        self._depth = getattr(self, "_depth", 0) + 1
+        try:
+            if self._depth > self.MAX_DEPTH:
+                raise yaml.composer.ComposerError(None, None, "plugin descriptor nested too deeply")
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+
 def _yaml_fields(text: str) -> dict:
     try:
-        data = yaml.safe_load(text)
+        data = yaml.load(text, Loader=_DescriptorLoader)  # noqa: S506 - SafeLoader subclass
         if isinstance(data, dict):
             return data
-    except yaml.YAMLError:
+    except Exception:  # noqa: BLE001 - any failure (incl. RecursionError) falls back to line scan
         pass
     # Fallback for descriptors with unparseable sections: top-level scalar lines only.
     out: dict[str, Any] = {}
     for line in text.splitlines():
         m = re.match(r"^([A-Za-z_-]+):\s*['\"]?([^'\"#]*?)['\"]?\s*$", line)
+        if m and m.group(2)[:1] in ("*", "&"):
+            continue  # alias/anchor: never expanded
         if m and m.group(1) not in out:
             out[m.group(1)] = m.group(2)
     return out
 
 
+def _scalar(v: Any, limit: int = 200) -> str | None:
+    """Only plain scalars become strings (never str() of a container)."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (str, int, float)):
+        s = str(v)[:limit]
+        return s or None
+    return None
+
+
 def _desc(d: dict, kind: str) -> dict | None:
-    name = d.get("name")
+    if not isinstance(d, dict):
+        return None
+    name = _scalar(d.get("name"), 100)
     if not name:
         return None
     authors = d.get("authors") or ([d["author"]] if d.get("author") else [])
     if not isinstance(authors, list):
-        authors = [str(authors)]
+        authors = [authors]
     return {
         "kind": kind,
-        "name": str(name),
-        "id": str(d.get("id") or name),
-        "version": None if d.get("version") is None else str(d.get("version")),
-        "description": str(d.get("description") or "")[:500] or None,
-        "website": str(d.get("website") or d.get("url") or "") or None,
-        "authors": [str(a) for a in authors if a][:10],
-        "api_version": None if d.get("api-version") is None else str(d.get("api-version")),
-        "folia_supported": bool(d.get("folia-supported", False)),
+        "name": name,
+        "id": _scalar(d.get("id"), 100) or name,
+        "version": _scalar(d.get("version"), 100),
+        "description": _scalar(d.get("description"), 500),
+        "website": _scalar(d.get("website") or d.get("url"), 300),
+        "authors": [a for a in (_scalar(x, 100) for x in authors[:10]) if a],
+        "api_version": _scalar(d.get("api-version"), 20),
+        "folia_supported": d.get("folia-supported") is True,
         "depends": _dep_names(d),
     }
 
@@ -234,17 +269,34 @@ def _dep_names(d: dict) -> list[str]:
     for field in ("depend", "softdepend"):
         v = d.get(field)
         if isinstance(v, list):
-            out += [str(x) for x in v if x]
-        elif isinstance(v, str) and v:
-            out.append(v)
+            out += [s for s in (_scalar(x, 100) for x in v[:200]) if s]
+        elif _scalar(v, 100):
+            out.append(_scalar(v, 100))
     deps = d.get("dependencies")
     if isinstance(deps, list):  # velocity: [{"id": ...}]
-        out += [str(x.get("id")) for x in deps if isinstance(x, dict) and x.get("id")]
+        out += [s for s in (_scalar(x.get("id"), 100) for x in deps[:200] if isinstance(x, dict)) if s]
     elif isinstance(deps, dict):  # paper-plugin.yml: {server: {Name: {...}}}
-        for group in deps.values():
+        for group in list(deps.values())[:10]:
             if isinstance(group, dict):
-                out += [str(k) for k in group]
+                out += [s for s in (_scalar(k, 100) for k in list(group)[:200]) if s]
     return sorted(set(out))[:100]
+
+
+MAX_CENTRAL_DIR = 32 * 1024 * 1024  # bytes of zip central directory we are willing to load
+
+
+def _check_central_directory(path: Path) -> None:
+    """Refuse zips whose central directory is huge (millions of entries) before zipfile loads it."""
+    size = path.stat().st_size
+    with open(path, "rb") as f:
+        f.seek(max(0, size - 65557))
+        tail = f.read()
+    i = tail.rfind(b"PK\x05\x06")
+    if i < 0 or len(tail) < i + 22:
+        raise zipfile.BadZipFile("no end of central directory record")
+    cd_size = int.from_bytes(tail[i + 12:i + 16], "little")
+    if cd_size > MAX_CENTRAL_DIR:
+        raise zipfile.BadZipFile("zip central directory too large")
 
 
 def read_descriptors(path: Path) -> dict[str, dict]:
@@ -252,6 +304,7 @@ def read_descriptors(path: Path) -> dict[str, dict]:
 
     Raises zipfile.BadZipFile for non-zip files."""
     out: dict[str, dict] = {}
+    _check_central_directory(path)
     with zipfile.ZipFile(path) as zf:
         names = set(zf.namelist())
 
@@ -271,7 +324,7 @@ def read_descriptors(path: Path) -> dict[str, dict]:
                 d = _desc(json.loads(text("velocity-plugin.json")), "velocity-plugin.json")
                 if d:
                     out["velocity"] = d
-            except (json.JSONDecodeError, AttributeError):
+            except Exception:  # noqa: BLE001 - malformed or hostile JSON (incl. RecursionError)
                 pass
         for fname in ("bungee.yml",):
             if fname in names:
@@ -285,19 +338,21 @@ def jar_meta(path: Path) -> dict:
     """sha1 + descriptors, cached by (path, size, mtime_ns)."""
     global _meta_dirty
     st = path.stat()
-    ck = f"v2:{st.st_size}:{st.st_mtime_ns}"  # bump the prefix when descriptor fields change
+    ck = f"v3:{st.st_size}:{st.st_mtime_ns}"  # bump the prefix when descriptor fields change
     key = str(path)
     with _meta_lock:
         cached = _load_cache().get(key)
         if cached and cached.get("ck") == ck:
             return cached
     sha1 = file_hash(path)
+    error = None
     try:
         desc = read_descriptors(path)
         valid = True
-    except (zipfile.BadZipFile, OSError, KeyError):
+    except Exception as e:  # noqa: BLE001 - one hostile jar must never break listings; cached below
         desc, valid = {}, False
-    entry = {"ck": ck, "sha1": sha1, "valid_zip": valid, "descriptors": desc}
+        error = f"unreadable descriptor ({type(e).__name__})"
+    entry = {"ck": ck, "sha1": sha1, "valid_zip": valid, "descriptors": desc, "error": error}
     with _meta_lock:
         _load_cache()[key] = entry
         _meta_dirty = True
@@ -342,6 +397,7 @@ def describe_jar(path: Path, family: str) -> dict:
         "descriptor": desc,
         "valid_zip": meta["valid_zip"],
         "foreign": desc is None and bool(descs),  # has descriptors, but none for this platform
+        "error": meta.get("error"),
     }
 
 
@@ -354,7 +410,7 @@ def list_plugins(server: Server) -> list[dict]:
     dirs = {p.name.lower(): p.name for p in entries if p.is_dir() and not p.is_symlink()}
     out: list[dict] = []
     for p in entries:
-        if not (p.is_file() and not p.is_symlink() and p.name.lower().endswith(".jar")):
+        if not (p.is_file() and not p.is_symlink() and p.name.lower().endswith(".jar")) or _bad_name(p.name):
             continue
         st = p.stat()
         info = describe_jar(p, server.family)
@@ -378,6 +434,7 @@ def list_plugins(server: Server) -> list[dict]:
             "authors": desc.get("authors") or [],
             "depends": desc.get("depends") or [],
             "valid": info["valid_zip"] and not info["foreign"],
+            "descriptor_error": info["error"],
         })
     keys: dict[str, int] = {}
     for pl in out:
@@ -394,6 +451,8 @@ def list_tree(server: Server, rel: str) -> dict:
     root = server.plugins_dir.resolve()
     entries = []
     for p in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        if _bad_name(p.name):
+            continue
         try:
             st = p.lstat()
         except OSError:
@@ -454,6 +513,8 @@ def search(server: Server, q: str, limit: int = 200) -> dict:
         entries.sort(key=lambda e: e.name.lower())
         for e in entries:
             visited += 1
+            if _bad_name(e.name):
+                continue
             if visited > SEARCH_MAX_VISITED:
                 truncated = True
                 break
@@ -474,41 +535,9 @@ def search(server: Server, q: str, limit: int = 200) -> dict:
     return {"server": server.id, "q": q, "results": results, "truncated": truncated}
 
 
-REDACTED = "«redacted»"
-_SECRET_KEY = r"[A-Za-z0-9_.\-]*(?:password|passwd|secret|token|api[-_]?key|webhook|jdbc|private[-_]?key|license)[A-Za-z0-9_.\-]*"
-# key: value (YAML/properties), key = value (TOML/properties), "key": value (JSON); optional list dash / quotes.
-_SECRET_LINE = re.compile(r"^(?P<pre>\s*(?:-\s+)?)(?P<q>[\"']?)(?P<key>" + _SECRET_KEY + r")(?P=q)(?P<sep>\s*[:=]\s*)"
-                          r"(?P<val>[^\s#].*?)(?P<post>\s*,?\s*)$", re.I)
-# Values that are secrets whatever their key is called.
-_SECRET_VALUE = re.compile(r"^(?P<pre>\s*(?:-\s+)?)(?P<q>[\"']?)(?P<key>[A-Za-z0-9_.\-]+)(?P=q)(?P<sep>\s*[:=]\s*)"
-                           r"(?P<val>[\"']?(?:jdbc:|https?://(?:\w+\.)?discord(?:app)?\.com/api/webhooks/|"
-                           r"[a-z]+://[^/\s:@]+:[^/\s@]+@).*?)(?P<post>\s*,?\s*)$", re.I)
-
-
-def _not_secret(val: str) -> bool:
-    """Empty values, block/collection openers, booleans and numbers (feature toggles like
-    'BlockWebhooks: false') carry no secret; showing them keeps config diffs useful."""
-    v = val.strip().strip("'\"").lower()
-    return v in ("", "|", ">", "{", "[", "true", "false", "yes", "no", "on", "off", "null", "~") or \
-        bool(re.fullmatch(r"-?\d+(\.\d+)?", v))
-
-
-def redact(lines: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Replace secret values with «redacted». Returns new lines and {key label: original value}, where
-    repeated keys are labelled 'password', 'password (2)', … in file order (same on both sides)."""
-    out, found, seen = [], {}, {}
-    for ln in lines:
-        body, nl = (ln[:-1], "\n") if ln.endswith("\n") else (ln, "")
-        m = _SECRET_LINE.match(body) or _SECRET_VALUE.match(body)
-        if not m or _not_secret(m.group("val")):
-            out.append(ln)
-            continue
-        key = m.group("key")
-        seen[key] = seen.get(key, 0) + 1
-        label = key if seen[key] == 1 else f"{key} ({seen[key]})"
-        found[label] = m.group("val")
-        out.append(f"{m.group('pre')}{m.group('q')}{key}{m.group('q')}{m.group('sep')}{REDACTED}{m.group('post')}{nl}")
-    return out, found
+def redact(lines: list[str], rel: str = "") -> tuple[list[str], dict[str, str]]:
+    from .redact import redact_lines
+    return redact_lines(lines, rel)
 
 
 def diff_file(source: Server, target: Server, rel: str, transform=None) -> dict:
@@ -550,7 +579,7 @@ def diff_file(source: Server, target: Server, rel: str, transform=None) -> dict:
             return out
     if transform is not None and out["source_exists"] and out["target_exists"]:
         texts[0] = transform(texts[0], texts[1], out)
-    (texts[0], secrets_src), (texts[1], secrets_dst) = redact(texts[0]), redact(texts[1])
+    (texts[0], secrets_src), (texts[1], secrets_dst) = redact(texts[0], rel), redact(texts[1], rel)
     out["redacted"] = [{"key": k, "changed": secrets_src.get(k) != secrets_dst.get(k)}
                        for k in sorted(set(secrets_src) | set(secrets_dst))]
     out["redacted_changed"] = any(r["changed"] for r in out["redacted"])

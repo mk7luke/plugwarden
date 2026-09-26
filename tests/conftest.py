@@ -11,6 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # Never let an import fall back to production paths.
 os.environ.setdefault("LGT_STATE_DIR", "/nonexistent-test-state")
 os.environ.pop("LGT_BASE_OVERRIDE", None)
+for _k in ("LGT_AUTH", "LGT_CF_AUD", "LGT_CF_TEAM_DOMAIN", "LGT_BIND", "LGT_ALLOWED_HOSTS", "LGT_HOSTNAME"):
+    os.environ.pop(_k, None)
+os.environ["LGT_MIN_FREE_GB"] = "0"
 
 from app import config, inventory, updates  # noqa: E402
 
@@ -78,3 +81,21 @@ def snapshot_tree(root: Path) -> dict:
         rel = p.relative_to(root).as_posix()
         out[rel] = p.read_bytes() if p.is_file() else "<dir>"
     return out
+
+
+CSRF = {"X-Requested-With": "lgt-amp-sync"}
+
+
+def _loopback(asgi):
+    """Present the test client as 127.0.0.1 (auth mode "none" only serves loopback clients)."""
+    async def wrapped(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = dict(scope, client=("127.0.0.1", 50000))
+        await asgi(scope, receive, send)
+    return wrapped
+
+
+def client_for(app, **kw):
+    from fastapi.testclient import TestClient
+    headers = {**CSRF, **kw.pop("headers", {})}
+    return TestClient(_loopback(app), base_url="http://localhost", headers=headers, **kw)

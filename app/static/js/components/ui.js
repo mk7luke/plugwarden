@@ -30,6 +30,7 @@ const STATUS = {
   unknown: ["", "circle-dashed", "Unknown source"],
   pinned: ["plain", "pin", "Pinned"],
   ignored: ["plain", "eye-off", "Ignored"],
+  unreadable: ["danger", "file-code", "unreadable plugin.yml"],
 };
 export const StatusTag = ({ status, label }) => {
   const [k, i, l] = STATUS[status] || STATUS.unknown;

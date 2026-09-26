@@ -32,7 +32,7 @@ export function Activity({ id, tab }) {
   return html`<${PageHead} title="Activity" sub="Every update, deploy and undo — who ran it, what changed, and the full log." />
     <div class="toolbar"><div class="seg" role="group" aria-label="Filter by kind">
       ${KINDS.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}
-      <button type="button" aria-pressed=${kind === "access" ? "true" : "false"} onClick=${() => setKind("access")} title="Who viewed which config diffs"><${Icon} n="eye" cls="i-xs" />Access</button></div>
+      <button type="button" aria-pressed=${kind === "access" ? "true" : "false"} onClick=${() => setKind("access")} title="Who viewed config diffs and changed settings, pins, ignores, sources and uploads"><${Icon} n="eye" cls="i-xs" />Audit</button></div>
       <span class="spacer"></span>
       ${kind !== "access" && html`<label class="switch small"><input type="checkbox" checked=${hideDry} onChange=${e => setHD(e.currentTarget.checked)} />Hide dry runs</label>`}</div>
     ${kind === "access" ? html`<${AccessLog} />` : html`
@@ -55,27 +55,42 @@ export function Activity({ id, tab }) {
 }
 
 // Read-access log: who viewed which config diffs (secrets are redacted in the diff itself).
+const ACTION_LABEL = { diff: "viewed diff", settings: "changed settings", pin: "pin", ignore: "ignore", source_map: "source mapping", upload: "uploaded jar", "plan-values": "saw server-specific values" };
+// before → after for change entries, shortened to what differs.
+function change(e) {
+  if (e.before === undefined && e.after === undefined) return e.detail || "";
+  const show = (v) => v == null ? "none" : typeof v === "object" ? JSON.stringify(v) : String(v);
+  if (e.before && e.after && typeof e.before === "object" && typeof e.after === "object") {
+    const keys = [...new Set([...Object.keys(e.before), ...Object.keys(e.after)])].filter(k => JSON.stringify(e.before[k]) !== JSON.stringify(e.after[k]));
+    return keys.map(k => `${k}: ${show(e.before[k])} → ${show(e.after[k])}`).join("; ") || e.detail || "";
+  }
+  return `${show(e.before)} → ${show(e.after)}`;
+}
+
 function AccessLog() {
-  const [f, setF] = useState({ user: "", server: "", path: "" });
+  const [f, setF] = useState({ user: "", server: "", path: "", action: "" });
   const [qs, setQs] = useState("limit=200");
   useEffect(() => {
     const t = setTimeout(() => setQs(new URLSearchParams(Object.entries({ limit: "200", ...f }).filter(([, v]) => v)).toString()), 250);
     return () => clearTimeout(t);
-  }, [f.user, f.server, f.path]);
+  }, [f.user, f.server, f.path, f.action]);
   const q = useQuery(`/access-log?${qs}`);
   const entries = q.data?.entries || [];
   const field = (k, label) => html`<div class="input-wrap" style="width:200px"><${Icon} n="filter" cls="i-sm" /><input class="input" type="search" aria-label=${`Filter by ${label}`} placeholder=${label} value=${f[k]} onInput=${e => setF({ ...f, [k]: e.currentTarget.value })} /></div>`;
-  return html`<div class="toolbar">${field("user", "User")}${field("server", "Server")}${field("path", "Path")}<span class="spacer"></span>
-      <span class="small muted">Config diffs are recorded when viewed; secret values are redacted.</span></div>
+  return html`<div class="toolbar">
+      <select class="select" style="width:auto" aria-label="Filter by action" value=${f.action} onChange=${e => setF({ ...f, action: e.currentTarget.value })}>
+        ${[["", "All actions"], ["diff", "Viewed diff"], ["plan-values", "Saw server-specific values"], ["settings", "Settings"], ["pin", "Pin"], ["ignore", "Ignore"], ["upload", "Upload"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
+      ${field("user", "User")}${field("server", "Server")}${field("path", "Path")}<span class="spacer"></span>
+      <span class="small muted">Viewing a diff is recorded (secrets redacted), as are settings, pin, ignore, source and upload changes.</span></div>
     <section class="panel" aria-label="Access log">
       ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
         : q.loading ? html`<${SkelRows} n=${6} cols=${[12, 20, 30, 20]} />`
-        : !entries.length ? html`<${Empty} icon="eye" title="No access recorded">${Object.values(f).some(Boolean) ? "Nothing matches these filters." : "Viewing a config diff in Deploy is recorded here."}<//>`
+        : !entries.length ? html`<${Empty} icon="eye" title="Nothing recorded yet">${Object.values(f).some(Boolean) ? "Nothing matches these filters." : "Config diff views and settings, pin, ignore, source and upload changes are recorded here."}<//>`
         : html`<div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Access log, newest first</caption>
-          <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Viewed</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
+          <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">What</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
           <tbody>${entries.map(e => html`<tr><td class="small muted" title=${absTime(e.at)} style="white-space:nowrap">${relTime(e.at)}</td><td>${e.user}</td>
-            <td><div class="cell-name"><span class="mono small">${e.path}</span><span class="small muted">${e.action}</span></div></td>
-            <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted">${e.detail || ""}</td></tr>`)}</tbody></table></div>`}
+            <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}</span></div></td>
+            <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted audit-change" title=${change(e)}>${change(e)}</td></tr>`)}</tbody></table></div>`}
     </section>`;
 }
 
@@ -133,7 +148,7 @@ function JobDetail({ id }) {
     ${res.length > 0 && html`<div class="tbl-wrap" style="max-height:300px;border-top:1px solid var(--line)"><table class="tbl">
       <thead><tr><th scope="col">Server</th><th scope="col">Item</th><th scope="col">Outcome</th><th scope="col" class="hide-md">Detail</th></tr></thead>
       <tbody>${res.map(r => html`<tr><td class="strong" style="white-space:nowrap">${r.server}</td><td><span class="jar" style="max-width:200px" title=${r.item}>${r.item}</span></td>
-        <td class=${"small outcome-" + (j.dry_run && r.outcome === "changed" ? "would_change" : r.outcome)} style="font-weight:600;white-space:nowrap">${j.dry_run && r.outcome === "changed" ? "would change" : r.outcome}</td><td class="hide-md small muted">${r.detail}</td></tr>`)}</tbody></table></div>`}
+        <td class=${"small outcome-" + (j.dry_run && r.outcome === "changed" ? "would_change" : r.outcome)} style="font-weight:600;white-space:nowrap">${r.reason_code === "changed_since_job" ? "changed since — kept" : j.dry_run && r.outcome === "changed" ? "would change" : r.outcome}</td><td class="hide-md small muted">${r.detail}</td></tr>`)}</tbody></table></div>`}
     <div class="panel-head" style="border-top:1px solid var(--line);border-bottom:0"><${Icon} n="terminal" cls="i-sm" /><h3>Log</h3><span class="spacer"></span>
       <${Btn} size="sm" kind="ghost" icon="copy" onClick=${() => navigator.clipboard?.writeText(logLines.join("\n"))}>Copy<//></div>
     <${LogView} lines=${logLines} live=${running} empty="No log output." />

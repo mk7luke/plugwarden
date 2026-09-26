@@ -4,7 +4,7 @@ import { useRoute, navigate } from "./router.js";
 import { setState, getState, prefetch, peek, invalidate, useQuery } from "./store.js";
 import { trackJob, JOB_TITLES } from "./jobs.js";
 import { Sidebar, Topbar, Tabbar, Drawer } from "./components/shell.js";
-import { Toasts, ConfirmHost, Palette, Dock, NAV } from "./components/overlays.js";
+import { Toasts, ConfirmHost, Palette, Dock, NAV, Shortcuts } from "./components/overlays.js";
 import { ChangesetHost } from "./components/changeset.js";
 import { RemoveHost } from "./components/removedialog.js";
 import { checkUpdates, openUpdateAll } from "./actions.js";
@@ -78,6 +78,7 @@ function App() {
         }
         return;
       }
+      if (e.key === "?") { e.preventDefault(); setState({ shortcuts: true }); return; }
       if (k === "g") { g = Date.now(); return; }
       if (Date.now() - g < 900) {
         const hit = NAV.find(n => n[3] === `g ${k}`);
@@ -101,6 +102,7 @@ function App() {
     <${ChangesetHost} />
     <${RemoveHost} />
     <${ConfirmHost} />
+    <${Shortcuts} />
     <${Dock} />
     <${Toasts} />
   </div>`;

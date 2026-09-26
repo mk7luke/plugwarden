@@ -157,7 +157,8 @@ function PaletteInner({ actions }) {
       if (sc >= 0) out.push({ group, label, icon, run, hint, sc, rank });
     };
     for (const a of actions) cmd("Actions", a.label, a.icon, a.run, a.hint, a.keywords);
-    cmd("Actions", `Switch to ${theme === "dark" ? "light" : "dark"} theme`, theme === "dark" ? "sun" : "moon", () => setTheme(theme === "dark" ? "light" : "dark"), null, "theme dark light mode appearance");
+    cmd("Actions", "Theme: dark", "moon", () => setTheme("dark"), theme === "dark" ? "current" : null, "theme dark mode appearance night");
+    cmd("Actions", "Theme: light", "sun", () => setTheme("light"), theme === "light" ? "current" : null, "theme light mode appearance day");
     if (qq) {
       for (const p of mx?.plugins || []) {
         const cells = Object.entries(p.cells);
@@ -246,4 +247,33 @@ export function Dock() {
       : html`<div class=${"progress" + (running ? "" : failed ? " fail" : " done")} role="progressbar" aria-label="Job progress" aria-valuetext=${j.status}></div>`}
     <${LogView} lines=${j.lines} live=${running} />
   </section>`;
+}
+
+// "?" — keyboard shortcut sheet.
+const KEYS = [
+  [["Ctrl", "K"], "Command palette (also /)"],
+  [["G", "D / S / P / U / Y / A"], "Go to Dashboard, Servers, Plugins, Updates, Deploy, Activity"],
+  [["G", ","], "Go to Settings"],
+  [["J", "K"], "Next / previous tile or list row"],
+  [["Enter"], "Open the focused item"],
+  [["←↑↓→"], "Matrix: move between cells"],
+  [["Space"], "Matrix: select the focused cell"],
+  [["U"], "Matrix: review updates for the selection"],
+  [["Esc"], "Close a dialog, sheet or palette"],
+  [["?"], "This sheet"],
+];
+export function Shortcuts() {
+  const open = useStore(s => s.shortcuts);
+  return open ? html`<${ShortcutsInner} />` : null;
+}
+function ShortcutsInner() {
+  const ref = useRef();
+  const close = () => setState({ shortcuts: false });
+  useTrap(ref, close);
+  return html`<div class="scrim" onClick=${close}></div>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="kb-t" ref=${ref}>
+    <div class="dialog-body"><h2 id="kb-t"><span class="sr-only">Keyboard </span>Shortcuts</h2>
+      <dl class="kb-list">${KEYS.map(([ks, what]) => html`<dt>${ks.map((k, i) => html`${i ? " " : ""}<${Kbd}>${k}<//>`)}</dt><dd>${what}</dd>`)}</dl></div>
+    <div class="dialog-foot"><button type="button" class="btn" data-autofocus onClick=${close}>Close</button></div>
+  </div>`;
 }

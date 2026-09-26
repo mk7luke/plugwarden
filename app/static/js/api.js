@@ -10,7 +10,8 @@ export class ApiError extends Error {
 
 export async function api(path, { method = "GET", body, form } = {}) {
   if (FIXTURES) return (await fixtures()).handle(method, path, body ?? form);
-  const opts = { method, headers: {} };
+  // Writes carry the CSRF guard header the server requires (403 without it).
+  const opts = { method, headers: method === "GET" ? {} : { "X-Requested-With": "lgt-amp-sync" } };
   if (form) opts.body = form;
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   let res;

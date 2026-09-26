@@ -28,3 +28,77 @@ def test_settings_validation(env):
                 {"pins": {"not a key": "1"}}, {"default_source": "nope"}):
         with pytest.raises(settings.SettingsError):
             settings.update(bad)
+
+
+def _row(server, key="bukkit:cp", to="24.1", age_h=100, **kw):
+    import time as _t
+    from datetime import datetime, timezone
+    pub = datetime.fromtimestamp(_t.time() - age_h * 3600, timezone.utc).isoformat()
+    return {"server": server, "key": key, "name": "CP", "from_version": "23.1", "to_version": to,
+            "published": pub, "verified": True, "type": "release",
+            "source": {"kind": "modrinth", "id": "x"}, **kw}
+
+
+AU = {"min_release_age_hours": 48, "canary_soak_hours": 24, "max_changes_per_run": 20}
+
+
+def test_auto_policy_age_prerelease_manual_and_canary():
+    import time as _t
+    now = _t.time()
+    rows = [_row("elChapo01"), _row("M1-hub01"), _row("M3-hunger01", age_h=1),
+            _row("M4-skyblock01", type="beta"), _row("M5-kitpvp01", verified=False),
+            _row("M6-creative01", source={"kind": "github", "id": "a/b", "manual": True}),
+            _row("M7-bending01", source={"kind": "github", "id": "a/b", "manual": True, "auto_apply": True,
+                                        "overrides_modrinth": {"id": "p"}})]
+    installed = {"bukkit:cp": ("23.1", now - 99999)}
+    chosen, waiting = scheduler.select_auto_rows(rows, AU, {}, "elChapo01", True, now, installed)
+    assert [r["server"] for r in chosen] == ["elChapo01"]
+    why = {r["server"]: r["reason"] for r in waiting}
+    assert why["M1-hub01"] == "waiting for canary elChapo01"
+    assert why["M3-hunger01"].startswith("released less than 48")
+    assert why["M4-skyblock01"] == "pre-release" and why["M5-kitpvp01"] == "no verified hash"
+    assert why["M6-creative01"].startswith("manual source")
+    assert why["M7-bending01"] == "waiting for canary elChapo01"  # opted in, still canaried
+    # canary applied 25 h ago and restarted → rollout proceeds
+    state = {"bukkit:cp|24.1": {"at": now - 25 * 3600}}
+    chosen, waiting = scheduler.select_auto_rows(rows[1:2], AU, state, "elChapo01", True, now, installed)
+    assert [r["server"] for r in chosen] == ["M1-hub01"]
+    chosen, waiting = scheduler.select_auto_rows(rows[1:2], AU, state, "elChapo01", False, now, installed)
+    assert waiting[0]["reason"] == "waiting for elChapo01 to restart"
+    state = {"bukkit:cp|24.1": {"at": now - 2 * 3600}}
+    _, waiting = scheduler.select_auto_rows(rows[1:2], AU, state, "elChapo01", True, now, installed)
+    assert waiting[0]["reason"].startswith("canary soak")
+    # canary already on that version (hand update) counts, by jar mtime
+    chosen, _ = scheduler.select_auto_rows(rows[1:2], AU, {}, "elChapo01", True, now, {"bukkit:cp": ("24.1", now - 30 * 3600)})
+    assert chosen
+    # plugin not on the canary: release age + soak
+    chosen, waiting = scheduler.select_auto_rows([_row("M1-hub01", key="bukkit:x", age_h=60)], AU, {}, "elChapo01",
+                                                 True, now, installed)
+    assert waiting[0]["reason"].startswith("no canary")
+    chosen, _ = scheduler.select_auto_rows([_row("M1-hub01", key="bukkit:x", age_h=80)], AU, {}, "elChapo01",
+                                           True, now, installed)
+    assert chosen
+
+
+def test_auto_policy_cap_prefers_canary():
+    import time as _t
+    now = _t.time()
+    rows = [_row(f"M{i}-x", key=f"bukkit:k{i}", age_h=500) for i in range(30)] + [_row("elChapo01", key="bukkit:k0")]
+    chosen, waiting = scheduler.select_auto_rows(rows, {**AU, "max_changes_per_run": 5}, {}, "elChapo01", True, now, {})
+    assert len(chosen) == 5 and chosen[0]["server"] == "elChapo01"
+    assert sum(1 for r in waiting if r["reason"] == "over max_changes_per_run") == 26
+
+
+def test_apply_mode_needs_confirmation(env):
+    from app.main import app
+    from conftest import client_for
+    c = client_for(app)
+    r = c.put("/api/v2/settings", json={"auto_update": {"mode": "apply"}})
+    assert r.status_code == 400 and "confirm_apply" in r.json()["detail"]
+    r = c.put("/api/v2/settings", json={"auto_update": {"mode": "apply", "canary_server": "elChapo01"},
+                                       "confirm_apply": True})
+    assert r.status_code == 200 and r.json()["auto_update"]["mode"] == "apply"
+    ov = c.get("/api/v2/overview").json()["auto_update"]
+    assert ov["policy"]["min_release_age_hours"] == 48 and ov["effective_canary"] == "elChapo01"
+    log = c.get("/api/v2/access-log", params={"action": "settings"}).json()["entries"]
+    assert log[0]["before"]["auto_update"]["mode"] == "off" and log[0]["after"]["auto_update"]["mode"] == "apply"

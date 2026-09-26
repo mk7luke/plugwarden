@@ -17,6 +17,9 @@ const ITEMS = [
   { id: "activity", label: "Activity", icon: "history", href: "#/activity" },
 ];
 
+// A verified Cloudflare Access identity; auth "none" (dev) reports "local".
+const signedIn = (ov) => ov?.user && ov.user !== "local" && ov.auth !== "none";
+
 const MODE_LABEL = { off: "Auto-update off", notify: "Auto-check · notify", apply: "Auto-update on" };
 
 export const Brand = () => html`<a class="brand" href="#/dashboard" aria-label="AMP Sync — dashboard">
@@ -51,7 +54,7 @@ function SideFoot({ ov, route, onNav }) {
     <a class="nav-item" href="#/settings" aria-current=${route.name === "settings" ? "page" : undefined} onClick=${onNav} title="Settings"><${Icon} n="settings" /><span>Settings</span></a>
     <div class="user-row">
       <span class="avatar" aria-hidden="true">${initials(ov?.user)}</span>
-      <span title=${ov?.user && ov.user !== "local" ? `Signed in as ${ov.user}` : "No Cloudflare Access identity"}>${!ov ? "—" : ov.user && ov.user !== "local" ? ov.user : "Local session"}</span>
+      <span title=${signedIn(ov) ? `Signed in as ${ov.user} (Cloudflare Access)` : "No Cloudflare Access identity — development mode"}>${!ov ? "—" : signedIn(ov) ? ov.user : "local (dev)"}</span>
       <${Btn} kind="ghost" size="sm" icon=${theme === "dark" ? "sun" : "moon"} aria-label=${`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
         onClick=${() => setTheme(theme === "dark" ? "light" : "dark")} cls="hide-rail" />
     </div>

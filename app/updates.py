@@ -33,10 +33,35 @@ TRANSPORT: httpx.BaseTransport | None = None
 _cache_lock = threading.Lock()
 
 
+# Every request (API calls, downloads and each redirect hop) must go to one of these hosts over https:
+# a hostile API response can't make the server fetch internal or arbitrary URLs.
+ALLOWED_FETCH_HOSTS = {
+    "api.modrinth.com", "cdn.modrinth.com",
+    "hangar.papermc.io", "hangarcdn.papermc.io",
+    "api.spiget.org", "www.spigotmc.org", "spigotmc.org",
+    "api.github.com", "github.com", "codeload.github.com",
+    "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+}
+
+
 def _https_only(request: httpx.Request) -> None:
-    # Also applies to every redirect hop.
     if request.url.scheme != "https":
         raise httpx.UnsupportedProtocol(f"refusing non-https URL: {request.url}", request=request)
+    if request.url.host not in ALLOWED_FETCH_HOSTS:
+        raise httpx.UnsupportedProtocol(f"refusing download host {request.url.host!r}", request=request)
+
+
+_HASH_LEN = {"sha1": 40, "sha256": 64, "sha512": 128}
+
+
+def _clean_hashes(hashes) -> dict:
+    """Keep only well-formed hex digests (API data is untrusted: it also names the staging folder)."""
+    out = {}
+    for algo, n in _HASH_LEN.items():
+        v = (hashes or {}).get(algo) if isinstance(hashes, dict) else None
+        if isinstance(v, str) and re.fullmatch(rf"[0-9a-fA-F]{{{n}}}", v):
+            out[algo] = v.lower()
+    return out
 
 
 def _client() -> httpx.Client:
@@ -352,7 +377,12 @@ def check(job=None) -> dict:
                         entry["latest"] = None  # no newer compatible release; treat as current
                 elif mapping:
                     kind, sid = mapping["kind"], mapping["id"]
-                    entry["source"] = _source_info(kind, sid)
+                    entry["source"] = _source_info(kind, sid, {"manual": True,
+                                                               "auto_apply": bool(mapping.get("auto_apply"))})
+                    if sha1 in identified:
+                        # An explicit mapping wins over a Modrinth hash match: make that visible.
+                        pid = identified[sha1].get("project_id")
+                        entry["source"]["overrides_modrinth"] = {"id": pid, **(titles.get(pid) or {})}
                     mk = (kind, sid, family, mc)
                     if mk not in mapped_cache:
                         step()
@@ -551,6 +581,7 @@ def create_plan(items: Any, user: str) -> dict:
                 "to_version": latest["version"], "compat": compat_for(latest.get("compat"), srv),
                 "size": latest.get("size"), "published": latest.get("published"),
                 "verified": bool(latest.get("verified")), "changelog_url": latest.get("changelog_url"),
+                "type": latest.get("type"),
                 "source": source, "_latest": latest,
             })
             break
@@ -632,11 +663,12 @@ def _download(c: httpx.Client, latest: dict, fallback_name: str, log) -> Path:
     url = latest.get("download_url")
     if not url or not url.startswith("https://"):
         raise ValueError("no direct https download available")
-    hashes = latest.get("hashes") or {}
-    ident = hashes.get("sha512") or hashes.get("sha256") or hashes.get("sha1") or \
-        hashlib.sha1(url.encode()).hexdigest()
+    hashes = _clean_hashes(latest.get("hashes"))
+    if latest.get("verified") and not hashes:
+        raise ValueError("source reported an invalid file hash")
+    ident = hashes.get("sha512") or hashes.get("sha256") or hashes.get("sha1") or url
     fname = _safe_filename(latest.get("filename"), fallback_name)
-    dest_dir = config.state("staging", ident[:40])
+    dest_dir = config.state("staging", hashlib.sha256(ident.encode()).hexdigest()[:40])
     dest = dest_dir / fname
     if dest.is_file() and _verify(dest, hashes):
         return dest
@@ -652,6 +684,10 @@ def _download(c: httpx.Client, latest: dict, fallback_name: str, log) -> Path:
                 if size > MAX_DOWNLOAD:
                     raise ValueError("download exceeds size limit")
                 f.write(chunk)
+    expected = latest.get("size")
+    if isinstance(expected, int) and expected > 0 and size != expected:
+        tmp.unlink(missing_ok=True)
+        raise ValueError(f"size mismatch on downloaded file ({size} bytes, expected {expected})")
     if hashes and not _verify(tmp, hashes):
         tmp.unlink(missing_ok=True)
         raise ValueError("hash mismatch on downloaded file")

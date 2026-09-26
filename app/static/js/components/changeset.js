@@ -8,7 +8,7 @@ import { updatesOf, compatOf } from "../summary.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "./overlays.js";
 import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow } from "./ui.js";
-import { plural, bytes } from "../fmt.js";
+import { plural, bytes, safeUrl } from "../fmt.js";
 
 // scope: "all" | {server} | {keys:[key]} | {items:[{key, servers?}]} — translated to the API's {items}.
 export const openChangeset = (scope, title) => setState({ changeset: { scope, title: title || "Review updates", n: Date.now() } });
@@ -135,7 +135,7 @@ function Changeset({ cs }) {
           ${applyErr.conflicts?.length > 0 && html`<ul class="small" style="margin:-4px 0 8px">${applyErr.conflicts.map(c => html`<li>${c.server} · ${c.from_jar || c.key}: ${c.reason}</li>`)}</ul>`}
           <${Btn} size="sm" icon="refresh-cw" onClick=${() => setN(n + 1)}>Re-plan<//></div></div>`}
       <div class="grow small">${plan && rows.length ? html`<b>${plural(tot.changes, "change")}</b><span class="muted"> · ${plural(tot.plugins, "plugin")} · ${plural(tot.servers, "server")}${tot.bytes ? ` · ${bytes(tot.bytes)} download` : ""}</span>
-        <div class=${tot.compatWarn || tot.unverified ? "" : "cs-allok"}>${tot.compatWarn || tot.unverified
+        <div class=${"cs-status " + (tot.compatWarn || tot.unverified ? "" : "cs-allok")}>${tot.compatWarn || tot.unverified
           ? html`<span style="color:var(--warn)">${[tot.compatWarn && `${plural(tot.compatWarn, "change")} not listed for its server's MC version`, tot.unverified && `${tot.unverified} without a verified hash`].filter(Boolean).join(" · ")}</span>`
           : html`<${Icon} n="check" cls="i-xs" />All compatible · all hashes verified`}</div>` : ""}</div>
       <${Btn} onClick=${close}>Cancel<//>
@@ -168,7 +168,7 @@ function Group({ by, rs, excluded, toggle, small }) {
             <span class="small muted nowrap">${multi ? `${inc} of ${plural(rs.length, "server")}` : first.server}</span>
             ${!open && multi && html`<span class="small muted ellipsis">${rs.map(r => r.server).join(", ")}</span>`}</span>`
         : html`<span class="cs-gsum"><span class="small muted">${inc} of ${plural(rs.length, "change")}</span></span>`}
-      <span class="cs-gmeta small muted">${by === "plugin" && first.changelog_url && html`<a class="link" href=${first.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${first.name} (opens in new tab)</span></a>`}
+      <span class="cs-gmeta small muted">${by === "plugin" && first.changelog_url && html`<a class="link" href=${safeUrl(first.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${first.name} (opens in new tab)</span></a>`}
         ${bytesAll ? bytes(bytesAll) : ""}</span>
     </div>
     ${!open && flagged && html`<div class="cs-gflags"><${RowFlags} r=${flagged} /></div>`}
@@ -179,7 +179,7 @@ function Group({ by, rs, excluded, toggle, small }) {
       <span class="cs-rname">${by === "plugin" ? r.server : r.name}</span>
       <span class="cs-rjar"><span class="from">from ${r.from_jar || r.from_version}</span><span class="to"><${Icon} n="arrow-right" cls="i-xs" />${r.to_jar || r.to_version}</span>
         ${r.also_removes?.length > 0 && html`<span class="small muted">also removes ${r.also_removes.join(", ")}</span>`}</span>
-      <span class="cs-rflags"><${RowFlags} r=${r} />${by === "server" && r.changelog_url && html`<a class="link small" href=${r.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${r.name}</span></a>`}</span>
+      <span class="cs-rflags"><${RowFlags} r=${r} />${by === "server" && r.changelog_url && html`<a class="link small" href=${safeUrl(r.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${r.name}</span></a>`}</span>
     </li>`; })}</ul>`}
   </section>`;
 }

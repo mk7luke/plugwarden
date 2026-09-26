@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app import actions, configmerge, engine, jobs, plans, updates
 from app.main import app
-from conftest import make_jar, snapshot_tree
+from conftest import client_for, make_jar, snapshot_tree
 from test_engine import _mock_modrinth
 
 # Shape of the real LuckPerms config.yml (comments, nested sections, lists, quoted values).
@@ -88,7 +88,7 @@ def test_luckperms_server_key_flagged_and_decision_required(lp_env):
         actions.start_deploy("t", plan["plan_id"])
     assert e.value.status == 409 and e.value.detail["code"] == "needs_decision"
     assert "server: hub" in (lp_env["a"] / "LuckPerms" / "config.yml").read_text()
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.post("/api/v2/deploy", json={"plan_id": lp_plan()["plan_id"]})
         assert r.status_code == 409 and r.json()["detail"]["code"] == "needs_decision"
 
@@ -169,7 +169,7 @@ def test_replace_rejects_non_jars_422(env):
     with pytest.raises(engine.DeployInvalid):
         engine.plan({"source": "elChapo01", "targets": ["M1-hub01"], "action": "replace",
                      "items": {"folders": ["Essentials"]}})
-    with TestClient(app) as c:
+    with client_for(app) as c:
         r = c.post("/api/v2/deploy/plan", json={"source": "elChapo01", "targets": ["M1-hub01"], "action": "replace",
                                                 "items": {"paths": ["Essentials/config.yml"]}})
         assert r.status_code == 422 and "only works on .jar" in r.json()["detail"]
@@ -206,7 +206,7 @@ def test_installed_on_and_check_progress(env):
     _mock_modrinth(env, new_bytes)
     job = jobs.wait(actions.start_check("t"), 30)
     assert job.to_dict()["progress"]["done"] == job.to_dict()["progress"]["total"] >= 3
-    with TestClient(app) as c:
+    with client_for(app) as c:
         rows = c.get("/api/v2/servers/M1-hub01/plugins").json()
     cp = next(r for r in rows if r["key"] == "bukkit:coreprotect")
     assert cp["installed_on"] == ["elChapo01", "M1-hub01"]
@@ -306,7 +306,7 @@ def test_flow_map_line_merged_and_verified():
 
 
 def test_diff_with_preserve_shows_merged_result(lp_env):
-    with TestClient(app) as c:
+    with client_for(app) as c:
         q = {"source": "elChapo01", "target": "M1-hub01", "path": "LuckPerms/config.yml"}
         raw = c.get("/api/v2/diff", params=q).json()
         assert "-server: hub" in raw["diff"] and "+server: survival" in raw["diff"]
