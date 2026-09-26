@@ -24,12 +24,22 @@ export function jobVerb(j) {
 }
 // Reverted jobs: "Reverted 25m ago · was 1 changed" (the undo job id lives in the detail view).
 export function jobSummary(j) {
+  if (j?.kind === "rolling-restart" && j.status === "interrupted" && j.params?.servers?.length) return rollingInterrupted(j);
   if (!j?.summary) return "";
   if (j.status === "undone" || j.undone_by) {
     const was = /was:\s*(.*)$/.exec(j.summary)?.[1];
     return `Reverted${j.undone_at ? " " + relTime(j.undone_at) : ""}${was ? ` · was ${was}` : ""}`;
   }
   return j.summary;
+}
+// "Interrupted after M4-skyblock01 — M5-kitpvp01, M6-creative01 not restarted"
+function rollingInterrupted(j) {
+  const ss = j.params.servers, n = Math.min(j.progress?.done ?? 0, ss.length), left = ss.slice(n);
+  const cur = j.progress?.current;
+  const names = left.length > 3 ? `${left.slice(0, 2).join(", ")} +${left.length - 2} more` : left.join(", ");
+  const head = n ? `Interrupted after ${ss[n - 1]}` : "Interrupted before any server restarted";
+  const mid = cur && ["restarting", "health"].includes(cur.phase) ? ` · ${cur.server} may still be starting — check it` : "";
+  return left.length ? `${head} — ${names} not restarted${mid}` : head + mid;
 }
 // "Apply updates · M5-kitpvp01" when a job touched exactly one server.
 export const jobTitle = (j) => `${JOB_TITLES[j.kind] || j.kind}${j.servers?.length === 1 ? ` · ${j.servers[0]}` : ""}`;

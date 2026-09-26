@@ -963,6 +963,7 @@ tr.is-reading .mcell { opacity: .55; cursor: default; }
 /* ---------- AMP ---------- */
 .amp-badge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--fg-2); flex: none; font-variant-numeric: tabular-nums; }
 .amp-badge .i { color: var(--fg-3); }
+.amp-badge.is-warn, .amp-state.is-warn b { color: var(--warn); }
 .amp-panel { display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap; padding: 12px 16px; margin-bottom: var(--s-4); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); }
 .amp-panel.is-down { gap: 8px; border-color: var(--warn-line); background: var(--warn-soft); }
 .amp-panel.is-down > .i { color: var(--warn); }
@@ -974,8 +975,10 @@ tr.is-reading .mcell { opacity: .55; cursor: default; }
 .amp-stats dd { margin: 0; font-size: var(--fs-md); font-weight: 600; font-variant-numeric: tabular-nums; }
 .amp-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .amp-names { flex-basis: 100%; margin-top: -6px; }
+.amp-err { color: var(--warn); display: flex; gap: 6px; align-items: center; }
 .console-sheet { width: min(980px, 100vw); }
 .console-log { flex: 1; max-height: none; border-top: 0; margin: 0; font-size: 12px; }
+@media (max-width: 760px) { .console-log .c-thread { display: none; } }
 .console-input { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface-2); }
 .console-input .input { flex: 1; }
 .restart-list h3 .btn { margin-left: auto; }

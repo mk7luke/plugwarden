@@ -210,3 +210,18 @@ def test_real_ads_shapes():
     line = amp.console_lines({"ConsoleEntries": [{"Contents": "Done (12.3s)! For help, type \"help\"", "Source": "INFO",
                                                   "Timestamp": "2026-09-26T07:31:44.1634023Z", "Type": "Console"}]})[0]
     assert line.endswith('INFO]: Done (12.3s)! For help, type "help"') and line.startswith("[")
+    tagged = amp.console_lines({"ConsoleEntries": [{"Contents": "[DiscordSRV]: registered", "Source": "INFO",
+                                                    "Timestamp": "2026-09-26T07:31:44Z"}]})[0]
+    assert tagged.endswith("INFO]: [DiscordSRV]: registered") and tagged[1].isdigit()
+
+
+def test_hung_instance_is_unresponsive_and_backed_off(ads):
+    ads.by_name("M1-hub01").hung = True
+    amp.refresh_all()
+    st = amp.cached_status()["servers"]
+    assert st["M1-hub01"]["state"] == "unresponsive" and "not responding" in st["M1-hub01"]["error"]
+    assert st["elChapo01"]["state"] == "running"
+    calls = len(ads.calls)
+    amp.refresh_all()  # inside the backoff window: the hung instance is skipped
+    assert not any(c.startswith("M1-hub01:") for c in ads.calls[calls:])
+    assert amp.cached_status()["servers"]["M1-hub01"]["state"] == "unresponsive"

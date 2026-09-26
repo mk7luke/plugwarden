@@ -17,6 +17,7 @@ if [[ "${LGT_AMP_MOCK:-}" == "1" ]]; then
   fi
   export LGT_AMP_URL="http://127.0.0.1:$MP" LGT_AMP_USER=admin LGT_AMP_PASSWORD=mock-password
 elif [[ "${LGT_AMP_REAL:-}" == "1" && -f .env.amp ]]; then
+  export LGT_STATE_DIR="$SB/state-real"  # own jobs/caches: may run next to the mock instance
   set -a; . ./.env.amp; set +a
   export LGT_AMP_URL="${LGT_AMP_URL:-http://127.0.0.1:8080}" LGT_AMP_READONLY=1
 fi

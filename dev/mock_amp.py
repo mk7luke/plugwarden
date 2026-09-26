@@ -59,6 +59,7 @@ class Instance:
         self.pending: list[int] = []  # states still to pass through on the next status polls
         self.fail_plugin: str | None = None
         self.disable_after_done: str | None = None  # plugin that shuts itself down right after "Done ("
+        self.hung = False  # ADS thinks it runs, but the instance never answers (real AMP: "Instance Unavailable")
         self.commands: list[str] = []
 
     def say(self, text: str, source: str = "INFO") -> None:
@@ -97,6 +98,9 @@ class MockADS:
                     return 502, {"Title": "Instance unavailable", "Message": "The instance is offline",
                                  "StackTrace": ""}
                 path = m.group(2)
+                if inst.hung and path != "Core/Login":
+                    return 200, {"Title": "Instance Unavailable",
+                                 "Message": "The requested instance is not available at this time.", "StackTrace": ""}
             self.calls.append(("" if inst is None else inst.name + ":") + path)
             if path == "Core/Login":
                 return 200, self._login(body, inst)

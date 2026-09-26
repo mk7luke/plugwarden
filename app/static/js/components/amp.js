@@ -41,19 +41,19 @@ const STATE = {
   stopped: ["muted", "Stopped"], sleeping: ["muted", "Sleeping"], waiting: ["muted", "Waiting"],
   installing: ["update", "Installing"], updating: ["update", "Updating"], awaiting_input: ["warn", "Needs input"],
   failed: ["danger", "Failed"], suspended: ["muted", "Suspended"], maintenance: ["warn", "Maintenance"],
-  instance_offline: ["muted", "AMP instance offline"], undefined: ["muted", "Unknown"], indeterminate: ["muted", "Unknown"], unknown: ["muted", "Unknown"],
+  instance_offline: ["muted", "AMP instance offline"], unresponsive: ["warn", "Not responding"], undefined: ["muted", "Unknown"], indeterminate: ["muted", "Unknown"], unknown: ["muted", "Unknown"],
 };
 const BUSY = ["starting", "prestart", "configuring", "restarting", "stopping", "preparing_sleep", "installing", "updating"];
 export const stateLabel = (st) => (STATE[st] || STATE.unknown)[1];
 
 // Small dot + players, for tiles and lists.
-const SHORT = { instance_offline: "Offline", awaiting_input: "Input", preparing_sleep: "Stopping" };
+const SHORT = { instance_offline: "Offline", unresponsive: "No response", awaiting_input: "Input", preparing_sleep: "Stopping" };
 
 export function AmpBadge({ a }) {
   if (!a) return null;
   const [k, l] = STATE[a.state] || STATE.unknown;
   const busy = BUSY.includes(a.state);
-  return html`<span class="amp-badge tip" tabindex="0" data-tip=${`${l}${a.state === "running" ? ` · ${a.players?.online ?? 0}/${a.players?.max ?? "?"} players · up ${uptime(a.uptime_s)}` : ""}`}>
+  return html`<span class=${`amp-badge tip${a.state === "unresponsive" ? " is-warn" : ""}`} tabindex="0" data-tip=${`${l}${a.error ? ` · ${a.error}` : ""}${a.state === "running" ? ` · ${a.players?.online ?? 0}/${a.players?.max ?? "?"} players · up ${uptime(a.uptime_s)}` : ""}`}>
     <i class=${`dot dot-${k === "muted" ? "muted" : k}${busy ? " pulse" : ""}`}></i>${a.state === "running" ? html`<${Icon} n="user" cls="i-xs" />${a.players?.online ?? 0}` : SHORT[a.state] || l}</span>`;
 }
 
@@ -96,7 +96,7 @@ export function AmpPanel({ server }) {
   const offline = a.state === "instance_offline";
   const memPct = a.mem_max_mb ? Math.round(100 * a.mem_mb / a.mem_max_mb) : null;
   return html`<section class="amp-panel" aria-label=${`${server} live status`}>
-    <div class="amp-state"><i class=${`dot dot-${k === "muted" ? "muted" : k}${busy ? " pulse" : ""}`}></i><b>${l}</b></div>
+    <div class=${`amp-state${a.state === "unresponsive" ? " is-warn" : ""}`}><i class=${`dot dot-${k === "muted" ? "muted" : k}${busy ? " pulse" : ""}`}></i><b>${l}</b></div>
     <dl class="amp-stats">
       <div><dt>Players</dt><dd>${running ? `${a.players?.online ?? 0} / ${a.players?.max ?? "?"}` : "—"}</dd></div>
       <div><dt>CPU</dt><dd>${running && a.cpu_pct != null ? `${Math.round(a.cpu_pct)}%` : "—"}</dd></div>
@@ -105,6 +105,7 @@ export function AmpPanel({ server }) {
     </dl>
     <div class="amp-actions">
       ${offline ? html`<span class="small muted">The AMP instance itself is stopped — start it in AMP.</span>`
+      : a.state === "unresponsive" ? html`<span class="small muted">Controls are unavailable until AMP responds again.</span>`
       : amp.readonly ? html`<${Btn} size="sm" icon="terminal" onClick=${() => openConsole(server)}>Console<//><span class="small muted">AMP is read-only here</span>`
       : running || busy ? html`
         <${Btn} size="sm" icon="terminal" onClick=${() => openConsole(server)}>Console<//>
@@ -113,6 +114,7 @@ export function AmpPanel({ server }) {
       : html`<${Btn} size="sm" kind="primary" icon="play" onClick=${() => power(server, "start")}>Start<//>
         <${Btn} size="sm" icon="terminal" onClick=${() => openConsole(server)}>Console<//>`}
     </div>
+    ${a.error && html`<p class="small amp-names amp-err" role="status"><${Icon} n="triangle-alert" cls="i-xs" />AMP reported: ${a.error}</p>`}
     ${running && a.players?.names?.length > 0 && html`<p class="small muted amp-names">Online: ${a.players.names.slice(0, 12).join(", ")}${a.players.names.length > 12 ? ` +${a.players.names.length - 12}` : ""}</p>`}
   </section>`;
 }
@@ -144,7 +146,7 @@ function Rolling({ init }) {
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
   }, []);
-  const offline = (id) => amp.servers[id]?.state === "instance_offline";
+  const offline = (id) => ["instance_offline", "unresponsive"].includes(amp.servers[id]?.state);
   const chosen = eligible.filter(s => sel.has(s.id) && !offline(s.id));
   const players = chosen.reduce((a, s) => a + (amp.servers[s.id]?.players?.online || 0), 0);
   const go = async () => {
@@ -202,6 +204,13 @@ export function ConsoleHost() {
   return c ? html`<${Console} key=${c.n} server=${c.server} />` : null;
 }
 
+// "[00:22:30] [Server thread/INFO]: …": the thread name is dropped on phones (CSS), time + level stay.
+const THREAD = /^(\[[\d:]+\] \[)([^\]\/]+\/)(.*)$/;
+function line(l) {
+  const m = THREAD.exec(l);
+  return m ? html`${m[1]}<span class="c-thread">${m[2]}</span>${m[3]}` : l;
+}
+
 function Console({ server }) {
   const ro = useAmpStatus().readonly;
   const [lines, setLines] = useState([]);
@@ -250,7 +259,7 @@ function Console({ server }) {
         ${status === "live" ? "Live" : status === "error" ? "Disconnected — AMP unreachable or the stream ended" : "Connecting…"} · commands are recorded in Activity → Audit</p></div>
       <label class="switch small"><input type="checkbox" checked=${follow} onChange=${e => setFollow(e.currentTarget.checked)} />Follow</label>
       <${Btn} kind="ghost" icon="x" aria-label="Close console" onClick=${close} /></header>
-    <pre class="log console-log" ref=${logRef} tabindex="0" aria-live="off" aria-label=${`${server} console output`}>${lines.length ? lines.map(l => html`<span class=${cls(l)}>${l + "\n"}</span>`) : html`<span class="log-empty">Waiting for output…</span>`}</pre>
+    <pre class="log console-log" ref=${logRef} tabindex="0" aria-live="off" aria-label=${`${server} console output`}>${lines.length ? lines.map(l => html`<span class=${cls(l)}>${line(l)}${"\n"}</span>`) : html`<span class="log-empty">Waiting for output…</span>`}</pre>
     ${ro ? html`<p class="console-input small muted">AMP is read-only in this environment — the console is view-only.</p>` : html`<form class="console-input" onSubmit=${send}>
       <span class="mono muted" aria-hidden="true">›</span>
       <input ref=${inRef} class="input mono" aria-label=${`Command for ${server}`} placeholder="Type a command, e.g. list or say Restarting in 5 minutes" autocomplete="off" spellcheck="false"

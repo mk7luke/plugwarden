@@ -167,7 +167,7 @@ function Feed({ q }) {
         <span class=${"feed-icon " + (undone ? "" : jobTone(j))}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
         <div style="min-width:0"><a class="feed-title" href=${`#/activity/${j.id}`}>${j.group ? `${j.group} update checks` : jobTitle(j)}</a>
           ${j.dry_run ? html` <${Tag}>dry run<//>` : ""}${undone ? html` <${Tag}>reverted<//>` : ""}
-          ${j.summary && !j.group && html`<div class="feed-sum">${jobSummary(j)}</div>`}
+          ${!j.group && jobSummary(j) && html`<div class="feed-sum">${jobSummary(j)}</div>`}
           <div class="feed-meta"><span>${j.group ? "last " : ""}${relTime(j.started || j.created)}</span><span>·</span><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length > 1 ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
       </li>`; })}</ol>
       <div class="panel-foot"><a class="link small" href="#/activity">All activity</a></div>`}

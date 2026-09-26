@@ -238,6 +238,14 @@ def fetch_status(server_id: str, c: Client | None = None) -> dict:
     return parse_status(data, users)
 
 
+UNRESPONSIVE_BACKOFF = 60
+
+
+def _is_unresponsive(e: AmpError) -> bool:
+    msg = str(e)
+    return "Instance Unavailable" in msg or "Timeout" in msg
+
+
 def refresh_all() -> None:
     """Poll every mapped instance once and update the cache (errors are cached per server)."""
     try:
@@ -246,12 +254,21 @@ def refresh_all() -> None:
     except AmpError as e:
         _last_refresh.update(at=time.time(), error=str(e))
         return
+    now = time.time()
     for sid in mapping:
+        with _status_lock:
+            prev = _status.get(sid)
+        # A hung instance costs a full timeout per poll; back off so it doesn't stall the others.
+        if prev and prev.get("state") == "unresponsive" and now - prev.get("checked_at", 0) < UNRESPONSIVE_BACKOFF:
+            continue
         try:
             st = fetch_status(sid)
             st["error"] = None
         except AmpError as e:
-            st = {"state": "unknown", "error": str(e)}
+            if _is_unresponsive(e):
+                st = {"state": "unresponsive", "error": "AMP instance is not responding (ADS reports it unavailable)"}
+            else:
+                st = {"state": "unknown", "error": str(e)}
         st["checked_at"] = time.time()
         with _status_lock:
             _status[sid] = st
@@ -297,8 +314,8 @@ def _entry_line(e: dict) -> str:
     """AMP console entries carry the message in Contents, the level in Source and an ISO UTC Timestamp;
     render them like a server log line: "[HH:MM:SS LEVEL]: message" (local time)."""
     text = str(e.get("Contents", ""))
-    if text.startswith("["):
-        return text
+    if re.match(r"^\[\d{1,2}:\d{2}:\d{2}", text):
+        return text  # already a full log line
     ts = str(e.get("Timestamp") or "")
     hhmmss = ""
     try:
