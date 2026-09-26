@@ -60,11 +60,13 @@ export function knownIssues(report) {
   if (!report) return [];
   const first = (e) => (Array.isArray(e.excerpt) ? e.excerpt.find(l => /ERROR|SEVERE|WARN|Exception/i.test(l)) || e.excerpt[0] : e.excerpt) || "";
   const brief = (l) => l.replace(/^\[[^\]]*\]\s*(\[[^\]]*\]:?\s*)*/, "").slice(0, 160);
-  if (Array.isArray(report.preexisting_errors)) return report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: e.reason || brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt }));
-  return (report.plugins || []).flatMap(p => [
-    ...(p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt })),
-    ...(p.warnings || []).map(e => ({ name: pname(p), reason: e.reason || brief(first(e)), excerpt: e.excerpt })),
-  ]);
+  // Top-level list when the backend sends it; its `reason` is generic, so show the log line itself.
+  const known = Array.isArray(report.preexisting_errors)
+    ? report.preexisting_errors.map(e => ({ name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, seen_in_runs: e.seen_in_runs }))
+    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, seen_in_runs: e.seen_in_runs })));
+  // Errors that can't be judged yet (no earlier start to compare with) are only listed per plugin.
+  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ name: pname(p), reason: `${brief(first(e))} (no earlier start to compare)`, excerpt: e.excerpt })));
+  return [...known, ...warn];
 }
 
 // Warnings that were already there before the latest change (e.g. a UDP port already in use).
