@@ -70,11 +70,17 @@ export function knownIssues(report) {
   const brief = (l) => l.replace(/^(\[[^\]]*\]:?\s*)+/, "").slice(0, 160);
   // Top-level list when the backend sends it; its `reason` is generic, so show the log line itself.
   const known = Array.isArray(report.preexisting_errors)
-    ? report.preexisting_errors.map(e => ({ kind: e.kind, repeats: e.repeats, lines: typeof e.lines === "number" ? e.lines : undefined, group_size: e.group_size, name: e.name || e.plugin, reason: brief(first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
-    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ name: pname(p), reason: brief(first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level })));
+    ? report.preexisting_errors.map(e => ({ repeats: e.repeats, group_size: e.group_size, name: e.name || e.plugin, reason: brief(e.title || first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
+    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ repeats: e.repeats, group_size: e.group_size, name: pname(p), reason: brief(e.title || first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level })));
   // Errors that can't be judged yet (no earlier start to compare with) are only listed per plugin.
-  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ name: pname(p), reason: `${brief(first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
+  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ group_size: e.group_size, name: pname(p), reason: `${brief(e.title || first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
   return [...known, ...warn];
+}
+// Plugins nagging about their own updates in the log; separate from issues. null = backend doesn't send them (old shape).
+export function updateNotices(report) {
+  if (!report) return null;
+  const list = report.update_notices ?? (report.plugins?.some(p => p.update_notices) ? report.plugins.flatMap(p => p.update_notices || []) : null);
+  return list && list.map(n => ({ name: n.name || n.plugin, title: n.title }));
 }
 
 // Warnings that were already there before the latest change (e.g. a UDP port already in use).
@@ -104,12 +110,15 @@ function group(issues) {
   return out.filter(i => !DECOR.test(i.reason || ""));
 }
 
-export function KnownIssues({ issues, title = "Known issues on this server", sub = "seen in earlier starts — not caused by recent changes" }) {
+export function KnownIssues({ issues, notices, title = "Known issues on this server", sub = "seen in earlier starts — not caused by recent changes" }) {
   const [showWarn, setShowWarn] = useState(false);
   const [wid] = useState(() => "kw-" + Math.random().toString(36).slice(2, 8));
-  if (!issues?.length) return null;
-  const nags = issues.filter(i => i.kind === "update_notice" || NAG.test(i.reason || ""));
-  const real = group(issues.filter(i => !nags.includes(i)));
+  issues = issues || [];
+  if (!issues.length && !notices?.length) return null;
+  // The backend groups banners and splits out update nags; the client-side versions are a fallback for the old shape.
+  const nags = notices ?? issues.filter(i => NAG.test(i.reason || ""));
+  const rest = notices ? issues : issues.filter(i => !nags.includes(i));
+  const real = rest.some(i => i.group_size != null) ? rest.filter(i => !DECOR.test(i.reason || "")).map(i => ({ ...i, extra: (i.group_size || 1) - 1 })) : group(rest);
   // The same message logged by several code paths reads as one issue with a count.
   const merged = [...real.reduce((m, i) => { const k = `${i.name}|${i.reason}`; const g = m.get(k); g ? g.n += (i.repeats || 1) : m.set(k, { ...i, n: i.repeats || 1 }); return m; }, new Map()).values()];
   const errors = merged.filter(i => levelOf(i) === "error"), warnings = merged.filter(i => levelOf(i) !== "error");
@@ -138,7 +147,7 @@ export function ServerKnownIssues({ server }) {
       <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting && !/every start/.test(p.reason || "") ? " (on every start)" : ""}</span>
         ${p.running === false && html` <${Tag} kind="danger">Not running<//>`}<${Excerpt} ...${ex(p)} /></li>`)}</ul>
     </section>`}
-    <${KnownIssues} issues=${knownIssues(q.data)} />`;
+    <${KnownIssues} issues=${knownIssues(q.data)} notices=${updateNotices(q.data)} />`;
 }
 
 // On-demand startup report for one server since a point in time.
@@ -172,6 +181,6 @@ export function StartupCheck({ server, since, auto }) {
       <${HealthTag} h=${p} />${p.status === "failed" && p.preexisting && html`<${Tag} title="This failure also happened on earlier starts — not caused by this change">on every start<//>`}
       ${p.status === "healthy" && (p.preexisting_errors || []).length > 0 && html`<span class="small muted">known issues</span>`}
       ${lines(p.excerpt) && p.status !== "healthy" && html`<div class="canary-ex"><${Excerpt} ...${ex(p)} label=${p.reason || "Log excerpt"} /></div>`}</li>`)}</ul>`}
-    <${KnownIssues} issues=${knownIssues(st)} title="Known issues (already there before)" />
+    <${KnownIssues} issues=${knownIssues(st)} notices=${updateNotices(st)} title="Known issues (already there before)" />
   </div>`;
 }

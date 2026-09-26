@@ -989,7 +989,12 @@ body:has(.mx-bar) .toasts, body:has(.bulkbar) .toasts { bottom: 88px; }
 .known-more .i.rot90 { transform: rotate(90deg); }
 .startup .known { margin: 4px 0 0; background: transparent; }
 .known-more { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; margin-left: 22px; }
-.known-nag { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px dashed var(--line); padding-top: 6px; }
+.known-nag { border-top: 1px dashed var(--line); padding-top: 6px; }
+.known-nag .i { vertical-align: -2px; margin-right: 6px; }
+@media (max-width: 760px) {
+  .known > .row { flex-wrap: wrap; row-gap: 2px; }
+  .known > .row > .small.muted { flex-basis: 100%; padding-left: 24px; }
+}
 .known.is-failing { border-color: var(--danger-line); }
 .known.is-failing > .row > .i { color: var(--danger); }
 .log .l-hit { display: inline-block; min-width: 100%; background: var(--warn-soft); color: var(--fg); }
