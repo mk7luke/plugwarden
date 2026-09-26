@@ -5,7 +5,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("path"); ap.add_argument("out")
 ap.add_argument("--w", type=int, default=1440); ap.add_argument("--h", type=int, default=900)
 ap.add_argument("--full", action="store_true"); ap.add_argument("--click", action="append", default=[])
-ap.add_argument("--wait", type=int, default=800); ap.add_argument("--base", default="http://127.0.0.1:8095")
+ap.add_argument("--wait", type=int, default=800); ap.add_argument("--base", default="http://127.0.0.1:18095")
 a = ap.parse_args()
 async def main():
     async with async_playwright() as p:

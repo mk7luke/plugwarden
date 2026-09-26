@@ -78,7 +78,7 @@ across many servers). Must work at 390px phone width.
   CDN at runtime). Preact + htm (ESM, vendored) or vanilla ES modules are both fine.
 - Must run on Python 3.10, deps in `requirements.txt` (add `httpx` if needed).
 - **Never touch `/mnt/storage_ssd`**. Develop only with `dev/serve.sh` (sandbox copy on
-  http://127.0.0.1:8095). Port 8078 is production — do not stop, restart, or modify it or
+  http://127.0.0.1:18095). Port 8078 is production — do not stop, restart, or modify it or
   `/opt/lgt-amp-sync`. Do not edit `/usr/local/bin/amp-plugin-sync`.
 - Screenshots: `.venv/bin/python dev/shoot.py <path> <out.png> [--w 390 --h 844] [--full] [--click sel]`.
   Screenshots go in the scratchpad `shots/rN/` folder given in your task.

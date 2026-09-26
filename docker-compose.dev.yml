@@ -1,12 +1,12 @@
 # Dev/test against the SANDBOX copy (never the real datastore):
 #   LGT_SANDBOX=/path/to/sandbox docker compose -f docker-compose.yml -f docker-compose.dev.yml -p lgt-amp-sync-dev up -d --build
-# Auth is off; the port is published on 127.0.0.1:8095 only.
+# Auth is off; the port is published on 127.0.0.1:18095 only.
 services:
   lgt-amp-sync:
     container_name: lgt-amp-sync-dev
     user: "${LGT_UID:-1000}:${LGT_GID:-1000}"   # owner of the sandbox files
     ports: !override
-      - "127.0.0.1:8095:8078"
+      - "127.0.0.1:18095:8078"
     volumes: !override
       - ${LGT_SANDBOX:?set LGT_SANDBOX to the sandbox dir}/base:/sandbox/base
       - ${LGT_SANDBOX}/state:/var/lib/lgt-amp-sync

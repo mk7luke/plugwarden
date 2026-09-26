@@ -11,7 +11,7 @@ PlugWarden runs as the compose service `lgt-amp-sync` (name kept for deployment 
 | `Dockerfile` | `python:3.10-slim` + `rsync`, runs as uid/gid 1001 (`amp`), `HEALTHCHECK` on `GET /healthz`, uvicorn on `0.0.0.0:8078` inside the container |
 | `docker-compose.yml` | production: `container_name: lgt-amp-sync`, `restart: unless-stopped`, `user: "1001:1001"`, port `127.0.0.1:8078:8078` only, volumes `/mnt/storage_ssd/ssd-live` (same path inside) and `./data:/var/lib/lgt-amp-sync`, `env_file: .env` |
 | `.env.example` | the real Cloudflare Access values, the hostname and the datastore path. Copy it to `.env` |
-| `docker-compose.dev.yml` | override that mounts the **sandbox** instead, publishes `127.0.0.1:8095`, runs as the sandbox owner, auth off (`LGT_AUTH=none` + `LGT_AUTH_ALLOW_INSECURE=1`) |
+| `docker-compose.dev.yml` | override that mounts the **sandbox** instead, publishes `127.0.0.1:18095`, runs as the sandbox owner, auth off (`LGT_AUTH=none` + `LGT_AUTH_ALLOW_INSECURE=1`) |
 
 Why this is safe with `0.0.0.0` inside the container:
 - The port is published on the host's loopback only (`127.0.0.1:8078`). `cloudflared` on the host reaches it; the LAN cannot.
@@ -29,11 +29,11 @@ Real values (in `.env.example`, not in code):
 ```bash
 export LGT_SANDBOX=/path/to/scratchpad/sandbox          # contains base/ and state/
 docker compose -f docker-compose.yml -f docker-compose.dev.yml -p lgt-amp-sync-dev up -d --build
-curl -s http://127.0.0.1:8095/healthz
+curl -s http://127.0.0.1:18095/healthz
 docker compose -f docker-compose.yml -f docker-compose.dev.yml -p lgt-amp-sync-dev down
 ```
 
-Stop `dev/serve.sh` first, because both use port 8095. `LGT_UID`/`LGT_GID` pick the container user; the default 1000 matches the sandbox owner.
+Stop `dev/serve.sh` first, because both use port 18095. `LGT_UID`/`LGT_GID` pick the container user; the default 1000 matches the sandbox owner.
 
 ## 1b. Migrating from the systemd install
 
