@@ -6,9 +6,10 @@ from pathlib import Path
 
 APP_NAME = "PlugWarden"
 VERSION = "2.0"
-USER_AGENT = "plugwarden/2.0 (luke@interactep.com)"
+PROJECT_URL = "https://github.com/mk7luke/plugwarden"
+USER_AGENT = f"plugwarden/2.0 (+{PROJECT_URL})"
 REL_PLUGINS = Path("Minecraft/plugins")
-DEFAULT_BASE = "/mnt/storage_ssd/ssd-live"
+DEFAULT_BASE = "/home/amp/.ampdata/instances"  # AMP's default datastore
 USER_HEADER = "cf-access-authenticated-user-email"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
@@ -36,7 +37,9 @@ def init(base: str | None = None, state_dir: str | None = None, create: bool = T
     BASE = Path(base or override or os.environ.get("LGT_BASE", "").strip() or DEFAULT_BASE)
     STATE_DIR = Path(state_dir or os.environ.get("LGT_STATE_DIR", "").strip() or "/var/lib/lgt-amp-sync")
     global BIND, AUTH_MODE, CF_TEAM_DOMAIN, CF_AUD, ALLOWED_HOSTS, DOCS_ENABLED, MIN_FREE_BYTES, HOSTNAME
-    global ALLOW_INSECURE
+    global ALLOW_INSECURE, USER_AGENT
+    contact = os.environ.get("LGT_CONTACT", "").strip()  # sent to Modrinth etc. so they can reach the operator
+    USER_AGENT = f"plugwarden/{VERSION} ({contact})" if contact else f"plugwarden/{VERSION} (+{PROJECT_URL})"
     ALLOW_INSECURE = os.environ.get("LGT_AUTH_ALLOW_INSECURE", "").strip() == "1"
     BIND = os.environ.get("LGT_BIND", "127.0.0.1").strip() or "127.0.0.1"
     CF_TEAM_DOMAIN = os.environ.get("LGT_CF_TEAM_DOMAIN", "").strip().removeprefix("https://").rstrip("/")

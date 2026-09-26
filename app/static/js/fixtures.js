@@ -207,16 +207,16 @@ function matrix() {
 
 let jobSeq = 40;
 const jobs = [
-  { id: "j-39", kind: "update-apply", status: "done", user: "luke@interactep.com", started: iso(2 * HOUR + 3 * MIN), finished: iso(2 * HOUR), summary: "Updated LuckPerms 5.5.20 → 5.5.21 on 9 servers", undoable: true,
+  { id: "j-39", kind: "update-apply", status: "done", user: "admin@example.com", started: iso(2 * HOUR + 3 * MIN), finished: iso(2 * HOUR), summary: "Updated LuckPerms 5.5.20 → 5.5.21 on 9 servers", undoable: true,
     results: ["M1-hub01", "M3-hunger01", "M4-skyblock01", "M5-kitpvp01", "M6-creative01", "M7-bending01", "M8-lifesteal01", "M9-aerons-server01", "M0-proxy01"].map(s => ({ server: s, item: "LuckPerms", action: "replace", outcome: "changed", detail: "5.5.20 → 5.5.21" })),
     log: "$ update LuckPerms --to 5.5.21\n[stage] downloaded LuckPerms-Bukkit-5.5.21.jar (sha1 ok)\n[M1-hub01] backup → backups/j-39/M1-hub01/LuckPerms-Bukkit-5.5.20.jar\n[M1-hub01] replaced LuckPerms-Bukkit-5.5.20.jar → LuckPerms-Bukkit-5.5.21.jar\n...\ndone: 9 changed, 0 failed\n" },
-  { id: "j-38", kind: "deploy", status: "done", user: "mod.ops@interactep.com", started: iso(20 * HOUR), finished: iso(20 * HOUR - 40e3), summary: "Synced Essentials/config.yml to 7 servers (1 failed)", undoable: true,
+  { id: "j-38", kind: "deploy", status: "done", user: "ops@example.com", started: iso(20 * HOUR), finished: iso(20 * HOUR - 40e3), summary: "Synced Essentials/config.yml to 7 servers (1 failed)", undoable: true,
     results: [["M1-hub01", "changed"], ["M3-hunger01", "changed"], ["M4-skyblock01", "changed"], ["M5-kitpvp01", "changed"], ["M6-creative01", "failed"], ["M7-bending01", "changed"], ["M8-lifesteal01", "changed"]].map(([s, o]) => ({ server: s, item: "Essentials/config.yml", action: "sync", outcome: o === "failed" ? "error" : o, detail: o === "failed" ? "permission denied" : "updated (4.1 KB)" })),
     log: "$ rsync -a --itemize-changes elChapo01/Essentials/config.yml → 7 targets\n>f.st...... Essentials/config.yml  (M1-hub01)\n...\nERROR M6-creative01: rsync: open \"Essentials/config.yml\": Permission denied (13)\n" },
   { id: "j-37", kind: "update-check", status: "done", user: "auto", started: iso(26 * HOUR), finished: iso(26 * HOUR - 12e3), summary: "Checked 61 plugins — 9 updates available", undoable: false, results: [], log: "modrinth: 44 hashes resolved\nhangar: 1 mapped\nspiget: 2 mapped\ngithub: 3 mapped\n9 updates available\n" },
-  { id: "j-36", kind: "remove", status: "done", user: "luke@interactep.com", started: iso(3 * DAY), finished: iso(3 * DAY - 9e3), summary: "Removed TreeCuter from M4-skyblock01", undoable: true,
+  { id: "j-36", kind: "remove", status: "done", user: "admin@example.com", started: iso(3 * DAY), finished: iso(3 * DAY - 9e3), summary: "Removed TreeCuter from M4-skyblock01", undoable: true,
     results: [{ server: "M4-skyblock01", item: "TreeCuter-v2.0.5.jar", action: "delete", outcome: "changed", detail: "removed jar + folder" }], log: "deleting TreeCuter-v2.0.5.jar\ndeleting TreeCuter/\n" },
-  { id: "j-35", kind: "undo", status: "failed", user: "luke@interactep.com", started: iso(4 * DAY), finished: iso(4 * DAY - 2e3), summary: "Undo of j-33 failed — backups expired", undoable: false,
+  { id: "j-35", kind: "undo", status: "failed", user: "admin@example.com", started: iso(4 * DAY), finished: iso(4 * DAY - 2e3), summary: "Undo of j-33 failed — backups expired", undoable: false,
     results: [], log: "ERROR: backup set j-33 not found in STATE_DIR/backups\n" },
 ];
 
@@ -233,7 +233,7 @@ function delay(v, ms = 280) { return new Promise(r => setTimeout(() => r(structu
 
 function newJob(kind, summary, results = []) {
   const id = `j-${++jobSeq}`;
-  const j = { id, kind, status: "running", user: "luke@interactep.com", created: new Date().toISOString(), started: new Date().toISOString(), finished: null, summary, results, log: "", undoable: false, dry_run: false, servers: [...new Set(results.map(r => r.server))] };
+  const j = { id, kind, status: "running", user: "admin@example.com", created: new Date().toISOString(), started: new Date().toISOString(), finished: null, summary, results, log: "", undoable: false, dry_run: false, servers: [...new Set(results.map(r => r.server))] };
   jobs.unshift(j);
   return j;
 }
@@ -307,7 +307,7 @@ export async function handle(method, path, body) {
         ...{},
       restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), auto_update: { mode: "apply", next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString(), effective_canary: "elChapo01",
           canary: [{ key: "bukkit:coreprotect", name: "CoreProtect", version: "23.4", server: "elChapo01", soak_hours_left: 9, canary_health: { status: "healthy", reason: "Enabling CoreProtect v23.4 logged", excerpt: [], log: "latest.log", checked_at: iso(20 * MIN) } }],
-          held: [{ key: "bukkit:plugmanx", name: "PlugManX", version: "3.0.3", server: "elChapo01", at: iso(3 * HOUR), reason: "Error occurred while enabling PlugManX v3.0.3", excerpt: ["[12:04:11 ERROR]: Error occurred while enabling PlugManX v3.0.3 (Is it up to date?)", "java.lang.NoClassDefFoundError: com/…/PaperPluginManager"] }] }, user: "luke@interactep.com" });
+          held: [{ key: "bukkit:plugmanx", name: "PlugManX", version: "3.0.3", server: "elChapo01", at: iso(3 * HOUR), reason: "Error occurred while enabling PlugManX v3.0.3", excerpt: ["[12:04:11 ERROR]: Error occurred while enabling PlugManX v3.0.3 (Is it up to date?)", "java.lang.NoClassDefFoundError: com/…/PaperPluginManager"] }] }, user: "admin@example.com" });
     }
     if (p === "/servers") return delay(servers());
     if ((m = p.match(/^\/servers\/([^/]+)\/plugins$/))) {
@@ -334,7 +334,7 @@ export async function handle(method, path, body) {
         { key: "bukkit:coreprotect", name: "CoreProtect", version: "24.1", status: "healthy", reason: "Enabling CoreProtect v24.1", excerpt: [], log: "latest.log" }],
       preexisting_errors: [{ key: "bukkit:essentials", name: "Essentials", level: "error", reason: "You are running an unsupported server version!", excerpt: ["[22:09:40 ERROR]: [Essentials] You are running an unsupported server version!"], match_index: 0, log: "latest.log", seen_in_runs: 3 },
         { key: "bukkit:voicechat", name: "voicechat", level: "warning", reason: "Failed to bind UDP port 24454 (address already in use)", excerpt: ["[WARN] [voicechat] Failed to bind to 0.0.0.0:24454 — java.net.BindException: Address already in use"], log: "latest.log", seen_in_runs: 4 }] }, 400);
-    if (p === "/access-log") return delay({ entries: [{ at: iso(3 * MIN), user: "luke@interactep.com", action: "diff", servers: ["elChapo01", "M1-hub01"], path: "LuckPerms/config.yml", detail: "2 value(s) redacted" }] });
+    if (p === "/access-log") return delay({ entries: [{ at: iso(3 * MIN), user: "admin@example.com", action: "diff", servers: ["elChapo01", "M1-hub01"], path: "LuckPerms/config.yml", detail: "2 value(s) redacted" }] });
   }
   if (method === "PUT" && p === "/settings") { Object.assign(settings, body); return delay(settings); }
   if (method === "POST") {

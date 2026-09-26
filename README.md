@@ -4,7 +4,7 @@
 
 # PlugWarden
 
-**The plugin control tower for Minecraft networks running on CubeCoders AMP.**
+**The plugin control tower for Minecraft networks running on [CubeCoders AMP](https://cubecoders.com/AMP).**
 
 See every plugin on every server at a glance. Update the whole network in two clicks,<br>
 push configs without clobbering each server's identity, and undo anything.
@@ -133,14 +133,16 @@ cp .env.example .env && chmod 600 .env      # then edit it (see below)
 mkdir -p data && sudo chown "$(id -u amp):$(id -g amp)" data && sudo chmod 700 data
 ```
 
-Edit `docker-compose.yml` so the container runs as your AMP user and mounts your datastore **at the same path inside the container**:
+In `.env`, point PlugWarden at your AMP datastore and user (`id -u amp`, `id -g amp`) and fill in your Cloudflare Access values:
 
-```yaml
-    user: "1001:1001"                  # output of: id -u amp ; id -g amp
-    volumes:
-      - /home/amp/.ampdata/instances:/home/amp/.ampdata/instances
-      - ./data:/var/lib/lgt-amp-sync
-      - /etc/localtime:/etc/localtime:ro
+```ini
+AMP_DATASTORE=/home/amp/.ampdata/instances      # mounted at the same path inside the container
+LGT_BASE_OVERRIDE=/home/amp/.ampdata/instances
+PLUGWARDEN_UID=1001
+PLUGWARDEN_GID=1001
+LGT_CF_TEAM_DOMAIN=yourteam.cloudflareaccess.com
+LGT_CF_AUD=<your Access application's AUD tag>
+LGT_HOSTNAME=plugins.example.com
 ```
 
 Then:
@@ -156,12 +158,15 @@ The port is published on `127.0.0.1` only. Point your Cloudflare Tunnel at `http
 
 | Variable | Example | What it does |
 |---|---|---|
-| `LGT_BASE_OVERRIDE` | `/home/amp/.ampdata/instances` | Your AMP datastore (same path as mounted). |
+| `AMP_DATASTORE` | `/home/amp/.ampdata/instances` | Host path of your AMP datastore (mounted at the same path). |
+| `PLUGWARDEN_UID` / `PLUGWARDEN_GID` | `1001` | Your AMP user, so file ownership never changes. |
+| `LGT_BASE_OVERRIDE` | `/home/amp/.ampdata/instances` | The datastore path as the app sees it (same as above). |
 | `LGT_AUTH` | `cf-access` | Verify the Cloudflare Access JWT on every request. |
 | `LGT_CF_TEAM_DOMAIN` | `yourteam.cloudflareaccess.com` | Your Zero Trust team domain. |
 | `LGT_CF_AUD` | `4f1c…e9` | The Access application's Audience (AUD) tag. |
 | `LGT_HOSTNAME` | `plugins.example.com` | Public hostname; added to the Host allowlist. |
 | `LGT_ALLOWED_HOSTS` | | Extra allowed `Host` headers (comma-separated). |
+| `LGT_CONTACT` | `you@example.com` | Contact sent in the User-Agent to Modrinth & co. (recommended). |
 | `LGT_MIN_FREE_GB` | `2` | Refuse new jobs when disk space runs low. |
 
 Everything else — default source server, server groups, update-source mappings, pins and ignores, auto-update policy, backup retention — lives in **Settings** in the UI.
@@ -212,5 +217,5 @@ Develop against a **copy** of your datastore (`LGT_SANDBOX=/path/to/sandbox dev/
 ---
 
 <div align="center">
-<sub>Built for the <b>LGT Network</b>. Not affiliated with CubeCoders, Mojang or Modrinth.</sub>
+<sub>MIT licensed · Built for the <b>LGT Network</b> · Not affiliated with CubeCoders, Mojang or Modrinth.</sub>
 </div>

@@ -1,8 +1,8 @@
 # PlugWarden: Critique, round 7
 
 Evidence paths:
-- `r7/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r7/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r7-critic/` (mine, captured live on :18095)
+- `r7/` = `<scratchpad>/shots/r7/` (designer)
+- `rc/` = `<scratchpad>/shots/r7-critic/` (mine, captured live on :18095)
 - Contact sheets: `rc/sheet-{d1440,l1440,d390,l390}.png`, built from 17 views × 4 modes (68 full-page shots in `rc/sweep/`)
 
 All testing was read-only. Every Execute, Apply and Undo request was intercepted in the browser. Error states were produced by intercepting GETs in the browser.

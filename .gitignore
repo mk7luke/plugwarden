@@ -8,3 +8,4 @@ data/
 .env.amp
 .env.*
 !.env.example
+sandbox/

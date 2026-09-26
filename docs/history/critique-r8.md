@@ -1,8 +1,8 @@
 # PlugWarden: Critique, round 8
 
 Evidence paths:
-- `r8/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r8/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r8-critic/` (mine, captured live on :18095)
+- `r8/` = `<scratchpad>/shots/r8/` (designer)
+- `rc/` = `<scratchpad>/shots/r8-critic/` (mine, captured live on :18095)
 - Full sweep: `rc/sweep/`, 17 views × dark/light × 1440/390. Contact sheets: `rc/sheet-{d390,l390}.png`
 
 All testing was read-only. Execute, Apply and Undo were intercepted in the browser, and none were sent. The only requests that reached the server were deploy plans (dry runs).

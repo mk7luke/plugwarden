@@ -1,8 +1,8 @@
 # PlugWarden (LGT AMP Sync 2.0): Critique, round 5
 
 Evidence paths:
-- `r5/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r5/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r5-critic/` (mine)
+- `r5/` = `<scratchpad>/shots/r5/` (designer)
+- `rc/` = `<scratchpad>/shots/r5-critic/` (mine)
 - Contact sheets: `rc/sheet-{d1440,l1440,d390,l390}.png`, built from 16 views × 4 modes (64 full-page shots in `rc/sweep/`)
 
 **Note on the environment:** the sandbox moved from :8095 to **:18095** mid-review. It was restarted with the excerpt fix. The full sweep ran on the pre-restart build, and I re-verified every health-related finding on :18095.

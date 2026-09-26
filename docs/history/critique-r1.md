@@ -1,8 +1,8 @@
 # LGT AMP Sync 2.0: Critique, round 1
 
 Evidence paths are abbreviated as follows:
-- `r1/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r1/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r1-critic/` (mine, captured live on :8095)
+- `r1/` = `<scratchpad>/shots/r1/` (designer)
+- `rc/` = `<scratchpad>/shots/r1-critic/` (mine, captured live on :8095)
 
 I ran one real dry run ("Update all → Preview changes"). I executed nothing else.
 

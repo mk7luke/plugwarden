@@ -1,8 +1,8 @@
 # LGT AMP Sync 2.0: Critique, round 3
 
 Evidence paths:
-- `r3/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r3/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r3-critic/` (mine, captured live on :8095 and :8096)
+- `r3/` = `<scratchpad>/shots/r3/` (designer)
+- `rc/` = `<scratchpad>/shots/r3-critic/` (mine, captured live on :8095 and :8096)
 
 Everything I did was read-only: plans, sheets, one dry-run `POST /deploy` (rejected with 409 as designed), and API probes. I executed nothing.
 

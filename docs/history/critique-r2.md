@@ -1,8 +1,8 @@
 # LGT AMP Sync 2.0: Critique, round 2
 
 Evidence paths:
-- `r2/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r2/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r2-critic/` (mine, captured live on :8095)
+- `r2/` = `<scratchpad>/shots/r2/` (designer)
+- `rc/` = `<scratchpad>/shots/r2-critic/` (mine, captured live on :8095)
 
 Everything I did was read-only. I opened the sheets and plans, ran `POST /deploy/plan` (a dry run), and applied nothing.
 

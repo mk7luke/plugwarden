@@ -1,8 +1,8 @@
 # LGT AMP Sync 2.0: Critique, round 4
 
 Evidence paths:
-- `r4/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r4/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r4-critic/` (mine, captured live on :8095)
+- `r4/` = `<scratchpad>/shots/r4/` (designer)
+- `rc/` = `<scratchpad>/shots/r4-critic/` (mine, captured live on :8095)
 - `rc/sweep/` = every view × {dark 1440, light 1440, dark 390, light 390}: 14 views × 4 = 56 full-page shots. Contact sheets are `rc/sheet-{d1440,l1440,d390,l390}.png`
 
 All testing was read-only. Every Execute, Apply and Undo request was **intercepted in the browser** and answered with a fake 409, so nothing reached the server. The server-side checks I triggered (a 400 settings validation, a 403 missing-CSRF, a 422 replace-folder and a 400 bad Host) are all rejected before any write.

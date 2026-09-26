@@ -3,8 +3,8 @@
 > **Superseded (2026-09-26):** the owner removed the AMP integration. P1-1 (command guard bypass), P1-2 (proxy restart warnings) and AMP P2s 2–6 no longer apply. Two late AMP findings are also moot: the protected-command confirm dialog rendered underneath the console sheet (invisible and unclickable), and rolling restarts ran the full warning countdown on empty servers. **Still open for round 7:** P1-3 (Known-issues noise) and P2-1 (duplicated "(on every start)"). Round 7 must also verify the AMP removal leaves nothing behind.
 
 Evidence paths:
-- `r6/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r6/` (designer)
-- `rc/` = `/tmp/claude-1000/-home-luke-lgt-amp-sync/0cf2f751-d945-45e5-89cc-a0b56688015d/scratchpad/shots/r6-critic/` (mine, captured live on :18095 against the mock AMP on :18100)
+- `r6/` = `<scratchpad>/shots/r6/` (designer)
+- `rc/` = `<scratchpad>/shots/r6-critic/` (mine, captured live on :18095 against the mock AMP on :18100)
 
 **Environment note.** Partway through my session the sandbox switched to `readonly: true`, marked M8-lifesteal01 and M9-homestead01 `unresponsive`, and the mock briefly refused connections. I assume someone else was testing states. I used that window to review the read-only, unresponsive and offline states live.
 
