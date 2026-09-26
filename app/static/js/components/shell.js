@@ -1,7 +1,7 @@
 // App shell: sidebar, top bar, mobile tab bar + drawer.
 import { html, useRef, useEffect } from "../lib.js";
 import { useStore, setState, useQuery, setTheme, invalidate } from "../store.js";
-import { Icon, Btn, Kbd, modKey, trapTab } from "./ui.js";
+import { Icon, Btn, Kbd, modKey, trapTab, restoreFocus } from "./ui.js";
 import { checkUpdates } from "../actions.js";
 import { isActive } from "../jobs.js";
 import { relTime, initials } from "../fmt.js";
@@ -73,12 +73,23 @@ export function Sidebar({ route }) {
 
 export function Drawer({ route }) {
   const open = useStore(s => s.drawer);
+  return open ? html`<${DrawerPanel} route=${route} />` : null;
+}
+
+function DrawerPanel({ route }) {
   const { data: ov } = useQuery("/overview");
-  if (!open) return null;
+  const ref = useRef();
   const close = () => setState({ drawer: false });
+  useEffect(() => {
+    const prev = document.activeElement;
+    ref.current?.querySelector("[data-autofocus]")?.focus();
+    const k = (e) => { if (e.key === "Escape") close(); trapTab(e, ref.current); };
+    document.addEventListener("keydown", k);
+    return () => { document.removeEventListener("keydown", k); restoreFocus(prev); };
+  }, []);
   return html`<div class="scrim" onClick=${close}></div>
-  <aside class="drawer" role="dialog" aria-modal="true" aria-label="Navigation" onKeyDown=${e => { if (e.key === "Escape") close(); trapTab(e, e.currentTarget); }}>
-    <div class="row"><${Brand} /><span class="grow"></span><${Btn} kind="ghost" icon="x" aria-label="Close menu" onClick=${close} /></div>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-label="Navigation" ref=${ref}>
+    <div class="row"><${Brand} /><span class="grow"></span><${Btn} kind="ghost" icon="x" aria-label="Close menu" onClick=${close} data-autofocus /></div>
     <${NavList} route=${route} ov=${ov} onNav=${close} />
     <${SideFoot} ov=${ov} route=${route} onNav=${close} />
   </aside>`;

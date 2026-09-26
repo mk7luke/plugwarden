@@ -4,7 +4,7 @@ import { useQuery, invalidate, toast, confirmDialog } from "../store.js";
 import { put } from "../api.js";
 import { Icon, Btn, Tag, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, ServerChip, Skel } from "../components/ui.js";
 import { checkUpdates, openUpdateAll } from "../actions.js";
-import { openChangeset, CompatChip } from "../components/changeset.js";
+import { openChangeset, CompatChip, Changelog } from "../components/changeset.js";
 import { updateCounts, checkLine, updatesOf, compatOf } from "../summary.js";
 import { CanaryStatus, HealthTag } from "../components/health.js";
 import { relTime, absTime, plural, safeUrl } from "../fmt.js";
@@ -49,6 +49,7 @@ export function Updates() {
                 ${u.source?.overrides_modrinth && html`<div style="margin-top:4px"><${Tag} kind="warn" icon="triangle-alert">manual source overrides Modrinth (${u.source.overrides_modrinth.name || u.source.overrides_modrinth.slug})<//></div>`}
                 ${u.source?.manual && !u.source?.auto_apply && html`<div class="small muted" style="margin-top:2px">Manual source — never applied automatically</div>`}
                 <${CompatSummary} u=${u} mcOf=${mcOf} />
+                <${Changelog} r=${u} />
               </div>
               <${Chips} ids=${u.servers} />
               <${Btn} size="sm" data-nav onClick=${() => review([u])} aria-label=${`Review ${u.name} update on ${plural(u.servers.length, "server")}`}>Review<//>

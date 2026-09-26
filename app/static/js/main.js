@@ -1,7 +1,7 @@
 // Entry: shell + router + global shortcuts.
 import { html, render, useEffect } from "./lib.js";
 import { useRoute, navigate } from "./router.js";
-import { setState, getState, prefetch, peek, invalidate, useQuery } from "./store.js";
+import { setState, getState, prefetch, peek, invalidate, useQuery, dismissToast } from "./store.js";
 import { trackJob, JOB_TITLES, kindTitle } from "./jobs.js";
 import { Sidebar, Topbar, Tabbar, Drawer } from "./components/shell.js";
 import { Toasts, ConfirmHost, Palette, Dock, NAV, Shortcuts } from "./components/overlays.js";
@@ -58,7 +58,8 @@ function App() {
   const [content, crumbs, wide] = view(route);
   useEffect(() => {
     document.title = `${crumbs ? crumbs[crumbs.length - 1].label : TITLES[route.name] || "Not found"} · PlugWarden`;
-    setState({ drawer: false });
+    // Sheets and dialogs belong to the page they were opened on (Back/Forward must not leave one over another page).
+    setState({ drawer: false, changeset: null, inlineJob: null, removePlugin: null, mapSource: null, pluginDrawer: null });
     document.getElementById("main")?.focus({ preventScroll: true });
     window.scrollTo(0, 0);
   }, [route.name, route.parts.join("/")]);
@@ -82,6 +83,8 @@ function App() {
         return;
       }
       if (e.key === "?") { e.preventDefault(); setState({ shortcuts: true }); return; }
+      // z: undo the job that just finished, while its undo toast is showing.
+      if (k === "z") { const t = [...getState().toasts].reverse().find(x => x.undo); if (t) { e.preventDefault(); t.action.run(); dismissToast(t.id); } return; }
       if (k === "g") { g = Date.now(); return; }
       if (Date.now() - g < 900) {
         const hit = NAV.find(n => n[3] === `g ${k}`);

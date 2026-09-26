@@ -1,5 +1,6 @@
 // Dashboard — one headline ("is anything out of date?"), every server at a glance, recent real changes.
-import { html, useMemo, useState } from "../lib.js";
+import { html, useMemo, useState, useEffect } from "../lib.js";
+import { FIXTURES } from "../api.js";
 import { useQuery, useStore } from "../store.js";
 import { Icon, Btn, Tag, Platform, VerArrow, Skel, ErrorState, Empty } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
@@ -7,11 +8,13 @@ import { checkUpdates } from "../actions.js";
 import { relTime, absTime, plural } from "../fmt.js";
 import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { updateCounts, updateHeadline, updateDetail, restartList, checkLine, updatesOf } from "../summary.js";
-import { CanaryStatus } from "../components/health.js";
+import { CanaryStatus, causeShort } from "../components/health.js";
 
 const MODE = { off: "Off", notify: "Notify only", apply: "Automatic" };
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+// Move the viewer's "last looked" marker forward. keepalive lets it finish while the tab is closing.
+const markSeen = () => fetch("/api/v2/seen", { method: "POST", keepalive: true, headers: { "X-Requested-With": "lgt-amp-sync", "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
 
 export function Dashboard() {
   const ov = useQuery("/overview");
@@ -33,12 +36,22 @@ export function Dashboard() {
   }, [mx.data]);
 
   const d = ov.data;
+  // "Since you last looked" is frozen for this visit, so it doesn't vanish while being read;
+  // the marker moves forward when the user leaves the Dashboard or hides the tab.
+  const [since, setSince] = useState(null);
+  useEffect(() => { if (d && since === null) setSince(d.since_last_visit || false); }, [d]);
+  useEffect(() => {
+    if (FIXTURES) return;
+    const hide = () => document.visibilityState === "hidden" && markSeen();
+    document.addEventListener("visibilitychange", hide);
+    return () => { document.removeEventListener("visibilitychange", hide); markSeen(); };
+  }, []);
   const c = d && updateCounts(d, up.data);
   const restarts = restartList(d);
 
   return html`
     <h1 class="sr-only">Dashboard</h1>
-    ${ov.error ? html`<${ErrorState} error=${ov.error} retry=${ov.reload} />` : html`<${Headline} d=${d} c=${c} restarts=${restarts} />`}
+    ${ov.error ? html`<${ErrorState} error=${ov.error} retry=${ov.reload} />` : html`<${Headline} d=${d} c=${c} restarts=${restarts} since=${since} />`}
 
     <div class="dash-grid">
       <section aria-labelledby="srv-h">
@@ -58,7 +71,22 @@ export function Dashboard() {
     </div>`;
 }
 
-function Headline({ d, c, restarts }) {
+// "Since you last looked (yesterday 9:14 PM): 3 new updates (LuckPerms 5.5.23, …) · 1 plugin stopped running · 2 changes by others".
+function SinceLine({ s }) {
+  if (!s?.at) return null;
+  const nu = s.new_updates_total ?? s.new_updates.length, nf = s.new_failures.length, nj = s.jobs_by_others.length;
+  if (!nu && !nf && !nj) return html`<p class="hl-since"><${Icon} n="clock" cls="i-sm" /><span>Nothing new since you last looked <span class="muted" title=${absTime(s.at)}>(${relTime(s.at)})</span></span></p>`;
+  const names = (xs, f, n = 2) => xs.slice(0, n).map(f).join(", ") + (xs.length > n ? ", …" : "");
+  const who = [...new Set(s.jobs_by_others.map(j => j.user || "someone"))];
+  const parts = [
+    nu && html`<a class="link" href="#/updates">${plural(nu, "new update")}</a> <span class="muted">(${names(s.new_updates, u => `${u.name} ${u.to_version}`)})</span>`,
+    nf && html`<a class="link" href=${`#/servers/${encodeURIComponent(s.new_failures[0].server)}`}>${plural(nf, "plugin")} stopped running</a> <span class="muted">(${names(s.new_failures, f => `${f.name} on ${f.server}`)})</span>`,
+    nj && html`<a class="link" href=${`#/activity/${s.jobs_by_others[0].id}`}>${plural(nj, "change")} by ${who.slice(0, 2).join(" and ")}${who.length > 2 ? " and others" : ""}</a>`,
+  ].filter(Boolean);
+  return html`<p class="hl-since"><${Icon} n="clock" cls="i-sm" /><span><b>Since you last looked</b> <span class="muted" title=${absTime(s.at)}>(${relTime(s.at)})</span>: ${parts.map((x, i) => i ? [" · ", x] : x)}</span></p>`;
+}
+
+function Headline({ d, c, restarts, since }) {
   const checking = useStore(s => s.jobs.some(j => isActive(j.status) && j.title === "Update check"));
   if (!d) return html`<div class="headline" aria-busy="true"><span class="ub-icon skel"></span><div class="grow"><${Skel} w="40%" h=${14} /><${Skel} w="60%" h=${9} style="margin-top:8px" /></div><${Skel} w="160px" h=${32} /></div>`;
   const has = c.plugins > 0;
@@ -77,7 +105,8 @@ function Headline({ d, c, restarts }) {
         ${d.auto_update?.mode === "apply" && d.auto_update?.effective_canary && html` · canary <b>${d.auto_update.effective_canary}</b>${(() => { const soak = (d.auto_update.canary || []).filter(c => c.canary_health !== "failed"); return soak.length ? ` soaking ${plural(soak.length, "update")}, ${Math.ceil(Math.max(...soak.map(c => c.soak_hours_left || 0)))} h left` : ""; })()}`}</p>
 <${CanaryStatus} au=${d.auto_update} compact=${true} />
       ${(() => { const f = d.servers.flatMap(s => (s.startup?.failed || []).map(p => ({ ...p, server: s.id }))); return f.length > 0 && html`<p class="hl-canary-fail"><${Icon} n="circle-x" cls="i-sm" />
-        <b>${plural(f.length, "plugin")} ${f.length === 1 ? "is" : "are"} not running:</b> <span>${f.slice(0, 3).map(p => html`<a class="link" href=${`#/servers/${encodeURIComponent(p.server)}`}>${p.name} on ${p.server}</a>`).reduce((a, x, i) => i ? [...a, ", ", x] : [x], [])}${f.length > 3 ? ` +${f.length - 3} more` : ""}</span></p>`; })()}
+        <b>${plural(f.length, "plugin")} ${f.length === 1 ? "is" : "are"} not running:</b> <span>${f.slice(0, 3).map(p => html`<a class="link" href=${`#/servers/${encodeURIComponent(p.server)}`}>${p.name} on ${p.server}</a>${causeShort(p.cause) ? html`<span class="muted"> (${causeShort(p.cause)})</span>` : ""}`).reduce((a, x, i) => i ? [...a, ", ", x] : [x], [])}${f.length > 3 ? ` +${f.length - 3} more` : ""}</span></p>`; })()}
+      <${SinceLine} s=${since} />
       ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
         <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>

@@ -1,7 +1,7 @@
 // Background job tracking: start or attach to a job, stream its log into the dock, toast the result.
-import { streamJob, get } from "./api.js";
-import { setState, getState, toast, invalidate } from "./store.js";
-import { relTime } from "./fmt.js";
+import { streamJob, get, post } from "./api.js";
+import { setState, getState, toast, invalidate, confirmDialog } from "./store.js";
+import { relTime, plural } from "./fmt.js";
 
 const patch = (id, p) => setState(s => ({ jobs: s.jobs.map(j => j.id === id ? { ...j, ...p } : j) }));
 
@@ -73,6 +73,12 @@ export function trackJob(id, { title, onDone, quiet } = {}) {
           body: job?.summary,
           href: `#/activity/${id}`,
         });
+        // Most undos happen in the first minute: offer it right here for 10 s (also on "z").
+        if (UNDO_KINDS.has(job?.kind) && !job.dry_run && st === "done" && job.undoable) toast({
+          kind: "ok", title: `${title || kindTitle(job.kind)} finished`, body: job.summary,
+          timeout: 10000, countdown: 10, undo: true, href: `#/activity/${id}`,
+          action: { label: "Undo", run: () => undoJob(job) },
+        });
         invalidate("/overview", "/servers", "/matrix", "/updates", "/jobs");
         onDone?.(job);
         resolve(job);
@@ -84,3 +90,17 @@ export function trackJob(id, { title, onDone, quiet } = {}) {
 
 export const dismissJob = (id) => setState(s => ({ jobs: s.jobs.filter(j => j.id !== id) }));
 export const toggleJobMin = (id) => setState(s => ({ jobs: s.jobs.map(j => j.id === id ? { ...j, min: !j.min } : j) }));
+
+const UNDO_KINDS = new Set(["update-apply", "deploy", "remove"]);
+// Restore a job's backups. Wide undos (more than 3 servers) still get the confirmation Activity uses.
+export async function undoJob(job) {
+  const servers = job.servers || [];
+  if (servers.length > 3) {
+    const ok = await confirmDialog({
+      title: `Undo ${kindTitle(job.kind).toLowerCase()}?`, confirmLabel: "Restore backups", danger: true, list: servers,
+      body: `Files changed by this job will be restored from its backups on ${plural(servers.length, "server")}. The undo itself is recorded as a new job.`,
+    });
+    if (!ok) return null;
+  }
+  return runJob(post(`/jobs/${encodeURIComponent(job.id)}/undo`), { title: `Undo ${jobTitle(job).replace(/^./, c => c.toLowerCase())}` });
+}

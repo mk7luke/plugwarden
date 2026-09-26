@@ -41,7 +41,8 @@ export function Deploy({ query }) {
   const [nonce, setNonce] = useState(0);       // bump to re-plan
   const [planInfo, setPlanInfo] = useState(null); // {changes, servers} for the mobile bar
 
-  useEffect(() => { if (!source && settings.data) setSource(settings.data.default_source || servers.data?.[0]?.id); }, [settings.data, servers.data]);
+  useEffect(() => { if (!source && settings.data) setSource(query.source || settings.data.default_source || servers.data?.[0]?.id); }, [settings.data, servers.data]);
+  useEffect(() => { if (query.source) setSource(query.source); }, [query.source]);
   useEffect(() => {
     const list = (v) => (v || "").split(",").filter(Boolean);
     if (query.jar || query.folders || query.paths) setItems(i => ({ ...i, jars: list(query.jar), folders: list(query.folders), paths: list(query.paths) }));

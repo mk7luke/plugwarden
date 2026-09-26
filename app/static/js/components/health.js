@@ -36,6 +36,22 @@ const ex = (e) => ({ text: e?.excerpt, hl: e?.match_index, log: e?.log, line: e?
 const pname = (r) => r.name || (r.key || "").split(":").pop();
 
 // Canary rows + held versions from overview.auto_update.
+// Why a plugin isn't running, as classified by the backend, plus the next step.
+const CAUSE = { port_in_use: "Port in use", missing_dependency: "Missing dependency", unsupported_version: "Unsupported version", config_error: "Config error" };
+// Short form for one-line summaries (Dashboard headline): "port 24454 in use", "needs TheCore".
+export function causeShort(c) {
+  if (!c || !CAUSE[c.kind]) return "";
+  if (c.kind === "port_in_use") return c.detail?.port ? `${c.detail.protocol || ""} port ${c.detail.port} in use`.trim() : "port in use";
+  if (c.kind === "missing_dependency") { const d = (c.detail?.dependencies || []).filter(x => !x.installed).map(x => x.name); return d.length ? `needs ${d.join(", ")}` : "missing dependency"; }
+  return CAUSE[c.kind].toLowerCase();
+}
+export function Cause({ cause, server }) {
+  if (!cause || !CAUSE[cause.kind]) return null;
+  const deps = cause.kind === "missing_dependency" ? (cause.detail?.dependencies || []).filter(d => !d.installed && d.on_source && d.source_jar && server) : [];
+  return html`<div class="cause small"><${Icon} n="info" cls="i-xs" /><span><b>${CAUSE[cause.kind]}:</b> ${cause.suggestion || ""}
+    ${deps.map(d => html` <a class="link" href=${`#/deploy?source=${encodeURIComponent(d.source)}&jar=${encodeURIComponent(d.source_jar)}&targets=${encodeURIComponent(server)}&action=install`}>Deploy ${d.name} from ${d.source}</a>`)}</span></div>`;
+}
+
 export function CanaryStatus({ au, compact }) {
   const rows = au?.canary || [];
   const held = au?.held || [];
@@ -52,7 +68,7 @@ export function CanaryStatus({ au, compact }) {
       <span class="grow"><b>${pname(r)} ${r.version}</b> <span class="muted">on ${r.server}</span></span>
       <${HealthTag} h=${r.canary_health} />
       ${st === "healthy" && r.soak_hours_left > 0 && html`<span class="small muted">${Math.ceil(r.soak_hours_left)} h soak left</span>`}
-      ${st === "failed" && html`<div class="canary-ex"><${Excerpt} ...${ex(r.canary_health)} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
+      ${st === "failed" && html`<div class="canary-ex"><${Cause} cause=${r.canary_health?.cause} server=${r.server} /><${Excerpt} ...${ex(r.canary_health)} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
     </li>`; })}</ul>`}
     ${held.length > 0 && html`<div class="field-label" style="margin-top:8px">Held — never auto-applied</div>
     <ul>${held.map(h => html`<li><span class="grow"><b>${pname(h)} ${h.version}</b> <span class="muted">failed on ${h.server} ${relTime(h.at)}</span></span>
@@ -70,10 +86,10 @@ export function knownIssues(report) {
   const brief = (l) => l.replace(/^(\[[^\]]*\]:?\s*)+/, "").slice(0, 160);
   // Top-level list when the backend sends it; its `reason` is generic, so show the log line itself.
   const known = Array.isArray(report.preexisting_errors)
-    ? report.preexisting_errors.map(e => ({ repeats: e.repeats, group_size: e.group_size, name: e.name || e.plugin, reason: brief(e.title || first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
-    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ repeats: e.repeats, group_size: e.group_size, name: pname(p), reason: brief(e.title || first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level })));
+    ? report.preexisting_errors.map(e => ({ key: e.key, repeats: e.repeats, group_size: e.group_size, name: e.name || e.plugin, reason: brief(e.title || first(e)) || e.reason, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level }))
+    : (report.plugins || []).flatMap(p => (p.preexisting_errors || []).map(e => ({ key: p.key, repeats: e.repeats, group_size: e.group_size, name: pname(p), reason: brief(e.title || first(e)) || "error seen in earlier starts too", excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line, seen_in_runs: e.seen_in_runs, level: e.level })));
   // Errors that can't be judged yet (no earlier start to compare with) are only listed per plugin.
-  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ group_size: e.group_size, name: pname(p), reason: `${brief(e.title || first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
+  const warn = (report.plugins || []).flatMap(p => (p.warnings || []).map(e => ({ key: p.key, group_size: e.group_size, name: pname(p), reason: `${brief(e.title || first(e))} (no earlier start to compare)`, excerpt: e.excerpt, match_index: e.match_index, log: e.log, line: e.line })));
   return [...known, ...warn];
 }
 // Plugins nagging about their own updates in the log; separate from issues. null = backend doesn't send them (old shape).
@@ -138,16 +154,25 @@ export function KnownIssues({ issues, notices, title = "Known issues on this ser
     ${nagPlugins.length > 0 && html`<p class="small muted known-nag"><${Icon} n="circle-arrow-up" cls="i-xs" />${plural(nagPlugins.length, "plugin")} announce${nagPlugins.length === 1 ? "s" : ""} updates in ${nagPlugins.length === 1 ? "its" : "their"} logs (${nagPlugins.slice(0, 4).join(", ")}${nagPlugins.length > 4 ? ` +${nagPlugins.length - 4}` : ""}) — <a class="link" href="#/updates">see Updates</a></p>`}
   </section>`;
 }
+// The failure's own log line is already the card's excerpt; don't list it again as "also logged".
+const sameLine = (i, p) => i.log === p.log && i.line != null && i.line === p.line;
+
 export function ServerKnownIssues({ server }) {
   const q = useQuery(`/servers/${encodeURIComponent(server)}/health`);
   const failing = (q.data?.plugins || []).filter(p => p.status === "failed");
+  // A plugin that isn't running is shown once, in the red card, with its logged errors; not again under Known issues.
+  const all = knownIssues(q.data);
+  const isFailing = (i) => failing.some(p => (i.key && i.key === p.key) || (!i.key && i.name === pname(p)));
+  const related = (p) => all.filter(i => (i.key ? i.key === p.key : i.name === pname(p)) && i.level !== "warning" && !sameLine(i, p));
   return html`${failing.length > 0 && html`<section class="known is-failing" aria-label="Plugins failing at startup">
       <div class="row" style="gap:8px"><${Icon} n="circle-x" cls="i-sm" /><b class="small">${plural(failing.length, "plugin")} ${failing.some(p => p.running === false) ? "not running" : "failed to start"} after the last start</b>
         <span class="small muted">${q.data.restarted_at ? `started ${relTime(q.data.restarted_at)}` : ""}</span></div>
       <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting && !/every start/.test(p.reason || "") ? " (on every start)" : ""}</span>
-        ${p.running === false && html` <${Tag} kind="danger">Not running<//>`}<${Excerpt} ...${ex(p)} /></li>`)}</ul>
+        ${p.running === false && html` <${Tag} kind="danger">Not running<//>`}<${Cause} cause=${p.cause} server=${server} /><${Excerpt} ...${ex(p)} />
+        ${related(p).map(i => html`<div class="related small"><span class="muted">Also logged:</span> ${i.reason}${i.repeats > 1 ? ` ×${i.repeats}` : ""}
+          <${Excerpt} ...${ex(i)} label=${(i.group_size || 1) > 1 ? `Log excerpt (+${plural(i.group_size - 1, "line")})` : "Log excerpt"} /></div>`)}</li>`)}</ul>
     </section>`}
-    <${KnownIssues} issues=${knownIssues(q.data)} notices=${updateNotices(q.data)} />`;
+    <${KnownIssues} issues=${all.filter(i => !isFailing(i))} notices=${updateNotices(q.data)} />`;
 }
 
 // On-demand startup report for one server since a point in time.

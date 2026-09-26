@@ -2,7 +2,7 @@
 import { html, useState, useMemo, useEffect, useRef } from "../lib.js";
 import { useQuery, invalidate, toast, setState, useStore, getState } from "../store.js";
 import { post, put } from "../api.js";
-import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, trapTab } from "../components/ui.js";
+import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check, trapTab, restoreFocus } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
 import { ServerKnownIssues } from "../components/health.js";
 import { relTime, bytes, plural, safeUrl } from "../fmt.js";
@@ -218,18 +218,23 @@ function SourceDialog() {
   const [autoApply, setAutoApply] = useState(false);
   const [busy, setBusy] = useState(false);
   const ref = useRef();
+  // Form values follow the stored mapping (and refresh once settings load)…
   useEffect(() => {
     if (!p) return;
-    const cur = getState().mapSource && st.data?.source_map?.[p.key];
+    const cur = st.data?.source_map?.[p.key];
     setKind(cur?.kind || "modrinth");
     setId(cur?.id || p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     setAutoApply(!!cur?.auto_apply);
+  }, [p?.key, st.data]);
+  // …while focus handling runs once per opening, so the opener is remembered correctly.
+  useEffect(() => {
+    if (!p) return;
     const prev = document.activeElement;
     setTimeout(() => ref.current?.querySelector("select")?.focus(), 0);
     const k = (e) => { if (e.key === "Escape") setState({ mapSource: null }); trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
-    return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
-  }, [p?.key, st.data]);
+    return () => { document.removeEventListener("keydown", k); restoreFocus(prev); };
+  }, [p?.key]);
   if (!p) return null;
   const close = () => setState({ mapSource: null });
   const save = async (e) => {

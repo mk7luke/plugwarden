@@ -98,3 +98,16 @@ export function trapTab(e, el) {
   if (e.shiftKey && (i <= 0)) { e.preventDefault(); f[f.length - 1].focus(); }
   else if (!e.shiftKey && (i === -1 || i === f.length - 1)) { e.preventDefault(); f[0].focus(); }
 }
+
+// Return focus when a modal closes. If another modal took over (drawer → Remove dialog), don't steal focus from it:
+// remember the original opener instead, and give focus back to it when the last modal in the chain closes.
+let handoff = null;
+export function restoreFocus(prev) {
+  setTimeout(() => {
+    const live = prev && prev !== document.body && document.contains(prev) && !prev.closest('[aria-modal="true"]');
+    if (document.querySelector('[aria-modal="true"]')) { if (live) handoff = prev; return; }
+    const t = live ? prev : handoff && document.contains(handoff) ? handoff : null;
+    handoff = null;
+    t?.focus?.();
+  }, 0);
+}

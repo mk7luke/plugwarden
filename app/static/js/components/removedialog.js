@@ -5,7 +5,7 @@ import { html, useState, useEffect, useRef } from "../lib.js";
 import { useStore, setState } from "../store.js";
 import { get, post } from "../api.js";
 import { runJob } from "../jobs.js";
-import { Icon, Btn, Skel, trapTab } from "./ui.js";
+import { Icon, Btn, Skel, trapTab, restoreFocus } from "./ui.js";
 import { plural, bytes } from "../fmt.js";
 
 export const openRemove = (row) => setState({ removePlugin: row });
@@ -32,7 +32,7 @@ function RemoveDialog({ row }) {
     ref.current?.querySelector("[data-autofocus]")?.focus();
     const k = (e) => { if (e.key === "Escape") close(); trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
-    return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
+    return () => { document.removeEventListener("keydown", k); restoreFocus(prev); };
   }, []);
 
   // Resolve the plugin's data folder name from one server's plugin list.
@@ -94,10 +94,10 @@ function RemoveDialog({ row }) {
               </div>`}`}
         </div>`}
         ${needType && html`<div class="field"><label for="rm-in">Type <b class="mono">${row.name}</b> to confirm</label>
-          <input id="rm-in" class="input mono" autocomplete="off" spellcheck="false" value=${typed} onInput=${e => setTyped(e.currentTarget.value)} /></div>`}
+          <input id="rm-in" data-autofocus class="input mono" autocomplete="off" spellcheck="false" value=${typed} onInput=${e => setTyped(e.currentTarget.value)} /></div>`}
       </div>
       <div class="dialog-foot">
-        <button type="button" class="btn" onClick=${close} data-autofocus>Cancel</button>
+        <button type="button" class="btn" onClick=${close} data-autofocus=${needType ? undefined : true}>Cancel</button>
         <button type="submit" class="btn btn-danger-solid" disabled=${!ready}>Remove from ${plural(servers.length, "server")}</button>
       </div>
     </form>

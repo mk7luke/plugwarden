@@ -1,7 +1,7 @@
 // Activity — job history, structured per-server results, full log, and undo.
 import { html, useState, useMemo, useEffect } from "../lib.js";
-import { useQuery, useStore, confirmDialog } from "../store.js";
-import { post } from "../api.js";
+import { useQuery, useStore, confirmDialog, toast } from "../store.js";
+import { post, get } from "../api.js";
 import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle, kindTitle } from "../jobs.js";
 import { navigate } from "../router.js";
 import { LogView } from "../components/overlays.js";
@@ -78,30 +78,74 @@ function change(e) {
   return `${show(e.before)} → ${show(e.after)}`;
 }
 
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+// Read-only actions: "Changes only" hides them.
+const READS = new Set(["diff", "plan-values"]);
+const PAGE = 50;
+const hhmm = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// "×3 · 12:10 AM–12:24 AM", or just "×2 · 12:10 AM" when both ends fall in the same minute.
+const span = (e) => { const a = hhmm(e.at), b = hhmm(e.last_seen || e.at); return a === b ? a : `${a}–${b}`; };
+function dayLabel(t) {
+  const d = new Date(t), today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((today - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  return diff === 0 ? "Today" : diff === 1 ? "Yesterday" : d.toLocaleDateString([], { weekday: diff < 7 ? "long" : undefined, month: "short", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+}
+
 function AccessLog() {
   const [f, setF] = useState({ user: "", server: "", path: "", action: "" });
-  const [qs, setQs] = useState("limit=200");
+  const [changesOnly, setChangesOnly] = useState(() => pref("amp.audit.changes", "0") === "1");
+  const [qs, setQs] = useState(`limit=${PAGE}`);
+  const [older, setOlder] = useState([]);      // pages fetched with "Load older"
+  const [cursor, setCursor] = useState(null);  // null = use the first page's cursor
+  const [more, setMore] = useState(false);
+  const [lim, setLim] = useState(PAGE);        // older backends without cursors: page by growing the limit
   useEffect(() => {
-    const t = setTimeout(() => setQs(new URLSearchParams(Object.entries({ limit: "200", ...f }).filter(([, v]) => v)).toString()), 250);
+    const t = setTimeout(() => setQs(new URLSearchParams(Object.entries({ ...f, changes_only: changesOnly ? "true" : "" }).filter(([, v]) => v)).toString()), 250);
     return () => clearTimeout(t);
-  }, [f.user, f.server, f.path, f.action]);
-  const q = useQuery(`/access-log?${qs}`);
-  const entries = q.data?.entries || [];
+  }, [f.user, f.server, f.path, f.action, changesOnly]);
+  useEffect(() => { setOlder([]); setCursor(null); setLim(PAGE); }, [qs]);
+  const q = useQuery(`/access-log?limit=${lim}${qs ? "&" + qs : ""}`);
+  // The backend pages with next_before; without it, a full page means there may be more (fetched by raising the limit).
+  const paged = q.data && "next_before" in q.data;
+  const first = q.data?.entries || [];
+  const next = paged ? (cursor === null ? q.data.next_before : cursor) : first.length >= lim ? "more" : null;
+  const seen = new Set();
+  const entries = [...first, ...older].filter(e => { const k = e.id ?? `${e.at}|${e.action}|${e.path}`; if (seen.has(k)) return false; seen.add(k); return !changesOnly || !READS.has(e.action); });
+  const loadOlder = async () => {
+    if (!paged) { setLim(l => l + PAGE); return; }
+    setMore(true);
+    try {
+      const r = await get(`/access-log?limit=${PAGE}${qs ? "&" + qs : ""}&before=${encodeURIComponent(next)}`);
+      setOlder(o => [...o, ...(r.entries || [])]);
+      setCursor(r.next_before || "");
+    } catch (e) { toast({ kind: "err", title: "Couldn't load older entries", body: e.message }); }
+    setMore(false);
+  };
+  const toggleChanges = (v) => { setChangesOnly(v); save("amp.audit.changes", v ? "1" : "0"); };
   const field = (k, label) => html`<div class="input-wrap" style="width:200px"><${Icon} n="filter" cls="i-sm" /><input class="input" type="search" aria-label=${`Filter by ${label}`} placeholder=${label} value=${f[k]} onInput=${e => setF({ ...f, [k]: e.currentTarget.value })} /></div>`;
+  let lastDay = null;
+  const rows = [];
+  for (const e of entries) {
+    const d = dayLabel(e.last_seen || e.at);
+    if (d !== lastDay) { rows.push(html`<tr class="day-row"><th colspan="5" scope="colgroup">${d}</th></tr>`); lastDay = d; }
+    rows.push(html`<tr><td class="small muted" title=${absTime(e.last_seen || e.at)} style="white-space:nowrap">${hhmm(e.last_seen || e.at)}</td><td>${e.user}</td>
+      <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · ${span(e)}` : ""}</span></div></td>
+      <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted audit-change" title=${change(e)}>${change(e)}</td></tr>`);
+  }
   return html`<div class="toolbar">
       <select class="select" style="width:auto" aria-label="Filter by action" value=${f.action} onChange=${e => setF({ ...f, action: e.currentTarget.value })}>
         ${[["", "All actions"], ["diff", "Viewed diff"], ["plan-values", "Saw server-specific values"], ["settings", "Settings"], ["pin", "Pin"], ["ignore", "Ignore"], ["upload", "Upload"]].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
-      ${field("user", "User")}${field("server", "Server")}${field("path", "Path")}<span class="spacer"></span>
+      ${field("user", "User")}${field("server", "Server")}${field("path", "Path")}
+      <label class="switch small"><input type="checkbox" checked=${changesOnly} onChange=${e => toggleChanges(e.currentTarget.checked)} />Changes only</label><span class="spacer"></span>
       <span class="small muted">Viewing a diff is recorded (secrets redacted), as are settings, pin, ignore, source and upload changes.</span></div>
     <section class="panel" aria-label="Access log">
       ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
         : q.loading ? html`<${SkelRows} n=${6} cols=${[12, 20, 30, 20]} />`
-        : !entries.length ? html`<${Empty} icon="eye" title="Nothing recorded yet">${Object.values(f).some(Boolean) ? "Nothing matches these filters." : "Config diff views and settings, pin, ignore, source and upload changes are recorded here."}<//>`
-        : html`<div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Access log, newest first</caption>
-          <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">What</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
-          <tbody>${entries.map(e => html`<tr><td class="small muted" title=${absTime(e.last_seen || e.at)} style="white-space:nowrap">${relTime(e.last_seen || e.at)}</td><td>${e.user}</td>
-            <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · ${new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}–${new Date(e.last_seen || e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</span></div></td>
-            <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted audit-change" title=${change(e)}>${change(e)}</td></tr>`)}</tbody></table></div>`}
+        : !entries.length ? html`<${Empty} icon="eye" title="Nothing recorded yet">${Object.values(f).some(Boolean) || changesOnly ? "Nothing matches these filters." : "Config diff views and settings, pin, ignore, source and upload changes are recorded here."}<//>`
+        : html`<div class="tbl-wrap"><table class="tbl audit-tbl"><caption class="sr-only">Access log, newest first, grouped by day</caption>
+          <thead><tr><th scope="col">Time</th><th scope="col">User</th><th scope="col">What</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>
+          ${next ? html`<div class="panel-foot"><${Btn} size="sm" busy=${more || (!paged && q.loading)} onClick=${loadOlder}>Load older<//><span class="small muted">${plural(entries.length, "entry", "entries")} shown</span></div>` : ""}`}
     </section>`;
 }
 

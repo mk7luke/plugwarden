@@ -5,7 +5,7 @@ import { searchFiles } from "../api.js";
 import { openChangeset } from "./changeset.js";
 import { openRemove } from "./removedialog.js";
 import { navigate } from "../router.js";
-import { Icon, Btn, Kbd, modKey, focusables, trapTab } from "./ui.js";
+import { Icon, Btn, Kbd, modKey, focusables, trapTab, restoreFocus } from "./ui.js";
 import { dismissJob, toggleJobMin, isActive, jobTone } from "../jobs.js";
 import { plural } from "../fmt.js";
 
@@ -21,11 +21,18 @@ function useTrap(ref, onEscape) {
       trapTab(e, el);
     };
     document.addEventListener("keydown", key);
-    return () => { document.removeEventListener("keydown", key); prev?.focus?.(); };
+    return () => { document.removeEventListener("keydown", key); restoreFocus(prev); };
   }, []);
 }
 
 // ---------- toasts ----------
+// "Undo · 9s": the seconds left before the toast (and its quick undo) goes away. Hidden from screen readers so they aren't re-announced every second.
+function Countdown({ from }) {
+  const [n, setN] = useState(from);
+  useEffect(() => { const t = setInterval(() => setN(v => Math.max(0, v - 1)), 1000); return () => clearInterval(t); }, []);
+  return html`<span class="t-count" aria-hidden="true"> · ${n}s</span>`;
+}
+
 export function Toasts() {
   const toasts = useStore(s => s.toasts);
   const docked = useStore(s => s.jobs.some(j => j.id !== s.inlineJob));
@@ -36,7 +43,7 @@ export function Toasts() {
       <div class="grow"><b>${t.title}</b>${t.body && html`<p>${t.body}</p>`}
         ${(t.href || t.action) && html`<div class="t-actions">
           ${t.href && html`<a class="btn btn-sm" href=${t.href} onClick=${() => dismissToast(t.id)}>View details</a>`}
-          ${t.action && html`<${Btn} size="sm" onClick=${() => { t.action.run(); dismissToast(t.id); }}>${t.action.label}<//>`}</div>`}
+          ${t.action && html`<${Btn} size="sm" kind=${t.undo ? "primary" : ""} icon=${t.undo ? "undo-2" : undefined} aria-keyshortcuts=${t.undo ? "z" : undefined} onClick=${() => { t.action.run(); dismissToast(t.id); }}>${t.action.label}${t.countdown ? html`<${Countdown} from=${t.countdown} />` : ""}<//>`}</div>`}
       </div>
       <${Btn} kind="ghost" size="sm" icon="x" aria-label="Dismiss" onClick=${() => dismissToast(t.id)} />
     </div>`; })}
@@ -253,6 +260,7 @@ const KEYS = [
   [["←↑↓→"], "Matrix: move between cells"],
   [["Space"], "Matrix: select the focused cell"],
   [["U"], "Matrix: review updates for the selection"],
+  [["Z"], "Undo the job that just finished (while its toast shows)"],
   [["Esc"], "Close a dialog, sheet or palette"],
   [["?"], "This sheet"],
 ];

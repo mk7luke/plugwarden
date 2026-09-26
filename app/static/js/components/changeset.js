@@ -8,7 +8,7 @@ import { updatesOf, compatOf } from "../summary.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "./overlays.js";
 import { StartupCheck } from "./health.js";
-import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow, trapTab } from "./ui.js";
+import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow, trapTab, restoreFocus } from "./ui.js";
 import { plural, bytes, safeUrl } from "../fmt.js";
 
 // scope: "all" | {server} | {keys:[key]} | {items:[{key, servers?}]} — translated to the API's {items}.
@@ -35,7 +35,7 @@ function useSheetFocus(ref, onClose) {
     ref.current?.querySelector("[data-autofocus]")?.focus() || ref.current?.focus();
     const k = (e) => { if (e.key === "Escape" && !getState().confirm) onClose(); if (!getState().confirm) trapTab(e, ref.current); };
     document.addEventListener("keydown", k);
-    return () => { document.removeEventListener("keydown", k); prev?.focus?.(); };
+    return () => { document.removeEventListener("keydown", k); restoreFocus(prev); };
   }, []);
 }
 
@@ -149,6 +149,31 @@ function Changeset({ cs }) {
 const RowFlags = ({ r }) => html`${r.compat && !r.compat.ok && html`<${CompatChip} c=${r.compat} />`}
   ${!r.verified && html`<${Tag} kind="warn" icon="shield">hash not verified<//>`}`;
 
+// Changelog excerpt (plain text from the backend, max 6 lines). Words that usually mean work for the operator are marked.
+const RISK = /\b(breaking|migrat\w*|java ?(?:1[7-9]|2\d)|config(?:uration)?s?|removed|deprecat\w*|requires?)\b/gi;
+const FLAG = [[/breaking/i, "Breaking"], [/migrat/i, "Migration"], [/java ?(1[7-9]|2\d)/i, (m) => `Java ${m[1]}`], [/\bconfig/i, "Config changes"]];
+function riskFlags(lines) {
+  const text = lines.join("\n"), out = [];
+  for (const [re, label] of FLAG) { const m = re.exec(text); if (m) out.push(typeof label === "function" ? label(m) : label); }
+  return out;
+}
+function mark(line) {
+  const parts = []; let last = 0; RISK.lastIndex = 0;
+  for (let m; (m = RISK.exec(line));) { parts.push(line.slice(last, m.index), html`<mark class="cl-hl">${m[0]}</mark>`); last = m.index + m[0].length; }
+  parts.push(line.slice(last));
+  return parts;
+}
+export function Changelog({ r }) {
+  const lines = r.changelog?.lines || [];
+  if (!lines.length) return null;
+  const flags = riskFlags(lines);
+  return html`<details class="cl">
+    <summary><${Icon} n="chevron-right" cls="i-xs" />What's new in ${r.to_version}${flags.map(f => html` <span class="tag tag-warn">${f}</span>`)}</summary>
+    <div class="cl-body">${lines.map(l => html`<p>${mark(l)}</p>`)}${r.changelog.truncated ? html`<p class="muted">…</p>` : ""}
+      ${r.changelog_url && html`<a class="link small" href=${safeUrl(r.changelog_url)} target="_blank" rel="noopener">Full changelog<span class="sr-only"> for ${r.name} (opens in new tab)</span></a>`}</div>
+  </details>`;
+}
+
 function Group({ by, rs, excluded, toggle, small }) {
   const first = rs[0];
   const inc = rs.filter(r => !excluded.has(r.row_id)).length;
@@ -175,12 +200,14 @@ function Group({ by, rs, excluded, toggle, small }) {
     ${!open && flagged && html`<div class="cs-gflags"><${RowFlags} r=${flagged} /></div>`}
     ${!multi && by === "plugin" && html`<div class="cs-single"><span class="cs-rjar"><span class="from">from ${first.from_jar || first.from_version}</span><span class="to"><${Icon} n="arrow-right" cls="i-xs" />${first.to_jar || first.to_version}</span>
       ${first.also_removes?.length > 0 && html`<span class="small muted">also removes ${first.also_removes.join(", ")}</span>`}</span></div>`}
+    ${by === "plugin" && html`<div class="cs-cl"><${Changelog} r=${first} /></div>`}
     ${open && html`<ul class="cs-rows">${rs.map(r => { const off = excluded.has(r.row_id); return html`<li class=${off ? "is-off" : ""}>
       <${Check} label=${`Include ${r.name} on ${r.server}`} checked=${!off} onChange=${v => toggle([r.row_id], v)} />
       <span class="cs-rname">${by === "plugin" ? r.server : r.name}</span>
       <span class="cs-rjar"><span class="from">from ${r.from_jar || r.from_version}</span><span class="to"><${Icon} n="arrow-right" cls="i-xs" />${r.to_jar || r.to_version}</span>
         ${r.also_removes?.length > 0 && html`<span class="small muted">also removes ${r.also_removes.join(", ")}</span>`}</span>
       <span class="cs-rflags"><${RowFlags} r=${r} />${by === "server" && r.changelog_url && html`<a class="link small" href=${safeUrl(r.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${r.name}</span></a>`}</span>
+      ${by === "server" && r.changelog?.lines?.length > 0 && html`<div class="cs-rcl"><${Changelog} r=${r} /></div>`}
     </li>`; })}</ul>`}
   </section>`;
 }
