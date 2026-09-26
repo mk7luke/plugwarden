@@ -506,3 +506,35 @@ def test_scheduler_apply_cycle_end_to_end(env):
     assert jars == ["CoreProtect-CE-24.1.jar"]
     sel = scheduler.status()["last_selection"]
     assert sel["applied"] == [{"server": "M1-hub01", "key": "bukkit:coreprotect", "to_version": "24.1"}]
+
+
+def test_healthz_and_insecure_container_mode(env, monkeypatch):
+    from fastapi.testclient import TestClient
+    raw = TestClient(app)  # non-loopback client, no headers
+    assert raw.get("/healthz").json() == {"ok": True}
+    monkeypatch.setattr(config, "BIND", "0.0.0.0")
+    monkeypatch.setattr(config, "AUTH_MODE", "none")
+    with pytest.raises(RuntimeError):
+        auth.check_startup()
+    monkeypatch.setattr(config, "ALLOW_INSECURE", True)
+    auth.check_startup()
+    r = TestClient(app, base_url="http://localhost").get("/api/v2/health")  # docker-gateway-like client
+    assert r.status_code == 200
+
+
+def test_move_backup_survives_cross_mount_rename(env, monkeypatch):
+    import errno as _errno
+    import os as _os
+    from app import actions, jobs, inventory
+    real_rename = _os.rename
+
+    def exdev(a, b):
+        raise OSError(_errno.EXDEV, "Invalid cross-device link")
+    job = _plan_deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "replace",
+                        "items": {"jars": ["CoreProtect-24.1.jar"]}})
+    monkeypatch.setattr(_os, "rename", exdev)
+    undo = jobs.wait(actions.start_undo("t", job.id), 30)
+    monkeypatch.setattr(_os, "rename", real_rename)
+    assert undo.status == "done", undo.results
+    jars = [p["jar"] for p in inventory.list_plugins(inventory.get_server("M1-hub01")) if p["key"] == "bukkit:coreprotect"]
+    assert jars == ["CoreProtect-23.1.jar"]

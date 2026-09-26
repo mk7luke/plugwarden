@@ -85,6 +85,8 @@ async def _settings_error(_: Request, exc: SettingsError):
 @app.middleware("http")
 async def _security(request: Request, call_next):
     """Host allowlist (DNS rebinding) → authentication → CSRF → upload size, then hardening headers."""
+    if request.url.path == "/healthz" and request.method == "GET":
+        return JSONResponse({"ok": True})  # container liveness probe: no auth, no data
     if not auth.host_ok(request.headers.get("host")):
         return JSONResponse({"detail": "host not allowed"}, status_code=400)
     try:
@@ -459,7 +461,8 @@ def deploy_plan(request: Request, body: dict = Body(...)):
 @app.post("/api/v2/deploy")
 def deploy(request: Request, body: dict = Body(...)):
     """{plan_id} → job applying exactly the previewed plan. 409 if targets changed since the preview."""
-    return job_ref(actions.start_deploy(user_of(request), body.get("plan_id")))
+    return job_ref(actions.start_deploy(user_of(request), body.get("plan_id"),
+                                        skip_failing=body.get("skip_failing") is True))
 
 
 # ---------------------------------------------------------------- search / diff

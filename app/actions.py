@@ -168,11 +168,19 @@ def start_apply(user: str, plan_id: str, exclude=None, dry_run: bool = False, au
     return job
 
 
-def start_deploy(user: str, plan_id: str) -> jobs.Job:
-    """Apply a stored deploy plan, only if a fresh dry run still matches what was previewed."""
+def start_deploy(user: str, plan_id: str, skip_failing: bool = False) -> jobs.Job:
+    """Apply a stored deploy plan, only if a fresh dry run still matches what was previewed.
+    A plan with error rows needs skip_failing: those rows are then recorded as skipped (by choice)."""
     with plans.lock:
         plan = plans.load(plan_id, "deploy")
         plans.ensure_usable(plan)
+        failing = plan.get("failing") or []
+        if failing and not skip_failing:
+            raise plans.PlanError(409, {
+                "code": "has_failing",
+                "message": f"{len(failing)} row(s) of this plan would fail; send skip_failing: true to apply "
+                           "the rest and skip them",
+                "conflicts": [{"server": f["server"], "item": f["item"], "reason": f["reason"]} for f in failing]})
         if plan.get("needs_decision"):
             raise plans.PlanError(409, {
                 "code": "needs_decision",
@@ -186,6 +194,7 @@ def start_deploy(user: str, plan_id: str) -> jobs.Job:
         req = engine.validate_deploy(plan["body"])
         params = {k: plan["body"].get(k) for k in ("source", "targets", "action", "items", "options", "force")}
         params["plan_id"] = plan_id
+        params["skip_failing"] = bool(failing and skip_failing)
 
         def body(job: jobs.Job) -> None:
             # Re-check under the mutate lock: another job may have run while this one was queued.
@@ -195,7 +204,12 @@ def start_deploy(user: str, plan_id: str) -> jobs.Job:
                     job.add_result(d["server"] or "-", d["item"] or "-", d["action"] or "-", "error",
                                    f"changed since preview ({d['planned']} → {d['now']}); nothing applied")
                 return
-            _mutating_body(job, lambda ctx: engine.run_deploy(ctx, req))
+            skip = {(f["server"], f["item"], f["action"]) for f in failing} if skip_failing else set()
+
+            def run(ctx):
+                ctx.skip_rows = skip
+                engine.run_deploy(ctx, req)
+            _mutating_body(job, run)
 
         job = jobs.submit("deploy", user, params, body, on_done=_finish)
         plans.consume(plan, job.id)

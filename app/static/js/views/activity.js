@@ -148,7 +148,7 @@ function JobDetail({ id }) {
     ${res.length > 0 && html`<div class="tbl-wrap" style="max-height:300px;border-top:1px solid var(--line)"><table class="tbl">
       <thead><tr><th scope="col">Server</th><th scope="col">Item</th><th scope="col">Outcome</th><th scope="col" class="hide-md">Detail</th></tr></thead>
       <tbody>${res.map(r => html`<tr><td class="strong" style="white-space:nowrap">${r.server}</td><td><span class="jar" style="max-width:200px" title=${r.item}>${r.item}</span></td>
-        <td class=${"small outcome-" + (j.dry_run && r.outcome === "changed" ? "would_change" : r.outcome)} style="font-weight:600;white-space:nowrap">${r.reason_code === "changed_since_job" ? "changed since — kept" : j.dry_run && r.outcome === "changed" ? "would change" : r.outcome}</td><td class="hide-md small muted">${r.detail}</td></tr>`)}</tbody></table></div>`}
+        <td class=${"small outcome-" + (j.dry_run && r.outcome === "changed" ? "would_change" : r.outcome)} style="font-weight:600;white-space:nowrap">${r.reason_code === "changed_since_job" ? "changed since — kept" : r.skipped_by_choice ? "skipped (by choice)" : j.dry_run && r.outcome === "changed" ? "would change" : r.outcome}</td><td class="hide-md small muted">${r.detail}</td></tr>`)}</tbody></table></div>`}
     <div class="panel-head" style="border-top:1px solid var(--line);border-bottom:0"><${Icon} n="terminal" cls="i-sm" /><h3>Log</h3><span class="spacer"></span>
       <${Btn} size="sm" kind="ghost" icon="copy" onClick=${() => navigator.clipboard?.writeText(logLines.join("\n"))}>Copy<//></div>
     <${LogView} lines=${logLines} live=${running} empty="No log output." />

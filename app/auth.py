@@ -53,8 +53,9 @@ def check_startup() -> None:
     """Refuse to run unauthenticated on a non-loopback bind, or cf-access without its settings."""
     if config.AUTH_MODE not in ("cf-access", "none"):
         raise RuntimeError(f"LGT_AUTH must be 'cf-access' or 'none', not {config.AUTH_MODE!r}")
-    if config.AUTH_MODE == "none" and not is_loopback(config.BIND):
-        raise RuntimeError(f"LGT_AUTH=none is only allowed when bound to loopback (LGT_BIND={config.BIND!r}); "
+    if config.AUTH_MODE == "none" and not is_loopback(config.BIND) and not config.ALLOW_INSECURE:
+        raise RuntimeError(f"LGT_AUTH=none is only allowed when bound to loopback (LGT_BIND={config.BIND!r}) "
+                           "or with LGT_AUTH_ALLOW_INSECURE=1 (dev container behind a loopback-only port); "
                            "set LGT_CF_TEAM_DOMAIN and LGT_CF_AUD to use Cloudflare Access")
     if config.AUTH_MODE == "none" and config.HOSTNAME:
         raise RuntimeError(f"LGT_HOSTNAME={config.HOSTNAME!r} marks a public deployment, which must not run "
@@ -153,7 +154,8 @@ def host_ok(host_header: str | None) -> bool:
 
 def authenticate(headers, cookies, client_host: str | None) -> str:
     if config.AUTH_MODE == "none":
-        if not is_loopback(client_host):
+        # In a dev container the client is the Docker gateway; the host publishes the port on loopback only.
+        if not is_loopback(client_host) and not config.ALLOW_INSECURE:
             raise AuthError(403, "unauthenticated mode only serves loopback clients")
         if any(headers.get(h) for h in ("cf-connecting-ip", JWT_HEADER, "x-forwarded-for")):
             raise AuthError(403, "unauthenticated mode refuses proxied requests; configure Cloudflare Access")

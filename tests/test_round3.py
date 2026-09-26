@@ -132,9 +132,9 @@ def test_merge_unsafe_refuses_row(lp_env):
     plan = lp_plan(preserve_keys=["disabled-contexts"])  # a list: not a single-line value
     rows = [r for r in plan["results"] if r["action"] == "merge"]
     assert rows and all(r["outcome"] == "error" and r["reason_code"] == "merge_unsafe" for r in rows)
-    job = jobs.wait(actions.start_deploy("t", plan["plan_id"]), 30)
+    with pytest.raises(plans.PlanError):  # a plan with refused rows needs skip_failing
+        actions.start_deploy("t", plan["plan_id"])
     assert "server: hub" in (lp_env["a"] / "LuckPerms" / "config.yml").read_text()  # untouched
-    assert job.status == "failed"
 
 
 def test_essentials_folder_mirror_keeps_server_name_and_data(env):
@@ -315,3 +315,47 @@ def test_diff_with_preserve_shows_merged_result(lp_env):
         assert "server:" not in kept["diff"] and "+sync-minutes: 5" in kept["diff"]
         bad = c.get("/api/v2/diff", params={**q, "preserve_keys": "disabled-contexts"}).json()
         assert bad["merge_error"] and "+server: survival" in bad["diff"]
+
+
+# ---------------------------------------------------------------- partial deploys (skip_failing / skip_unmergeable)
+
+def _lp_unmergeable_plan(**extra):
+    return engine.plan({"source": "elChapo01", "targets": ["M1-hub01", "M3-hunger01"], "action": "sync",
+                        "items": {"paths": ["LuckPerms/config.yml", "Essentials/config.yml"]},
+                        "preserve_keys": {"LuckPerms/config.yml": ["disabled-contexts"],
+                                          "Essentials/config.yml": "none"}, **extra}, "t")
+
+
+def test_plan_with_errors_needs_skip_failing(lp_env):
+    plan = _lp_unmergeable_plan()
+    assert plan["summary"]["error"] == 2
+    with pytest.raises(plans.PlanError) as e:
+        actions.start_deploy("t", plan["plan_id"])
+    assert e.value.status == 409 and e.value.detail["code"] == "has_failing"
+    assert {c["reason"] for c in e.value.detail["conflicts"]} == {"merge_unsafe"}
+    job = jobs.wait(actions.start_deploy("t", plan["plan_id"], skip_failing=True), 30)
+    assert job.status == "done", job.results
+    lp_rows = [r for r in job.results if r["item"] == "LuckPerms/config.yml"]
+    assert all(r["outcome"] == "skipped" and r["reason_code"] == "merge_unsafe" and r["skipped_by_choice"]
+               for r in lp_rows)
+    assert "server: hub" in (lp_env["a"] / "LuckPerms" / "config.yml").read_text()   # skipped file untouched
+    assert (lp_env["a"] / "Essentials" / "config.yml").read_text() == "new-config\n"  # the rest applied
+    assert "skipped" in job.summary
+    with client_for(app) as c:
+        r = c.post("/api/v2/deploy", json={"plan_id": _lp_unmergeable_plan()["plan_id"]})
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "has_failing"
+
+
+def test_skip_unmergeable_is_a_keep_decision(lp_env):
+    plan = engine.plan({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync",
+                        "items": {"paths": ["LuckPerms/config.yml"]}, "skip_unmergeable": True}, "t")
+    assert plan["needs_decision"] is False and plan["summary"]["error"] == 0
+    job = jobs.wait(actions.start_deploy("t", plan["plan_id"]), 30)
+    assert job.status == "done"
+    assert (lp_env["a"] / "LuckPerms" / "config.yml").read_text() == lp("hub", sync="5")  # merged (Keep)
+    plan = engine.plan({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync",
+                        "items": {"paths": ["LuckPerms/config.yml"]}, "skip_unmergeable": True,
+                        "preserve_keys": ["disabled-contexts"]}, "t")
+    row = next(r for r in plan["results"] if r["action"] == "merge")
+    assert row["outcome"] == "skipped" and row["reason_code"] == "merge_unsafe" and row["skipped_by_choice"]
+    assert plan["summary"]["error"] == 0

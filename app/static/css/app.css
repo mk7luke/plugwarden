@@ -574,8 +574,10 @@ a.srv-chip:hover { border-color: var(--line-strong); color: var(--fg); }
 .deletes ul { margin-top: 3px; color: var(--danger); font-size: 11px; max-height: 160px; overflow: auto; }
 .data-note { display: flex; gap: 8px; align-items: flex-start; margin: 10px 12px 0; padding: 8px 12px; color: var(--fg-2); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .data-note .i { color: var(--ok); margin-top: 2px; flex: none; }
-.refused { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--danger); margin: 2px 0 4px 24px; }
+.refused { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 2px 6px; align-items: start; color: var(--danger); margin: 2px 0 4px 24px; }
+.refused > .i { margin-top: 3px; }
 .refused .linkbtn { color: var(--fg-2); }
+.refused.by-choice { color: var(--fg-3); }
 .id-chip { display: flex; align-items: center; gap: 5px; font-size: var(--fs-2xs); color: var(--warn); margin: 2px 0 2px 24px; }
 .diff-note { display: flex; align-items: center; gap: 6px; margin: 6px 0 -2px 24px; }
 .target-why { color: var(--fg-3); font-weight: 500; margin-left: 2px; }

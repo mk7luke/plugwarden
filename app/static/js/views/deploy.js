@@ -112,7 +112,7 @@ export function Deploy({ query }) {
       trackJob(r.job_id, { title: `Deploy · ${ACTIONS.find(a => a[0] === action)[1]}` });
     } catch (e) {
       toast({ kind: "err", title: e.status === 409 ? "Targets changed since this preview" : "Deploy didn't start",
-        body: e.status === 409 ? `${e.conflicts.map(c => c.reason === "needs_decision" ? "a server-specific value appeared since the preview" : `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed — review it and execute again.` : e.message });
+        body: e.status === 409 ? `${e.detail?.code === "has_failing" || e.code === "has_failing" ? "some items would fail" : e.conflicts.map(c => c.reason === "needs_decision" ? "a server-specific value appeared since the preview" : `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed — review it and execute again.` : e.message });
       if (e.status === 409) setNonce(n => n + 1);
     }
   };
@@ -407,7 +407,7 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
 function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity }) {
   const [diff, setDiff] = useState(null); // null | "loading" | {lines} | Error
   // Rows that change server-specific keys open their diff straight away.
-  const refused = r.outcome === "error" && r.reason_code === "merge_unsafe";
+  const refused = r.reason_code === "merge_unsafe" && (r.outcome === "error" || r.skipped_by_choice);
   useEffect(() => { if (idKeys.length && r.outcome === "changed" && !diff && !r.item.endsWith("/")) loadDiff(); }, [idKeys.length]);
   // An open diff follows the Keep/Overwrite choice: with Keep it shows the merged file that would be written.
   useEffect(() => { if (diff && diff !== "loading") { setDiff(null); setTimeout(() => loadDiffRef.current?.(), 0); } }, [identity]);
@@ -435,12 +435,12 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
           <span class="new"><${Icon} n="arrow-right" cls="i-xs" />${r.new_jar}${r.new_version ? ` (${r.new_version})` : ""}</span></div>`
         : html`<span class="op-text"><span class=${r.outcome === "skipped" || r.outcome === "unchanged" ? "muted" : ""}>${r.item}</span>
           ${isDataFile(r.item) && html`<span class="tag tag-warn">data file</span>`}
-          ${r.detail && html`<span class=${"op-detail" + (r.outcome === "skipped" ? " is-skip" : r.outcome === "error" ? " is-err" : "")}>${r.outcome === "skipped" ? "Skipped: " : ""}${r.detail}</span>`}
+          ${r.detail && !(refused && r.skipped_by_choice) && html`<span class=${"op-detail" + (r.outcome === "skipped" ? " is-skip" : r.outcome === "error" ? " is-err" : "")}>${r.outcome === "skipped" ? "Skipped: " : ""}${r.detail}</span>`}
           ${r.reason_code === "not_installed" && !install && action !== "delete" && html`<button type="button" class="linkbtn" onClick=${onInstall}>Also install where missing</button>`}
           ${diffable && html`<button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide diff" : "Show diff"}</button>`}</span>`}
     </div>
-    ${refused && html`<div class="refused small"><${Icon} n="circle-x" cls="i-xs" />Nothing will be written to this file on ${r.server}.
-      <button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide" : "Show what Overwrite would do"}</button></div>`}
+    ${refused && html`<div class=${"refused small" + (r.skipped_by_choice ? " by-choice" : "")}><${Icon} n=${r.skipped_by_choice ? "minus" : "circle-x"} cls="i-xs" /><div><div>${r.skipped_by_choice ? "Skipped by choice — " : ""}Nothing will be written to this file on ${r.server}.</div>
+      <button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide" : "Show what Overwrite would do"}</button></div></div>`}
     ${r.delete_count > 0 && html`<${Deletions} r=${r} />`}
     ${diff && html`<${DiffView} d=${diff} />`}
   </div>`;

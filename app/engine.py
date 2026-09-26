@@ -9,6 +9,7 @@ Every real change is backed up to STATE_DIR/backups/<job_id>/ first, so jobs can
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -281,11 +282,16 @@ class Backup:
             if _exists(dst):
                 raise BackupError(f"backup destination already exists: {dst}")
             self._check_space(path, dst, move)
-            if move and os.stat(path, follow_symlinks=False).st_dev == os.stat(dst.parent).st_dev:
-                os.rename(path, dst)
-            elif move:
-                _copy(path, dst)
-                _remove(path)
+            if move:
+                try:
+                    os.rename(path, dst)
+                except OSError as e:
+                    # Same device but different mounts (e.g. two bind mounts in a container) → EXDEV.
+                    if e.errno != errno.EXDEV:
+                        raise
+                    self._check_space(path, dst, move=False)
+                    _copy(path, dst)
+                    _remove(path)
             else:
                 _copy(path, dst)
             self._record(entry)
@@ -370,6 +376,8 @@ class Ctx:
         self.warnings: list[dict] = []
         self.fps: dict[tuple, str] = {}  # (server, item, action) -> digest of the full planned change list
         self.include_data = False
+        self.skip_rows: set[tuple] = set()   # (server, item, action) of planned error rows to skip
+        self.skip_unmergeable = False
         self.keeps: dict[tuple[str, str], list[str]] = {}  # (server, config rel) -> keys to keep from target
 
     def keep_for(self, server: str, rel: str) -> list[str]:
@@ -391,6 +399,12 @@ class Ctx:
         code = extra.pop("reason_code", None) or _reason_code(outcome, detail)
         if code:
             extra["reason_code"] = code
+        if outcome == "error" and (
+                (server, item, action) in self.skip_rows
+                or (self.skip_unmergeable and code == "merge_unsafe")):
+            # The operator chose to go ahead without these rows (skip_failing / skip_unmergeable).
+            outcome = "skipped"
+            extra["skipped_by_choice"] = True
         if changes is not None:
             extra["changes"] = changes[:MAX_CHANGE_LINES]
             extra["change_count"] = len(changes)
@@ -774,6 +788,8 @@ def validate_deploy(body: dict) -> dict:
         if bad:
             raise DeployInvalid(f"'Replace jar' only works on .jar files; not allowed: {', '.join(bad)}")
     preserve = body.get("preserve_keys")
+    if preserve is None and body.get("skip_unmergeable") is True:
+        preserve = "server_specific"  # "keep, and skip what can't be merged" is a Keep decision
     if preserve is not None:
         _check_preserve(preserve)
     # Drop items already covered by a parent item, so one job never touches a path twice.
@@ -823,6 +839,7 @@ def validate_deploy(body: dict) -> dict:
         "include_data": options.get("include_data") is True or body.get("include_data") is True,
         "preserve_keys": preserve,
         "overwrite_server_specific": body.get("overwrite_server_specific") is True,
+        "skip_unmergeable": body.get("skip_unmergeable") is True,
     }
 
 
@@ -935,6 +952,7 @@ def analyze_server_specific(req: dict) -> tuple[list[dict], dict[tuple[str, str]
 def run_deploy(ctx: Ctx, req: dict) -> None:
     action, source, install = req["action"], req["source"], req["install"]
     ctx.include_data = req["include_data"]
+    ctx.skip_unmergeable = req["skip_unmergeable"]
     warnings, ctx.keeps = analyze_server_specific(req)
     ctx.warnings.extend(warnings)
     if req["include_data"] and action in ("sync", "install") and (req["folders"] or req["paths"]):
@@ -991,8 +1009,11 @@ def plan(body: dict, user: str = "local") -> dict:
     """Dry run a deploy and store it; POST /deploy {plan_id} later applies exactly this."""
     out, ctx, req = _dry_run(body)
     out["needs_decision"] = needs_decision(req, out["warnings"])
+    failing = [{"server": r["server"], "item": r["item"], "action": r["action"],
+                "reason": r.get("reason_code") or "error", "detail": r["detail"]}
+               for r in out["results"] if r["outcome"] == "error"]
     p = plans.create("deploy", user, body=body, fingerprint=fingerprint(ctx), sources=source_hashes(req),
-                     needs_decision=out["needs_decision"], warnings=out["warnings"])
+                     needs_decision=out["needs_decision"], warnings=out["warnings"], failing=failing)
     return {"plan_id": p["plan_id"], "expires": plans.iso(p["expires"]), **out}
 
 
@@ -1163,8 +1184,10 @@ def _restore_entry(ctx: Ctx, src: Backup, srv: Server, e: dict) -> None:
         return ctx.result(srv.id, rel, "restore", "changed", "recreated folder")
 
     if "/" not in rel and rel.lower().endswith(".jar") and stored.is_file():
-        other = [j for j in _other_versions(srv, stored, rel)
-                 if not any(x["server"] == srv.id and x["rel"] == j for x in src.entries)]
+        # Jars this undo puts back are fine next to each other; anything else of the same plugin that is
+        # present (including a new version this undo failed to remove) would make two versions.
+        restoring = {x["rel"] for x in src.entries if x["server"] == srv.id and x["existed"]}
+        other = [j for j in _other_versions(srv, stored, rel) if j not in restoring]
         if other:
             return ctx.result(srv.id, rel, "restore", "skipped",
                               f"another version of this plugin is installed ({', '.join(other)}); not restored",
