@@ -320,3 +320,60 @@ def test_excerpt_contains_match_with_context_and_file_line(env):
     report = health.server_report(srv, None)
     for e in report["preexisting_errors"]:
         assert e["signature"].split("]")[0] in e["excerpt"][e["match_index"]]
+
+
+# ---------------------------------------------------------------- cold start: background indexing
+
+def test_cold_start_reads_do_not_hash_and_report_indexing(env, monkeypatch):
+    from app import main as appmain
+    inventory.reset_cache()
+    calls = []
+    real = inventory.file_hash
+    monkeypatch.setattr(inventory, "file_hash", lambda p, algo="sha1": (calls.append(p), real(p, algo))[1])
+    monkeypatch.setattr(inventory, "index_all", lambda: None)  # keep the app's own startup indexer out
+    inventory.INDEX.update(running=True, done=0, total=5)  # as if the startup indexer were mid-way
+    try:
+        with client_for(app) as c:
+            inventory.INDEX.update(running=True, done=0, total=5)
+            t = time.time()
+            ov = c.get("/api/v2/overview").json()
+            assert time.time() - t < 2
+            assert ov["indexing"] == {"done": 0, "total": 5}
+            assert c.get("/api/v2/matrix").json()["indexing"] == {"done": 0, "total": 5}
+            rows = c.get("/api/v2/servers/M1-hub01").json()["plugins"]
+            assert rows and all(r["indexing"] and r["sha1"] is None for r in rows)
+        assert calls == []  # nothing hashed on the read path
+    finally:
+        inventory.INDEX.update(running=False)
+    monkeypatch.undo()
+    inventory.index_all()
+    assert inventory.indexing_state() is None  # the indexer did the hashing
+    snap = appmain.snapshot()
+    assert all(not r["indexing"] for rows in snap["plugins"].values() for r in rows)
+
+
+def test_descriptor_version_bump_keeps_sha1(env, monkeypatch):
+    jar = env["a"] / "Vault.jar"
+    inventory.jar_meta(jar)
+    monkeypatch.setattr(inventory, "DESC_VERSION", inventory.DESC_VERSION + 1)
+    monkeypatch.setattr(inventory, "file_hash", lambda *a, **k: pytest.fail("rehashed after a descriptor bump"))
+    assert inventory.jar_meta(jar)["dv"] == inventory.DESC_VERSION
+
+
+def test_expected_version_with_provisional_rows():
+    from app import main as appmain
+    src = inventory.Server("elChapo01", None, None, "purpur", "bukkit", "1.21.6")
+    assert appmain._expected_version({"M1": None, "M3": "1.0"}, src) in (None, "1.0")
+
+
+def test_read_paths_make_no_network_calls(env, monkeypatch):
+    import httpx
+    from app import updates
+    def boom(*a, **k):
+        raise AssertionError("network call on a read path")
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", boom)  # real network only (not TestClient)
+    with client_for(app) as c:
+        for path in ("/api/v2/overview", "/api/v2/servers", "/api/v2/matrix", "/api/v2/updates",
+                     "/api/v2/servers/M1-hub01", "/api/v2/servers/M1-hub01/health", "/api/v2/settings",
+                     "/api/v2/jobs", "/api/v2/access-log"):
+            assert c.get(path).status_code == 200, path

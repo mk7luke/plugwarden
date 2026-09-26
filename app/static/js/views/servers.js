@@ -62,6 +62,7 @@ export function ServerDetail({ id }) {
     return [...r].sort((a, b) => (order[a.status] - order[b.status]) || a.name.localeCompare(b.name));
   }, [plugins.data, filter, search]);
   const outdated = (plugins.data || []).filter(p => p.status === "outdated");
+  const reading = (plugins.data || []).some(p => p.indexing);
   const counts = { all: plugins.data?.length, outdated: outdated.length, unknown: plugins.data?.filter(p => p.status === "unknown").length, held: plugins.data?.filter(held).length };
 
   const review = (list, title) => openChangeset(list.length === outdated.length ? { server: id } : { items: list.map(p => ({ key: p.key, servers: [id] })) }, title);
@@ -82,7 +83,7 @@ export function ServerDetail({ id }) {
         ${srv.drift > 0 && html` · <span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip(srv)}><${Icon} n="git-compare-arrows" />${srv.drift} drift</span>`}</span>` : " "}>
       ${srv?.eligible_target && html`<a class="btn" href=${`#/deploy?targets=${encodeURIComponent(id)}`}><${Icon} n="rocket" cls="i-sm" />Deploy to ${id}</a>`}
       <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${() => review(outdated, `Review updates on ${id}`)}>
-        ${outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>
+        ${reading ? "Reading plugins…" : outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>
     <//>
     ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed</b> — files changed since ${id} last started.</div>
       <${Btn} size="sm" icon="check" onClick=${markRestarted}>Mark restarted<//></div>`}
@@ -107,7 +108,11 @@ export function ServerDetail({ id }) {
             <th class="col-check"><${Check} label="Select all updatable" checked=${allSel} indeterminate=${!allSel && selectable.some(p => sel.has(p.key))} onChange=${v => setSel(v ? new Set(selectable.map(p => p.key)) : new Set())} /></th>
             <th scope="col">Plugin</th><th scope="col" class="hide-sm">Installed</th><th scope="col" class="hide-sm">Latest compatible</th><th scope="col" class="hide-sm">Status</th>
             <th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
-          <tbody>${rows.map(p => html`<tr key=${p.key} class=${sel.has(p.key) ? "is-selected" : ""}>
+          <tbody>${rows.map(p => p.indexing ? html`<tr key=${p.key} class="is-reading"><td class="col-check"></td>
+            <td><div class="cell-name"><b>${p.name}</b><span class="jar">${p.jar}</span></div></td>
+            <td class="hide-sm"><span class="ver muted">${p.version || "—"}</span></td><td class="hide-sm"></td>
+            <td class="hide-sm"><span class="tag"><${Icon} n="loader-circle" cls="i-xs spin" />reading…</span></td><td class="col-actions"></td></tr>`
+            : html`<tr key=${p.key} class=${sel.has(p.key) ? "is-selected" : ""}>
             <td class="col-check">${p.status === "outdated" ? html`<${Check} label=${`Select ${p.name}`} checked=${sel.has(p.key)} onChange=${v => toggle(p.key, v)} />` : null}</td>
             <td><div class="cell-name"><b>${p.name}</b><span class="jar" title=${`${p.jar} · ${bytes(p.size)} · modified ${relTime(p.mtime)}`}>${p.jar}</span>
               <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${Status} p=${p} id=${id} /></span>`}</span></div></td>

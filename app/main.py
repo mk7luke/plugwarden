@@ -193,7 +193,7 @@ def _expected_version(by_server: dict[str, str], source: inventory.Server | None
     tied = [v for v, n in counts.items() if n == top]
     if len(tied) == 1:
         return tied[0]
-    if source and by_server.get(source.id) in tied:
+    if source and source.id in by_server and by_server[source.id] in tied:
         return by_server[source.id]
     return sorted(tied, key=functools.cmp_to_key(lambda a, b: updates.compare_versions(a, b) or 0))[-1]
 

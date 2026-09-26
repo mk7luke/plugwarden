@@ -34,7 +34,7 @@ export function Matrix({ query }) {
 
   const all = useMemo(() => (q.data?.plugins || []).map(p => {
     const cells = Object.values(p.cells);
-    return { ...p, drift: p.drift ?? new Set(cells.map(c => c.version)).size > 1, outdated: cells.filter(c => c.status === "outdated").length, unknown: cells.every(c => c.status === "unknown") };
+    return { ...p, reading: p.indexing || cells.every(c => c.indexing), drift: p.drift ?? new Set(cells.map(c => c.version)).size > 1, outdated: cells.filter(c => c.status === "outdated").length, unknown: cells.every(c => c.status === "unknown") };
   }), [q.data]);
   const rows = useMemo(() => {
     let r = all;
@@ -112,9 +112,9 @@ export function Matrix({ query }) {
                 ${id === source && html`<${Icon} n="circle-dot" cls="i-xs" label="source" />`}${id}</a></th>`)}
             <th class="mx-pad" aria-hidden="true"></th>
           </tr></thead>
-          <tbody onKeyDown=${gridKeys}>${rows.map((p, ri) => html`<tr key=${p.key}>
+          <tbody onKeyDown=${gridKeys}>${rows.map((p, ri) => html`<tr key=${p.key} class=${p.reading ? "is-reading" : ""}>
             <th scope="row"><div class="mx-name">
-              <button type="button" class="mx-open" onClick=${() => setState({ pluginDrawer: p.key })} aria-label=${`${p.name} details`}>
+              <button type="button" class="mx-open" disabled=${p.reading} onClick=${() => setState({ pluginDrawer: p.key })} aria-label=${`${p.name} details`}>
                 <span>${p.name}</span>${p.drift && html`<${Icon} n="git-compare-arrows" cls="i-xs" style="color:var(--drift)" label="versions differ" />`}</button>
               <span class="mx-count" aria-label=${`on ${Object.keys(p.cells).length} of ${cols.length} servers`}>${Object.keys(p.cells).length}/${cols.length}</span>
             </div></th>
@@ -126,7 +126,7 @@ export function Matrix({ query }) {
               const on = sel.has(cid(p.key, id));
               return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "") + (longVer(c.version) ? " is-long" : "")} aria-pressed=${on ? "true" : "false"} data-r=${ri} data-c=${ci}
                 data-tip=${`${id}\n${c.jar}\n${c.version} — ${LABEL[s] || s}${p.latest_version && s === "outdated" ? ` (latest ${p.latest_version})` : ""}${c.drift_pinned ? `\nPinned — differs from the network (${p.expected_version}) on purpose` : ""}${p.expected_version && c.drift ? `\nNetwork majority: ${p.expected_version}` : ""}`}
-                aria-label=${`${p.name} on ${id}: ${c.version}, ${LABEL[s] || s}`} onClick=${e => clickCell(p, id, e)}>
+                aria-label=${`${p.name} on ${id}: ${c.version}, ${c.indexing ? "still being read" : LABEL[s] || s}`} disabled=${c.indexing} onClick=${e => clickCell(p, id, e)}>
                 <span class="mv">${(s === "pinned" || c.drift_pinned) && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}</span></button></td>`;
             })}
             <td class="mx-pad" aria-hidden="true"></td>

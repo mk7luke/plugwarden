@@ -1,6 +1,6 @@
 // App shell: sidebar, top bar, mobile tab bar + drawer.
-import { html, useRef } from "../lib.js";
-import { useStore, setState, useQuery, setTheme } from "../store.js";
+import { html, useRef, useEffect } from "../lib.js";
+import { useStore, setState, useQuery, setTheme, invalidate } from "../store.js";
 import { Icon, Btn, Kbd, modKey } from "./ui.js";
 import { checkUpdates } from "../actions.js";
 import { isActive } from "../jobs.js";
@@ -87,6 +87,13 @@ export function Drawer({ route }) {
 export function Topbar({ crumbs }) {
   const { data: ov } = useQuery("/overview");
   const checkJob = useStore(s => s.jobs.find(j => isActive(j.status) && j.title === "Update check"));
+  // Cold start: the backend is still hashing jars. Poll the (fast) overview, then refresh everything once done.
+  const indexing = ov?.indexing;
+  const wasIndexing = useRef(false);
+  useEffect(() => {
+    if (indexing) { wasIndexing.current = true; const t = setTimeout(() => invalidate("/overview"), 2000); return () => clearTimeout(t); }
+    if (wasIndexing.current) { wasIndexing.current = false; invalidate(); }
+  }, [indexing?.done, !!indexing]);
   const checking = !!checkJob;
   const pct = checkJob?.progress?.total ? Math.round(100 * checkJob.progress.done / checkJob.progress.total) : null;
   return html`<header class="topbar">
@@ -102,7 +109,7 @@ export function Topbar({ crumbs }) {
       <span class="kbds"><${Kbd}>${modKey}<//><${Kbd}>K<//></span>
     </button>
     <div class="top-actions">
-      <span class="check-status" title="Last update check">${checking ? (pct != null ? `Checking… ${pct}%` : "Checking…") : ov ? (ov.last_check ? `Checked ${relTime(ov.last_check)}` : "Never checked") : ""}</span>
+      <span class="check-status" title=${indexing ? "Reading plugin jars after a restart — results are provisional until this finishes" : "Last update check"}>${indexing ? html`<${Icon} n="loader-circle" cls="i-xs spin" /> Indexing plugins… ${indexing.done}/${indexing.total}` : checking ? (pct != null ? `Checking… ${pct}%` : "Checking…") : ov ? (ov.last_check ? `Checked ${relTime(ov.last_check)}` : "Never checked") : ""}</span>
       <${Btn} icon="refresh-cw" busy=${checking} onClick=${checkUpdates} aria-label="Check for updates"><span class="hide-sm">Check updates</span><//>
     </div>
   </header>`;

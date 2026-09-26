@@ -956,3 +956,7 @@ body:has(.mx-bar) .toasts, body:has(.bulkbar) .toasts { bottom: 88px; }
 .known.is-failing { border-color: var(--danger-line); }
 .known.is-failing > .row > .i { color: var(--danger); }
 .log .l-hit { display: inline-block; min-width: 100%; background: var(--warn-soft); color: var(--fg); }
+tr.is-reading td, tr.is-reading th { color: var(--fg-3); }
+tr.is-reading .mcell { opacity: .55; cursor: default; }
+.mcell:disabled { cursor: default; }
+.mx-open:disabled { cursor: default; text-decoration: none; }
