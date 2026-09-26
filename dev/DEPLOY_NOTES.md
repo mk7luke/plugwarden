@@ -1,15 +1,78 @@
 # LGT AMP Sync 2.0: deployment notes
 
-This covers what changed for running the service after the security round. `INSTALL.md` still describes the basic install.
+How AMP Sync is deployed (Docker Compose), configured and secured. `INSTALL.md` has the short version.
 
-## 1. Network: bind to loopback
+## 1. Running it: Docker Compose
 
-- The app listens on `127.0.0.1:8078` by default (`LGT_BIND`, used by `run.sh` / `run.sh.deployed`).
-- `cloudflared` on the same host reaches it. Nothing on the LAN can.
-- If `cloudflared` runs on another machine:
-  - Set `LGT_BIND` to the interface that machine connects to.
-  - Firewall 8078 so that only the tunnel host can reach it.
-  - Keep `LGT_AUTH=cf-access`. The app refuses to start unauthenticated on a non-loopback bind.
+AMP Sync runs as the compose service `lgt-amp-sync`, like the owner's other apps. The files are in the repo root:
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | `python:3.10-slim` + `rsync`, runs as uid/gid 1001 (`amp`), `HEALTHCHECK` on `GET /healthz`, uvicorn on `0.0.0.0:8078` inside the container |
+| `docker-compose.yml` | production: `container_name: lgt-amp-sync`, `restart: unless-stopped`, `user: "1001:1001"`, port `127.0.0.1:8078:8078` only, volumes `/mnt/storage_ssd/ssd-live` (same path inside) and `./data:/var/lib/lgt-amp-sync`, `env_file: .env` |
+| `.env.example` | the real Cloudflare Access values, the hostname and the datastore path. Copy it to `.env` |
+| `docker-compose.dev.yml` | override that mounts the **sandbox** instead, publishes `127.0.0.1:8095`, runs as the sandbox owner, auth off (`LGT_AUTH=none` + `LGT_AUTH_ALLOW_INSECURE=1`) |
+
+Why this is safe with `0.0.0.0` inside the container:
+- The port is published on the host's loopback only (`127.0.0.1:8078`). `cloudflared` on the host reaches it; the LAN cannot.
+- Production uses `LGT_AUTH=cf-access`, so every request needs a valid Access JWT anyway.
+- `LGT_AUTH=none` on a non-loopback bind is refused at startup unless `LGT_AUTH_ALLOW_INSECURE=1`. Only the dev override sets that, and it is refused whenever `LGT_HOSTNAME` is set.
+- File ownership: the container runs as `1001:1001` (`amp:amp` on this host), so files it writes into the datastore stay `amp:amp`. Verified: a container file write shows `1001:1001` on the host.
+
+Real values (in `.env.example`, not in code):
+- `LGT_CF_TEAM_DOMAIN=tech-guy.cloudflareaccess.com`
+- `LGT_CF_AUD=26625e9b76430b682d8c278b1c8ad95087a23b5f5ac2d3b58ac2a527891bded4`
+- `LGT_HOSTNAME=bulkupdate.obliv.us`. The tunnel ingress `bulkupdate.obliv.us` → `http://localhost:8078`, unchanged from the systemd setup.
+
+### Testing the container against the sandbox
+
+```bash
+export LGT_SANDBOX=/path/to/scratchpad/sandbox          # contains base/ and state/
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -p lgt-amp-sync-dev up -d --build
+curl -s http://127.0.0.1:8095/healthz
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -p lgt-amp-sync-dev down
+```
+
+Stop `dev/serve.sh` first, because both use port 8095. `LGT_UID`/`LGT_GID` pick the container user; the default 1000 matches the sandbox owner.
+
+## 1b. Migrating from the systemd install
+
+The old install: systemd unit `lgt-amp-sync`, code in `/opt/lgt-amp-sync`, state in `/var/lib/lgt-amp-sync`, listening on `127.0.0.1:8078`. The repo no longer ships the unit, `run.sh` or `run.sh.deployed`. Their settings live in `.env` now.
+
+1. **Prepare the checkout** on the host, e.g. `/home/luke/lgt_amp_sync` or a deploy directory of your choice:
+   ```bash
+   cp .env.example .env && chmod 600 .env        # check the values
+   docker compose build
+   ```
+2. **Stop the old service. Keep it installed for rollback.**
+   ```bash
+   sudo systemctl stop lgt-amp-sync
+   sudo systemctl disable lgt-amp-sync
+   ```
+3. **Migrate state.** v1 state (`jobs/*.log`, `uploads/`) isn't used by v2, but copying keeps history. `settings.json`, `backups/` etc. appear on first v2 start.
+   ```bash
+   sudo mkdir -p data
+   sudo rsync -a /var/lib/lgt-amp-sync/ ./data/
+   sudo chown -R 1001:1001 data && sudo chmod 700 data
+   ```
+4. **Start:**
+   ```bash
+   docker compose up -d
+   ```
+5. **Verify:**
+   ```bash
+   docker ps --filter name=lgt-amp-sync        # (healthy)
+   curl -s http://127.0.0.1:8078/healthz       # {"ok":true}
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8078/api/v2/overview   # 401: no Access token, as intended
+   docker logs lgt-amp-sync | tail
+   ```
+   Then open `https://bulkupdate.obliv.us`. Cloudflare Access should log you in, and the top bar should show your email. Run **Check updates** and one **Deploy → preview (plan)** before any real change.
+6. **Rollback:**
+   ```bash
+   docker compose down
+   sudo systemctl enable --now lgt-amp-sync
+   ```
+   The v1 service ignores v2's state files. Nothing in `/opt` or `/var/lib/lgt-amp-sync` was modified by the migration (step 3 only copies).
 
 ## 2. Authentication: Cloudflare Access JWT
 
@@ -26,13 +89,13 @@ The user shown in the audit and activity logs is the token's `email` (or `common
 | Variable | Required | Meaning |
 |---|---|---|
 | `LGT_AUTH` | no | `cf-access` (default when `LGT_CF_AUD` is set) or `none` (only on a loopback bind, never together with `LGT_HOSTNAME`, and it refuses requests that arrive through a proxy or tunnel) |
-| `LGT_CF_TEAM_DOMAIN` | cf-access | e.g. `yourteam.cloudflareaccess.com` (no `https://`) |
+| `LGT_CF_TEAM_DOMAIN` | cf-access | `tech-guy.cloudflareaccess.com` (no `https://`) |
 | `LGT_CF_AUD` | cf-access | the Access application's Audience (AUD) tag |
-| `LGT_HOSTNAME` | yes (prod) | the public hostname, e.g. `amp-sync.example.com`; added to the Host allowlist |
+| `LGT_HOSTNAME` | yes (prod) | the public hostname (`bulkupdate.obliv.us`); added to the Host allowlist |
 | `LGT_ALLOWED_HOSTS` | no | extra comma-separated hostnames that may appear in `Host:` |
-| `LGT_BIND` | no | bind address (default `127.0.0.1`) |
-| `LGT_PORT` | no | port for `run.sh` (default `8078`) |
-| `LGT_STATE_DIR` | no | state directory (default `/var/lib/lgt-amp-sync`); make it `chmod 700`, owned by `amp` |
+| `LGT_BIND` | no | bind address the app assumes (the image sets `0.0.0.0`; outside Docker the default is `127.0.0.1`) |
+| `LGT_AUTH_ALLOW_INSECURE` | no | `1` allows `LGT_AUTH=none` on a non-loopback bind (dev container only) |
+| `LGT_STATE_DIR` | no | state directory (image default `/var/lib/lgt-amp-sync`, i.e. `./data`); `chmod 700`, owned by 1001 |
 | `LGT_BASE_OVERRIDE` | yes (prod) | datastore base, e.g. `/mnt/storage_ssd/ssd-live` |
 | `LGT_MIN_FREE_GB` | no | refuse new jobs below this much free space on the state dir or datastore (default `2`) |
 | `LGT_DOCS` | no | `1` enables `/api/v2/docs` (off by default) |
@@ -50,18 +113,6 @@ The user shown in the audit and activity logs is the token's `email` (or `common
    - Cookie **SameSite = Lax** (or Strict).
    - **HTTP Only**.
    - Session duration as short as is practical.
-
-### Example systemd environment
-
-See `lgt-amp-sync.service`.
-
-```
-Environment=LGT_BIND=127.0.0.1
-Environment=LGT_AUTH=cf-access
-Environment=LGT_CF_TEAM_DOMAIN=yourteam.cloudflareaccess.com
-Environment=LGT_CF_AUD=<aud tag>
-Environment=LGT_HOSTNAME=amp-sync.example.com
-```
 
 ## 3. Host allowlist, CSRF and headers
 
@@ -108,4 +159,5 @@ It is stored in `STATE_DIR/access.log` (JSON lines, rotated at 5 MB).
 ## 7. Housekeeping before deploying
 
 - `app.stale-2025-12-14/` in the repo root is an old copy. Do not deploy it alongside `app/`.
-- Install `PyJWT[crypto]` (in `requirements.txt`).
+- `docker compose build` installs everything from `requirements.txt`, including `PyJWT[crypto]`.
+- `/healthz` is the only unauthenticated endpoint. It returns `{"ok":true}` and nothing else.

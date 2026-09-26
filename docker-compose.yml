@@ -1,0 +1,14 @@
+# Production: docker compose up -d   (see dev/DEPLOY_NOTES.md; needs .env from .env.example)
+services:
+  lgt-amp-sync:
+    build: .
+    image: lgt-amp-sync:latest
+    container_name: lgt-amp-sync
+    restart: unless-stopped
+    user: "1001:1001"            # amp:amp on the host, so files written to the datastore stay amp:amp
+    ports:
+      - "127.0.0.1:8078:8078"    # loopback only: cloudflared on the host is the only way in
+    volumes:
+      - /mnt/storage_ssd/ssd-live:/mnt/storage_ssd/ssd-live
+      - ./data:/var/lib/lgt-amp-sync
+    env_file: .env

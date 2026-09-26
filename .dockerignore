@@ -1,0 +1,17 @@
+.git
+.venv
+venv
+.omc
+data
+dev
+tests
+app.stale-*
+**/__pycache__
+*.pyc
+.env
+.env.*
+docker-compose*.yml
+Dockerfile
+INSTALL.md
+run.sh*
+*.service
