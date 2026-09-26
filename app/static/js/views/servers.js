@@ -31,9 +31,10 @@ export function ServersList() {
     </div>`;
 }
 
-export const driftTip = (s) => s.drift_plugins?.length
-  ? `Differs from the ${s.drift_basis === "source" ? "source server" : "network majority"}: ${s.drift_plugins.map(p => `${p.name} ${p.version} (expected ${p.expected ?? p.basis_version})`).join(", ")}`
-  : `${plural(s.drift, "plugin")} on a different version than the rest of the network`;
+export const driftTip = (s) => [
+  s.drift_plugins?.length ? `Differs from the network majority: ${s.drift_plugins.map(p => `${p.name} ${p.version} (network: ${p.expected})`).join(", ")}` : `${plural(s.drift, "plugin")} on a different version than the rest of the network`,
+  s.drift_pinned?.length ? `Pinned on purpose: ${s.drift_pinned.map(p => `${p.name} ${p.version}`).join(", ")}` : "",
+].filter(Boolean).join("\n");
 
 const FILTERS = [["all", "All"], ["outdated", "Updates"], ["unknown", "Untracked"], ["held", "Held"]];
 const held = (p) => p.status === "pinned" || p.status === "ignored";
@@ -107,7 +108,9 @@ export function ServerDetail({ id }) {
             <td class="col-check">${p.status === "outdated" ? html`<${Check} label=${`Select ${p.name}`} checked=${sel.has(p.key)} onChange=${v => toggle(p.key, v)} />` : null}</td>
             <td><div class="cell-name"><b>${p.name}</b><span class="jar" title=${`${p.jar} · ${bytes(p.size)} · modified ${relTime(p.mtime)}`}>${p.jar}</span>
               <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${Status} p=${p} id=${id} total=${total} /></span>`}</span></div></td>
-            <td class="hide-sm"><span class="ver">${p.version || "—"}</span></td>
+            <td class="hide-sm"><span class="ver">${p.version || "—"}</span>
+              ${p.current_compat?.ok === false && html`<div><${Tag} kind="warn" icon="triangle-alert" title=${`${p.jar} lists ${p.current_compat.mc_versions.join(", ")}; this server runs ${p.current_compat.mc}`}>built for MC ${p.current_compat.mc_versions.slice(-1)[0]}<//></div>`}
+              ${p.drift && p.expected_version && html`<div class="small" style="color:var(--drift)">network runs ${p.expected_version}</div>`}</td>
             <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
                 ${p.latest.changelog_url && p.status === "outdated" && html` <a class="link small" href=${p.latest.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
               : html`<span class="muted small">—</span>`}</td>

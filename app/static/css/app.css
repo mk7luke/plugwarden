@@ -537,6 +537,7 @@ a.srv-chip:hover { border-color: var(--line-strong); color: var(--fg); }
 .diff .d-add { color: var(--ok); background: var(--ok-soft); }
 .diff .d-del { color: var(--danger); background: var(--danger-soft); }
 .diff .d-hunk { color: var(--fg-3); }
+.diff-note { display: flex; align-items: center; gap: 6px; margin: 6px 0 -2px 24px; }
 .target-why { color: var(--fg-3); font-weight: 500; margin-left: 2px; }
 .target:disabled { opacity: 1; color: var(--fg-3); border-style: dashed; }
 .step-n.idle { background: var(--surface-3); color: var(--fg-3); }

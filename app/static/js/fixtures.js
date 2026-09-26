@@ -323,6 +323,7 @@ export async function handle(method, path, body) {
     if (p === "/jobs") return delay(jobs.map(({ log, results, ...j }) => ({ ...j, servers: [...new Set(results.map(r => r.server))], counts: results.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {}) })));
     if ((m = p.match(/^\/jobs\/([^/]+)$/))) return delay(jobs.find(j => j.id === m[1]), 120);
     if (p === "/settings") return delay(settings);
+    if (p === "/access-log") return delay({ entries: [{ at: iso(3 * MIN), user: "luke@interactep.com", action: "diff", servers: ["elChapo01", "M1-hub01"], path: "LuckPerms/config.yml", detail: "2 value(s) redacted" }] });
   }
   if (method === "PUT" && p === "/settings") { Object.assign(settings, body); return delay(settings); }
   if (method === "POST") {

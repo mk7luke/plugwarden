@@ -54,10 +54,8 @@ function Changeset({ cs }) {
   useEffect(() => {
     setPlan(null); setErr(null); setApplyErr(null);
     (async () => {
-      const servers = await get("/servers");
-      const mc = Object.fromEntries(servers.map(x => [x.id, x.mc_version]));
       const p = await post("/updates/plan", { items: await scopeItems(cs.scope) });
-      const rows = (p.rows || []).map(r => ({ ...r, row_id: `${r.server}|${r.key}`, compat: compatOf(r.compat, mc[r.server]) }));
+      const rows = (p.rows || []).map(r => ({ ...r, row_id: `${r.server}|${r.key}`, compat: compatOf(r.compat) }));
       setPlan({ ...p, rows });
       setExcluded(new Set());
     })().catch(setErr);
@@ -116,17 +114,18 @@ function Changeset({ cs }) {
             <ul>${skipped.map(k => html`<li><b>${k.name || k.key}</b>${k.server ? ` on ${k.server}` : ""} — <span class="muted">${k.reason || k.detail || "skipped"}</span></li>`)}</ul></details>`}
           <table class="tbl cs-tbl">
             <caption class="sr-only">Planned plugin updates by server</caption>
-            <thead><tr><th class="col-check"><${Check} label="Include all" checked=${!excluded.size} indeterminate=${excluded.size > 0 && included.length > 0} onChange=${v => toggle(rows.filter(r => !r.blocked).map(r => r.row_id), v)} /></th>
+            <thead><tr><th class="col-check"><${Check} label="Include all" checked=${!excluded.size} indeterminate=${excluded.size > 0 && included.length > 0} onChange=${v => toggle(rows.map(r => r.row_id), v)} /></th>
               <th scope="col">Plugin</th><th scope="col">Change</th><th scope="col" class="hide-sm">Compatibility</th><th scope="col" class="num hide-sm">Size</th></tr></thead>
             ${groups.map(([server, rs]) => { const inc = rs.filter(r => !excluded.has(r.row_id)).length; return html`<tbody>
-              <tr class="cs-group"><th class="col-check"><${Check} label=${`Include all on ${server}`} checked=${inc === rs.length} indeterminate=${inc > 0 && inc < rs.length} onChange=${v => toggle(rs.filter(r => !r.blocked).map(r => r.row_id), v)} /></th>
+              <tr class="cs-group"><th class="col-check"><${Check} label=${`Include all on ${server}`} checked=${inc === rs.length} indeterminate=${inc > 0 && inc < rs.length} onChange=${v => toggle(rs.map(r => r.row_id), v)} /></th>
                 <th colspan="4" scope="rowgroup"><span class="row" style="gap:8px">${server}<span class="small muted" style="font-weight:500">${inc} of ${plural(rs.length, "change")}</span></span></th></tr>
               ${rs.map(r => { const off = excluded.has(r.row_id); return html`<tr class=${off ? "is-off" : ""}>
-                <td class="col-check"><${Check} label=${`Include ${r.name} on ${server}`} checked=${!off} onChange=${v => !r.blocked && toggle([r.row_id], v)} /></td>
+                <td class="col-check"><${Check} label=${`Include ${r.name} on ${server}`} checked=${!off} onChange=${v => toggle([r.row_id], v)} /></td>
                 <td><div class="cell-name"><b>${r.name}</b>${r.changelog_url && html`<a class="link small" href=${r.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${r.name} (opens in new tab)</span></a>`}</div></td>
                 <td><div class="jar-swap"><span class="old" title=${r.from_jar}>${r.from_jar || r.from_version}</span><span class="new" title=${r.to_jar}><${Icon} n="arrow-right" cls="i-xs" />${r.to_jar || r.to_version}</span>
+                  ${r.also_removes?.length > 0 && html`<span class="small muted" style="font-family:var(--font-sans)">also removes ${r.also_removes.join(", ")}</span>`}
                   <span class="only-sm" style="margin-top:4px"><${CompatChip} c=${r.compat} /></span>
-                  ${r.blocked && html`<span class="small" style="color:var(--warn)">Skipped: ${r.blocked}</span>`}</div></td>
+</div></td>
                 <td class="hide-sm"><${CompatChip} c=${r.compat} />${r.verified && html`<span class="small muted row" style="gap:3px;margin-top:3px"><${Icon} n="shield" cls="i-xs" />hash verified</span>`}</td>
                 <td class="num hide-sm small muted">${r.size ? bytes(r.size) : "—"}</td>
               </tr>`; })}
@@ -136,6 +135,7 @@ function Changeset({ cs }) {
     <footer class="sheet-foot">
       ${applyErr && html`<div class="error-box" style="width:100%;padding:10px 12px" role="alert"><${Icon} n="triangle-alert" />
         <div class="grow"><b>${applyErr.status === 409 ? "This plan is out of date" : "Couldn't apply"}</b><p>${applyErr.message}</p>
+          ${applyErr.conflicts?.length > 0 && html`<ul class="small" style="margin:-4px 0 8px">${applyErr.conflicts.map(c => html`<li>${c.server} · ${c.from_jar || c.key}: ${c.reason}</li>`)}</ul>`}
           <${Btn} size="sm" icon="refresh-cw" onClick=${() => setN(n + 1)}>Re-plan<//></div></div>`}
       <div class="grow small">${plan && rows.length ? html`<b>${plural(tot.changes, "change")}</b><span class="muted"> · ${plural(tot.plugins, "plugin")} · ${plural(tot.servers, "server")}${tot.bytes ? ` · ${bytes(tot.bytes)} download` : ""}</span>
         ${tot.compatWarn > 0 && html`<div style="color:var(--warn)">${plural(tot.compatWarn, "change")} not listed for the server's MC version</div>`}` : ""}</div>
@@ -162,7 +162,7 @@ function Result({ live, job, running, rows, onClose }) {
   const res = job?.results || [];
   const byOutcome = res.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {});
   const restart = job?.restart_servers || [...new Set(res.filter(r => r.outcome === "changed").map(r => r.server))];
-  const nameOf = (r) => rows.find(x => x.server === r.server && (x.key === r.key || x.to_jar === r.item))?.name || r.item;
+  const nameOf = (r) => r.item;
   const mark = async (s) => {
     try { await post(`/servers/${encodeURIComponent(s)}/restarted`); setRestarted(x => new Set([...x, s])); invalidate("/servers", "/overview"); }
     catch (e) { toast({ kind: "err", title: `Couldn't mark ${s}`, body: e.message }); }

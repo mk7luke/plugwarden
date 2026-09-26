@@ -101,12 +101,13 @@ export function Matrix({ query }) {
             ${cols.map(id => {
               const c = p.cells[id];
               if (!c) { const na = p.family && pf[id]?.family && pf[id].family !== p.family; return html`<td class=${na ? "cell-na" : "cell-empty"} title=${na ? `${id} runs a different plugin ecosystem` : undefined}><span class="sr-only">${na ? "not applicable" : "not installed"}</span></td>`; }
-              const s = p.drift && c.status === "unknown" ? "drift" : c.status;
+              // The backend marks the odd cell out; pinned installs never count as drift.
+              const s = c.drift ? "drift" : c.status;
               const on = sel.has(cid(p.key, id));
               return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "")} aria-pressed=${on ? "true" : "false"}
-                data-tip=${`${id}\n${c.jar}\n${c.version} — ${LABEL[s] || s}${p.latest_version && s === "outdated" ? ` (latest ${p.latest_version})` : ""}`}
+                data-tip=${`${id}\n${c.jar}\n${c.version} — ${LABEL[s] || s}${p.latest_version && s === "outdated" ? ` (latest ${p.latest_version})` : ""}${c.drift_pinned ? `\nPinned — differs from the network (${p.expected_version}) on purpose` : ""}${p.expected_version && c.drift ? `\nNetwork majority: ${p.expected_version}` : ""}`}
                 aria-label=${`${p.name} on ${id}: ${c.version}, ${LABEL[s] || s}`} onClick=${e => clickCell(p, id, e)}>
-                <span class="mv">${s === "pinned" && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}</span></button></td>`;
+                <span class="mv">${(s === "pinned" || c.drift_pinned) && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}</span></button></td>`;
             })}
             <td class="mx-pad" aria-hidden="true"></td>
           </tr>`)}</tbody>
@@ -172,7 +173,7 @@ function PluginDrawer({ all, source, pf }) {
         <thead><tr><th scope="col">Server</th><th scope="col">Version</th><th scope="col">Status</th></tr></thead>
         <tbody>${cells.map(([s, c]) => html`<tr><td><a class="strong" href=${`#/servers/${encodeURIComponent(s)}`} onClick=${close}>${s}</a>${s === source ? html` <${Tag}>source<//>` : ""}</td>
           <td><div class="cell-name"><span class="ver">${c.version}</span><span class="jar">${c.jar}</span></div></td>
-          <td><${StatusTag} status=${p.drift && c.status === "unknown" ? "drift" : c.status} /></td></tr>`)}</tbody></table>
+          <td><${StatusTag} status=${c.drift ? "drift" : c.status} /></td></tr>`)}</tbody></table>
     </div>
   </aside>`;
 }

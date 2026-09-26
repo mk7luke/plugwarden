@@ -21,8 +21,7 @@ export function jobVerb(j) {
   const t = jobTone(j);
   return t === "ok" ? (j.status === "undone" ? "was reverted" : "finished") : t === "warn" ? "finished with errors" : j.status === "interrupted" ? "was interrupted" : "failed";
 }
-// Human summary: dry runs say "would change", never "changed".
-export const jobSummary = (j) => !j?.summary ? "" : j.dry_run ? j.summary.replace(/\bchanged\b/g, "would change") : j.summary;
+export const jobSummary = (j) => j?.summary || "";
 
 export async function runJob(request, { title, onDone } = {}) {
   let res;

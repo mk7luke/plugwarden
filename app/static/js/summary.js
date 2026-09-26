@@ -8,7 +8,8 @@ export const updatesOf = (d) => d?.updates || [];
 export function compatOf(c, mc) {
   if (!c) return null;
   const list = c.mc_versions || [];
-  return { mc, supported: list, ok: !mc || !list.length || list.includes(mc) };
+  const m = c.mc ?? mc;
+  return { mc: m, supported: list, ok: c.ok ?? (!m || !list.length || list.includes(m)) };
 }
 
 // {plugins, installs, servers} of pending updates.

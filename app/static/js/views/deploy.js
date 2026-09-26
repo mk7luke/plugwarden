@@ -93,7 +93,8 @@ export function Deploy({ query }) {
       setJobId(r.job_id);
       trackJob(r.job_id, { title: `Deploy · ${ACTIONS.find(a => a[0] === action)[1]}` });
     } catch (e) {
-      toast({ kind: "err", title: e.status === 409 ? "Targets changed since this preview" : "Deploy didn't start", body: e.status === 409 ? "The plan was refreshed — review it and execute again." : e.message });
+      toast({ kind: "err", title: e.status === 409 ? "Targets changed since this preview" : "Deploy didn't start",
+        body: e.status === 409 ? `${e.conflicts.map(c => `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed — review it and execute again.` : e.message });
       if (e.status === 409) setNonce(n => n + 1);
     }
   };
@@ -348,14 +349,12 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
   </section>`;
 }
 
-// "Old.jar (1.0) → New.jar (2.0)" as the API writes it for replacements.
-const SWAP = /^(.+?)(?: \(([^)]*)\))? → (.+?)(?: \(([^)]*)\))?$/;
 
 function PlanRow({ r, action, source, install, onInstall }) {
   const [diff, setDiff] = useState(null); // null | "loading" | {lines} | Error
   const del = action === "delete" && r.outcome === "changed";
   const [i, cl] = del ? ["minus", "op-delete"] : OUT[r.outcome] || OUT.changed;
-  const swap = r.outcome === "changed" && SWAP.exec(r.detail || "");
+  const swap = r.outcome === "changed" && r.new_jar;
   const diffable = r.outcome === "changed" && !del && r.item.includes("/") && !/\/$/.test(r.item) && source;
   const loadDiff = async () => {
     if (diff && diff !== "loading") { setDiff(null); return; }
@@ -367,10 +366,12 @@ function PlanRow({ r, action, source, install, onInstall }) {
   };
   return html`<div class="plan-op-wrap">
     <div class="plan-op"><${Icon} n=${i} cls=${"i-xs " + cl} />
-      ${swap ? html`<div class="jar-swap"><span class="old">${swap[1]}${swap[2] ? ` (${swap[2]})` : ""}</span><span class="new"><${Icon} n="arrow-right" cls="i-xs" />${swap[3]}${swap[4] ? ` (${swap[4]})` : ""}</span></div>`
+      ${swap ? html`<div class="jar-swap">${(r.old_jars || []).map((j, k) => html`<span class="old">${j}${r.old_versions?.[k] ? ` (${r.old_versions[k]})` : ""}</span>`)}
+          ${!(r.old_jars || []).length && html`<span class="small muted" style="font-family:var(--font-sans)">new install</span>`}
+          <span class="new"><${Icon} n="arrow-right" cls="i-xs" />${r.new_jar}${r.new_version ? ` (${r.new_version})` : ""}</span></div>`
         : html`<span class="op-text"><span class=${r.outcome === "skipped" || r.outcome === "unchanged" ? "muted" : ""}>${r.item}</span>
           ${r.detail && html`<span class=${"op-detail" + (r.outcome === "skipped" ? " is-skip" : r.outcome === "error" ? " is-err" : "")}>${r.outcome === "skipped" ? "Skipped: " : ""}${r.detail}</span>`}
-          ${r.outcome === "skipped" && /not installed/i.test(r.detail || "") && !install && action !== "delete" && html`<button type="button" class="linkbtn" onClick=${onInstall}>Also install where missing</button>`}
+          ${r.reason_code === "not_installed" && !install && action !== "delete" && html`<button type="button" class="linkbtn" onClick=${onInstall}>Also install where missing</button>`}
           ${diffable && html`<button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide diff" : "Show diff"}</button>`}</span>`}
     </div>
     ${diff && html`<${DiffView} d=${diff} />`}
@@ -382,10 +383,13 @@ function DiffView({ d }) {
   if (d instanceof Error) return html`<div class="diff small" style="color:var(--danger)">Couldn't load diff: ${d.message}</div>`;
   if (d.binary) return html`<div class="diff small muted">Binary file — no text diff.</div>`;
   if (d.too_large) return html`<div class="diff small muted">File too large to diff.</div>`;
+  const red = d.redacted || [];
+  const redNote = red.length > 0 && html`<div class="diff-note small muted"><${Icon} n="shield" cls="i-xs" />${plural(red.length, "secret value")} hidden (${[...new Set(red.map(x => x.key.replace(/ \(\d+\)$/, "")))].join(", ")})${d.redacted_changed ? " — at least one differs" : ""}</div>`;
   if (d.identical) return html`<div class="diff small muted">Identical — nothing would change.</div>`;
+  if (!d.diff && d.redacted_changed) return html`<div class="diff small">Only redacted values differ (${red.filter(x => x.changed).map(x => x.key).join(", ")}).</div>`;
   if (!d.target_exists) return html`<div class="diff small muted">New file on this server.</div>`;
   const lines = (d.diff || "").split("\n").filter(l => !/^(---|\+\+\+) /.test(l));
-  return html`<pre class="diff" aria-label=${`Diff of ${d.path}: this server becomes the source version`}>${lines.map(l => html`<span class=${l.startsWith("@@") ? "d-hunk" : l[0] === "+" ? "d-add" : l[0] === "-" ? "d-del" : ""}>${l || " "}</span>`)}</pre>`;
+  return html`${redNote}<pre class="diff" aria-label=${`Diff of ${d.path}: this server becomes the source version`}>${lines.map(l => html`<span class=${l.startsWith("@@") ? "d-hunk" : l[0] === "+" ? "d-add" : l[0] === "-" ? "d-del" : ""}>${l || " "}</span>`)}</pre>`;
 }
 
 function SearchResults({ found, q, picked, toggle, open }) {

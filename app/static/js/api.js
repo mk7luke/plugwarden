@@ -5,7 +5,7 @@ let fx = null;
 async function fixtures() { return fx || (fx = await import("./fixtures.js")); }
 
 export class ApiError extends Error {
-  constructor(status, detail, path) { super(detail || `HTTP ${status}`); this.status = status; this.path = path; }
+  constructor(status, detail, path, conflicts) { super(detail || `HTTP ${status}`); this.status = status; this.path = path; this.conflicts = conflicts || []; }
 }
 
 export async function api(path, { method = "GET", body, form } = {}) {
@@ -22,6 +22,8 @@ export async function api(path, { method = "GET", body, form } = {}) {
   if (!res.ok) {
     let d = data && data.detail !== undefined ? data.detail : data;
     if (Array.isArray(d)) d = d.map(x => x.msg || JSON.stringify(x)).join("; ");
+    // 409s carry {message, conflicts:[...]}.
+    if (d && typeof d === "object") throw new ApiError(res.status, d.message, path, d.conflicts);
     throw new ApiError(res.status, typeof d === "string" ? d : `HTTP ${res.status}`, path);
   }
   return data;

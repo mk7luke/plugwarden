@@ -14,9 +14,10 @@ const reverted = (j) => j.status === "undone" || !!j.undone_by;
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const OUTCOME_TAG = { changed: "ok", error: "danger", skipped: "", unchanged: "" };
 
-export function Activity({ id }) {
+export function Activity({ id, tab }) {
   const q = useQuery("/jobs");
-  const [kind, setKind] = useState("all");
+  const [kind, setKind] = useState(tab === "access" ? "access" : "all");
+  useEffect(() => { if (tab === "access") setKind("access"); }, [tab]);
   const [hideDry, setHideDry] = useState(() => pref("amp.act.hidedry", "1") === "1");
   const setHD = (v) => { setHideDry(v); try { localStorage.setItem("amp.act.hidedry", v ? "1" : "0"); } catch {} };
   const base = useMemo(() => (q.data || []).filter(j => !hideDry || !j.dry_run), [q.data, hideDry]);
@@ -26,9 +27,11 @@ export function Activity({ id }) {
 
   return html`<${PageHead} title="Activity" sub="Every update, deploy and undo — who ran it, what changed, and the full log." />
     <div class="toolbar"><div class="seg" role="group" aria-label="Filter by kind">
-      ${KINDS.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}</div>
+      ${KINDS.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}
+      <button type="button" aria-pressed=${kind === "access" ? "true" : "false"} onClick=${() => setKind("access")} title="Who viewed which config diffs"><${Icon} n="eye" cls="i-xs" />Access</button></div>
       <span class="spacer"></span>
-      <label class="switch small"><input type="checkbox" checked=${hideDry} onChange=${e => setHD(e.currentTarget.checked)} />Hide dry runs</label></div>
+      ${kind !== "access" && html`<label class="switch small"><input type="checkbox" checked=${hideDry} onChange=${e => setHD(e.currentTarget.checked)} />Hide dry runs</label>`}</div>
+    ${kind === "access" ? html`<${AccessLog} />` : html`
     <div class=${"act-layout" + (selected ? " has-detail" : "")}>
       <section class="panel job-list-panel" aria-label="Job history">
         ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
@@ -44,7 +47,32 @@ export function Activity({ id }) {
       </section>
       <div class="job-detail">${selected ? html`<a class="btn btn-ghost btn-sm only-sm" href="#/activity" style="margin-bottom:8px"><${Icon} n="chevron-left" cls="i-sm" />All activity</a><${JobDetail} key=${selected} id=${selected} />`
         : html`<div class="panel"><${Empty} icon="scroll-text" title="Select a job">Pick a job to see per-server results, the full log, and undo.<//></div>`}</div>
-    </div>`;
+    </div>`}`;
+}
+
+// Read-access log: who viewed which config diffs (secrets are redacted in the diff itself).
+function AccessLog() {
+  const [f, setF] = useState({ user: "", server: "", path: "" });
+  const [qs, setQs] = useState("limit=200");
+  useEffect(() => {
+    const t = setTimeout(() => setQs(new URLSearchParams(Object.entries({ limit: "200", ...f }).filter(([, v]) => v)).toString()), 250);
+    return () => clearTimeout(t);
+  }, [f.user, f.server, f.path]);
+  const q = useQuery(`/access-log?${qs}`);
+  const entries = q.data?.entries || [];
+  const field = (k, label) => html`<div class="input-wrap" style="width:200px"><${Icon} n="filter" cls="i-sm" /><input class="input" type="search" aria-label=${`Filter by ${label}`} placeholder=${label} value=${f[k]} onInput=${e => setF({ ...f, [k]: e.currentTarget.value })} /></div>`;
+  return html`<div class="toolbar">${field("user", "User")}${field("server", "Server")}${field("path", "Path")}<span class="spacer"></span>
+      <span class="small muted">Config diffs are recorded when viewed; secret values are redacted.</span></div>
+    <section class="panel" aria-label="Access log">
+      ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
+        : q.loading ? html`<${SkelRows} n=${6} cols=${[12, 20, 30, 20]} />`
+        : !entries.length ? html`<${Empty} icon="eye" title="No access recorded">${Object.values(f).some(Boolean) ? "Nothing matches these filters." : "Viewing a config diff in Deploy is recorded here."}<//>`
+        : html`<div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Access log, newest first</caption>
+          <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Viewed</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
+          <tbody>${entries.map(e => html`<tr><td class="small muted" title=${absTime(e.at)} style="white-space:nowrap">${relTime(e.at)}</td><td>${e.user}</td>
+            <td><div class="cell-name"><span class="mono small">${e.path}</span><span class="small muted">${e.action}</span></div></td>
+            <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted">${e.detail || ""}</td></tr>`)}</tbody></table></div>`}
+    </section>`;
 }
 
 function JobDetail({ id }) {

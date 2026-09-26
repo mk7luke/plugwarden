@@ -65,7 +65,7 @@ function Headline({ d, c, restarts }) {
       <p class="hl-title">${updateHeadline(c)}${has && html`<span class="hl-detail"> · ${updateDetail(c)}</span>`}</p>
       <p class="hl-meta">${checkLine(d)} · auto-update <a class="link" href="#/updates">${(MODE[d.auto_update?.mode] || "off").toLowerCase()}</a>
         ${d.auto_update?.next_run ? ` · next ${relTime(d.auto_update.next_run)}` : ""}</p>
-${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.map(j => j.summary || j.kind).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
+${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
         <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
     <div class="row wrap" style="gap:8px">
@@ -76,8 +76,7 @@ ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls=
 }
 
 function Flags({ s, n, restart = true }) {
-  const basis = s.drift_basis === "majority" ? "the network majority" : "the source server";
-  const driftTip = s.drift_plugins?.length ? `Differs from ${basis}: ${s.drift_plugins.map(p => p.name).join(", ")}` : `${plural(s.drift, "plugin")} on a different version than ${basis}`;
+  const driftTip = s.drift_plugins?.length ? `Differs from the network majority: ${s.drift_plugins.map(p => `${p.name} ${p.version} (network: ${p.expected})`).join(", ")}` : `${plural(s.drift, "plugin")} on a different version than the network majority`;
   return html`<div class="tile-flags">
     ${n > 0 && html`<span class="tag tag-update tip" tabindex="0" data-tip=${`${plural(n, "plugin")} can be updated on ${s.id}`}>${plural(n, "update")}</span>`}
     ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip}><${Icon} n="git-compare-arrows" />${s.drift} drift</span>`}
