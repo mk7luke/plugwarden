@@ -11,4 +11,5 @@ services:
     volumes:
       - /mnt/storage_ssd/ssd-live:/mnt/storage_ssd/ssd-live
       - ./data:/var/lib/lgt-amp-sync
+      - /etc/localtime:/etc/localtime:ro   # server logs carry local times (health checks, restart detection)
     env_file: .env

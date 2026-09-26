@@ -1,4 +1,4 @@
-/* LGT AMP Sync — base, components, layout. Tokens live in tokens.css. */
+/* PlugWarden — base, components, layout. Tokens live in tokens.css. */
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -949,3 +949,9 @@ body:has(.mx-bar) .toasts, body:has(.bulkbar) .toasts { bottom: 88px; }
 .restart-list li { flex-wrap: wrap; }
 .reverted-banner.is-failed { background: var(--danger-soft); color: var(--fg); border-bottom-color: var(--danger-line); }
 .reverted-banner.is-failed > .i { color: var(--danger); }
+.known { margin-bottom: var(--s-4); padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); display: flex; flex-direction: column; gap: 6px; }
+.known > .row > .i { color: var(--warn); }
+.known ul { display: flex; flex-direction: column; gap: 6px; padding-left: 22px; }
+.startup .known { margin: 4px 0 0; background: transparent; }
+.known.is-failing { border-color: var(--danger-line); }
+.known.is-failing > .row > .i { color: var(--danger); }

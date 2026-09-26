@@ -22,10 +22,11 @@ const signedIn = (ov) => ov?.user && ov.user !== "local" && ov.auth !== "none";
 
 const MODE_LABEL = { off: "Auto-update off", notify: "Auto-check · notify", apply: "Auto-update on" };
 
-export const Brand = () => html`<a class="brand" href="#/dashboard" aria-label="AMP Sync — dashboard">
-  <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/>
-    <path d="M9 11.5 16 8l7 3.5v9L16 24l-7-3.5zM9 11.5 16 15l7-3.5M16 15v9" fill="none" stroke="var(--accent-fg)" stroke-width="2" stroke-linejoin="round"/></svg>
-  <div class="brand-text">AMP Sync<small>LGT network</small></div>
+// Mark: a warden's shield with a plug — "keeps your plugins in line".
+export const Brand = () => html`<a class="brand" href="#/dashboard" aria-label="PlugWarden — dashboard">
+  <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3.5 26 7v8.2c0 6-4.1 10.9-10 13.3C10.1 26.1 6 21.2 6 15.2V7z" fill="var(--accent)"/>
+    <path d="M12.5 9.5v4M19.5 9.5v4M10.5 13.5h11v2.5a5.5 5.5 0 0 1-11 0zM16 21.5v3" fill="none" stroke="var(--accent-fg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <div class="brand-text">PlugWarden<small>LGT Network</small></div>
 </a>`;
 
 function NavList({ route, ov, onNav }) {

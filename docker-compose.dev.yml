@@ -10,6 +10,7 @@ services:
     volumes: !override
       - ${LGT_SANDBOX:?set LGT_SANDBOX to the sandbox dir}/base:/sandbox/base
       - ${LGT_SANDBOX}/state:/var/lib/lgt-amp-sync
+      - /etc/localtime:/etc/localtime:ro
     env_file: !reset []
     environment:
       LGT_BASE_OVERRIDE: /sandbox/base

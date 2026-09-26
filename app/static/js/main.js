@@ -57,7 +57,7 @@ function App() {
   useQuery(route.name === "activity" && route.parts[1] ? "/jobs" : null);
   const [content, crumbs, wide] = view(route);
   useEffect(() => {
-    document.title = `${crumbs ? crumbs[crumbs.length - 1].label : TITLES[route.name] || "Not found"} · AMP Sync`;
+    document.title = `${crumbs ? crumbs[crumbs.length - 1].label : TITLES[route.name] || "Not found"} · PlugWarden`;
     setState({ drawer: false });
     document.getElementById("main")?.focus({ preventScroll: true });
     window.scrollTo(0, 0);

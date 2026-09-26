@@ -4,6 +4,7 @@ import { useQuery, invalidate, toast, setState, useStore, getState } from "../st
 import { post, put } from "../api.js";
 import { Icon, Btn, Tag, StatusTag, Platform, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
+import { ServerKnownIssues } from "../components/health.js";
 import { relTime, bytes, plural, safeUrl } from "../fmt.js";
 import { navigate } from "../router.js";
 
@@ -85,6 +86,7 @@ export function ServerDetail({ id }) {
     <//>
     ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed</b> — files changed since ${id} last started.</div>
       <${Btn} size="sm" icon="check" onClick=${markRestarted}>Mark restarted<//></div>`}
+    ${srv && srv.plugin_count > 0 && html`<${ServerKnownIssues} server=${id} />`}
     ${srv?.platform === "velocity" && html`<div class="plan-warn" style="border:1px solid var(--warn-line);border-radius:var(--r-md);margin-bottom:var(--s-4)"><${Icon} n="shield" cls="i-sm" />Velocity proxy — it uses a different plugin ecosystem, and Bukkit/Paper plugins are never pushed here.</div>`}
 
     <div class="toolbar">

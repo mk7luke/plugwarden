@@ -105,9 +105,9 @@ def read_runs(srv: Server, since: float | None = None, want_before: int = BASELI
         chunks.append((p, day, lines))
         starts = [ln for ln in lines if _START.search(ln)]
         if starts:
-            t = _abs(day, starts[-1])
+            t = _abs(day, starts[0])
             if since is None or (t is not None and t < since):
-                starts_seen_before += len(starts)
+                starts_seen_before += max(1, sum(1 for ln in lines if "Done (" in ln))
         if starts_seen_before > want_before:  # enough history: the newest run + baseline runs
             break
     runs: list[dict] = []
@@ -115,13 +115,17 @@ def read_runs(srv: Server, since: float | None = None, want_before: int = BASELI
     for p, day, lines in reversed(chunks):
         for ln in lines:
             t = _abs(day, ln)
-            if _START.search(ln):
+            # One start logs several markers ("[bootstrap] Running Java", then "Starting minecraft server");
+            # a marker only opens a new run once the current one finished starting or stopped.
+            if _START.search(ln) and (cur is None or cur["start"] is None or cur.get("ended")):
                 cur = {"start": t, "file": p.name, "lines": [], "complete": True}
                 runs.append(cur)
             elif cur is None:
                 cur = {"start": None, "file": p.name, "lines": [], "complete": False}  # started before our window
                 runs.append(cur)
             cur["lines"].append((t, ln))
+            if "Done (" in ln or "Stopping server" in ln or "Shutting down the proxy" in ln:
+                cur["ended"] = True
     return runs
 
 
@@ -245,7 +249,12 @@ class _Matcher:
                 or bool(self.event.search(head)) or bool(self.pkg and self.pkg in block))
 
 
-def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | None, players: set[str]) -> dict:
+def baseline_signatures(baseline: list[dict], players: set[str]) -> set[str]:
+    return {signature(h[1], players) for r in baseline for h in _error_heads(r)}
+
+
+def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | None, players: set[str],
+                base_sigs: set[str] | None = None) -> dict:
     lines = _cut_shutdown(run["lines"])
     start = run["start"] or (lines[0][0] if lines and lines[0][0] else None)
     done_i = next((i for i, (_t, ln) in enumerate(lines) if "Done (" in ln), None)
@@ -261,7 +270,8 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
         if m.disabled and m.disabled.search(ln) and done_i is not None and i < done_i:
             return {"status": "failed", "reason": "disabled during startup", "line": i + 1,
                     "excerpt": _excerpt(lines, i), "preexisting": False}
-    base_sigs = {signature(b[1], players) for r in baseline for b in _error_heads(r)}
+    if base_sigs is None:
+        base_sigs = baseline_signatures(baseline, players)
     new, known, late = [], [], []
     for a, b in _blocks(lines):
         t, head = lines[a]
@@ -320,25 +330,37 @@ def _pick(runs: list[dict], since: float | None) -> tuple[dict | None, list[dict
 
 
 def plugin_health(srv: Server, runs: list[dict], plugin: dict, meta_desc: dict | None,
-                  since: float | None = None) -> dict:
-    target, baseline = _pick(runs, since)
+                  since: float | None = None, _ctx: dict | None = None) -> dict:
+    ctx = _ctx or context(runs, since)
+    target, baseline = ctx["target"], ctx["baseline"]
+    empty = {"excerpt": [], "log": None, "preexisting_errors": [], "later_errors": [], "warnings": []}
     if target is None:
-        return {"status": "unknown", "reason": "no server start in the logs since then", "excerpt": [],
-                "log": None, "preexisting_errors": [], "later_errors": [], "warnings": []}
+        return {**empty, "status": "unknown", "reason": "no server start in the logs since then"}
+    if target["start"] is None:
+        return {**empty, "status": "unknown", "reason": "the last server start is older than the available logs"}
     main = (meta_desc or {}).get("main")
     pkg = main.rsplit(".", 1)[0] if main and main.count(".") >= 2 else None
     m = _Matcher(plugin["name"], plugin["jar"], pkg, srv.family, (meta_desc or {}).get("id"))
-    res = analyse_run(target, baseline, m, plugin.get("version"), _players(runs))
+    res = analyse_run(target, baseline, m, plugin.get("version"), ctx["players"], ctx["base_sigs"])
     return {**res, "log": target["file"], "run_started": target["start"], "baseline_runs": len(baseline)}
+
+
+def context(runs: list[dict], since: float | None) -> dict:
+    """Things shared by every plugin checked against the same logs (computed once per report)."""
+    target, baseline = _pick(runs, since)
+    players = _players(runs)
+    return {"target": target, "baseline": baseline, "players": players,
+            "base_sigs": baseline_signatures(baseline, players)}
 
 
 def server_report(srv: Server, since: float | None) -> dict:
     runs = read_runs(srv, since)
-    target, baseline = _pick(runs, since)
+    ctx = context(runs, since)
+    target, baseline = ctx["target"], ctx["baseline"]
     plugins = []
     for p in inventory.list_plugins(srv):
         desc = inventory.jar_meta(srv.plugins_dir / p["jar"])["descriptors"].get(srv.family)
-        r = plugin_health(srv, runs, p, desc, since)
+        r = plugin_health(srv, runs, p, desc, since, _ctx=ctx)
         plugins.append({"key": p["key"], "name": p["name"], "jar": p["jar"], "version": p["version"], **r})
     order = {"failed": 0, "unknown": 1, "healthy": 2}
     plugins.sort(key=lambda r: (order[r["status"]], r["name"].lower()))

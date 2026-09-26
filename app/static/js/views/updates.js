@@ -6,7 +6,7 @@ import { Icon, Btn, Tag, VerArrow, SkelRows, ErrorState, Empty, PageHead, Check,
 import { checkUpdates, openUpdateAll } from "../actions.js";
 import { openChangeset, CompatChip } from "../components/changeset.js";
 import { updateCounts, checkLine, updatesOf, compatOf } from "../summary.js";
-import { CanaryStatus } from "../components/health.js";
+import { CanaryStatus, HealthTag } from "../components/health.js";
 import { relTime, absTime, plural, safeUrl } from "../fmt.js";
 
 export function Updates() {
@@ -45,6 +45,7 @@ export function Updates() {
                 <div class="row wrap" style="gap:8px"><b style="font-weight:620">${u.name}</b>
                   ${safeUrl(u.changelog_url) && html`<a class="link small" href=${safeUrl(u.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${u.name} (opens in new tab)</span></a>`}</div>
                 <${VerArrow} from=${u.from_versions} to=${u.to_version} />
+                ${u.canary_health && html`<div style="margin-top:4px" class="row wrap"><span class="small muted">Canary ${u.canary_health.server || ""}:</span><${HealthTag} h=${u.canary_health} /></div>`}
                 ${u.source?.overrides_modrinth && html`<div style="margin-top:4px"><${Tag} kind="warn" icon="triangle-alert">manual source overrides Modrinth (${u.source.overrides_modrinth.name || u.source.overrides_modrinth.slug})<//></div>`}
                 ${u.source?.manual && !u.source?.auto_apply && html`<div class="small muted" style="margin-top:2px">Manual source — never applied automatically</div>`}
                 <${CompatSummary} u=${u} mcOf=${mcOf} />

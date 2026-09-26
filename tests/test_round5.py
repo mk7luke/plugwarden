@@ -1,5 +1,4 @@
 """Round 5: policy validation (422 per field, null = no limit), canary/log health checks, audit collapsing."""
-import gzip
 import os
 import time
 
@@ -39,113 +38,216 @@ def test_no_limit_means_no_cap():
     assert len(chosen) == 40 and not waiting
 
 
-# ---------------------------------------------------------------- P1-2: log health
+# ---------------------------------------------------------------- P1-2: log health (differential)
+# Fixtures follow the real Purpur/Velocity log shapes from the sandbox; player names and IPs are made up.
 
-PAPER_OK = """[12:00:00 INFO]: Starting minecraft server version 1.21.6
-[12:00:01 INFO]: [CoreProtect] Loading server plugin CoreProtect v24.1
-[12:00:02 INFO]: [CoreProtect] Enabling CoreProtect v24.1
-[12:00:02 INFO]: [CoreProtect] CoreProtect has been successfully enabled!
-[12:00:03 ERROR]: [OtherPlugin] Something unrelated broke
-java.lang.IllegalStateException: nope
-\tat com.other.Thing.run(Thing.java:10)
-[12:00:05 INFO]: Done (5.123s)! For help, type "help"
-[13:00:00 INFO]: Stopping server
-[13:00:00 INFO]: [CoreProtect] Disabling CoreProtect v24.1
-"""
+from datetime import datetime, timedelta
+from conftest import write_log
 
-PAPER_ENABLE_FAIL = """[12:00:02 INFO]: [CoreProtect] Enabling CoreProtect v24.1
-[12:00:02 ERROR]: Error occurred while enabling CoreProtect v24.1 (Is it up to date?)
-java.lang.NoSuchMethodError: 'void org.bukkit.Foo.bar()'
-\tat net.coreprotect.CoreProtect.onEnable(CoreProtect.java:88)
-\tat org.bukkit.plugin.java.JavaPlugin.setEnabled(JavaPlugin.java:288)
-[12:00:02 INFO]: [CoreProtect] Disabling CoreProtect v24.1
-[12:00:05 INFO]: Done (5.1s)! For help, type "help"
-"""
-
-PAPER_LOAD_FAIL = """[12:00:01 ERROR]: Could not load 'plugins/CoreProtect-24.1.jar' in folder 'plugins'
-org.bukkit.plugin.UnknownDependencyException: Unknown/missing dependency plugins: [ProtocolLib]. mysql://root:hunter2@db
-\tat org.bukkit.plugin.SimplePluginManager.loadPlugins(SimplePluginManager.java:291)
-[12:00:05 INFO]: Done (5.1s)! For help, type "help"
-"""
-
-PAPER_STACK = """[12:00:02 INFO]: [CoreProtect] Enabling CoreProtect v24.1
-[12:00:05 INFO]: Done (5.1s)! For help, type "help"
-[12:10:00 ERROR]: Could not pass event BlockBreakEvent to CoreProtect v24.1
-java.lang.NullPointerException: null
-\tat net.coreprotect.listener.BlockBreakListener.onBreak(BlockBreakListener.java:40)
-"""
-
-PLUGIN = {"key": "bukkit:coreprotect", "name": "CoreProtect", "version": "24.1", "jar": "CoreProtect-24.1.jar"}
-DESC = {"main": "net.coreprotect.CoreProtect", "id": "CoreProtect"}
+T = "[{t}] [Server thread/INFO]: "
+E = "[{t}] [Server thread/ERROR]: "
 
 
-def _write_logs(env, server_key, latest, gz=None, gz_mtime=None):
-    logs = env[server_key].parent / "logs"
-    logs.mkdir(exist_ok=True)
-    (logs / "latest.log").write_text(latest)
-    if gz is not None:
-        p = logs / "2026-09-26-1.log.gz"
-        with gzip.open(p, "wt") as f:
-            f.write(gz)
-        if gz_mtime:
-            os.utime(p, (gz_mtime, gz_mtime))
-    return logs
+def L(prefix, msg, t="00:01:20"):
+    return prefix.format(t=t) + msg
 
 
-@pytest.mark.parametrize("log,status,reason", [
-    (PAPER_OK, "healthy", "enabled"),
-    (PAPER_ENABLE_FAIL, "failed", "failed to load or enable"),
-    (PAPER_LOAD_FAIL, "failed", "failed to load or enable"),
-    (PAPER_STACK, "failed", "error logged by the plugin"),
-    ("[12:00:02 INFO]: [CoreProtect] Enabling CoreProtect v23.1\n", "unknown", "the server ran v23.1, not v24.1"),
-    ("[12:00:05 INFO]: Done (5.1s)!\n", "unknown", "no log of this plugin since then"),
-])
-def test_plugin_health_from_paper_logs(env, log, status, reason):
-    _write_logs(env, "src", log)
+BASE_BODY = [
+    L(T, "Starting minecraft server version 1.21.6", "00:00:28"),
+    L(T, "[CoreProtect] Enabling CoreProtect v23.4"),
+    L(T, "[Essentials] Enabling Essentials v2.22.0"),
+    L(E, "[Essentials] You are running an unsupported server version!"),
+    L(T, "[voicechat] Enabling voicechat v2.6.6"),
+    L(T, "[Vivecraft-Spigot-Extension] Enabling Vivecraft-Spigot-Extension v1.3.15-1"),
+    L(T, "[Voting] Enabling Voting v5.3.0"),
+    L(T, "Done (90.041s)! For help, type \"help\"", "00:01:36"),
+    "[00:01:36] [VoiceChatServerThread/ERROR]: [voicechat] Failed to bind to address '192.168.4.1', binding to wildcard IP instead",
+    "[00:01:36] [VoiceChatServerThread/ERROR]: [voicechat] Failed to run voice chat at UDP port 24454, make sure no other application is running at that port",
+    "[03:03:22] [User Authenticator #3/INFO]: UUID of player PlayerOne is 11111111-2222-3333-4444-555555555555",
+    L(E, "Could not pass event PlayerJoinEvent to Vivecraft-Spigot-Extension v1.3.15-1", "21:22:12"),
+    "org.bukkit.event.EventException: null",
+    "\tat org.vivecraft.VSE.onJoin(VSE.java:12)",
+    "[17:24:42] [Votifier epoll worker/ERROR]: [Votifier] Unable to process vote from /2.57.17.187:3118",
+]
+
+
+def new_run(body, when=None):
+    when = when or datetime.now() - timedelta(hours=1)
+    return when, [L(T, "Starting minecraft server version 1.21.6", when.strftime("%H:%M:%S"))] + body
+
+
+def _setup(env, latest_body, with_baseline=True, when=None):
+    logs = env["src"].parent / "logs"
+    if with_baseline:
+        day = datetime.now() - timedelta(days=1)
+        write_log(logs, day.replace(hour=0, minute=0, second=10), BASE_BODY, name=day.strftime("%Y-%m-%d-2.log.gz"))
+    when, body = new_run(latest_body, when)
+    write_log(logs, when, body)
+    return inventory.get_server("elChapo01"), when
+
+
+def _check(srv, name, version, jar, main=None):
+    runs = health.read_runs(srv)
+    return health.plugin_health(srv, runs, {"name": name, "version": version, "jar": jar},
+                                {"main": main, "id": name})
+
+
+def _at(when, minutes):
+    return (when + timedelta(minutes=minutes)).strftime("%H:%M:%S")
+
+
+def test_known_issues_are_preexisting_not_failed(env):
+    now = datetime.now() - timedelta(hours=1)
+    body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+            L(E, "[Essentials] You are running an unsupported server version!", _at(now, 1)),
+            L(T, "[voicechat] Enabling voicechat v2.6.6", _at(now, 1)),
+            f"[{_at(now, 1)}] [VoiceChatServerThread/ERROR]: [voicechat] Failed to bind to address '10.0.0.9', binding to wildcard IP instead",
+            L(T, "Done (60s)!", _at(now, 2))]
+    srv, _ = _setup(env, body, when=now)
+    assert _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar", "net.coreprotect.CoreProtect")["status"] == "healthy"
+    ess = _check(srv, "Essentials", "2.22.0", "EssentialsX-2.22.0.jar")
+    assert ess["status"] == "unknown"  # no enable line in this run, but the known error isn't a failure
+    vc = _check(srv, "voicechat", "2.6.6", "voicechat-bukkit-2.6.6.jar")
+    assert vc["status"] == "healthy" and vc["preexisting_errors"]  # same signature, different IP
+    assert "<ip>" in vc["preexisting_errors"][0]["signature"]
+
+
+def test_new_startup_error_after_update_fails(env):
+    now = datetime.now() - timedelta(hours=1)
+    body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+            L(E, "[CoreProtect] Database schema upgrade failed: table co_blocks missing", _at(now, 1)),
+            "java.sql.SQLException: no such table", "\tat net.coreprotect.database.Database.init(Database.java:77)",
+            L(T, "Done (60s)!", _at(now, 2))]
+    srv, _ = _setup(env, body, when=now)
+    res = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar", "net.coreprotect.CoreProtect")
+    assert (res["status"], res["reason"]) == ("failed", "new error after the update")
+    assert res["new_errors"][0]["signature"].startswith("[CoreProtect] Database schema upgrade failed")
+
+
+def test_hard_failures_always_fail(env):
+    now = datetime.now() - timedelta(hours=1)
+    body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+            L(E, "Error occurred while enabling CoreProtect v24.1 (Is it up to date?)", _at(now, 1)),
+            "java.lang.NoSuchMethodError: 'void org.bukkit.Foo.bar()'",
+            L(E, "[ModernPluginLoadingStrategy] Could not load 'plugins/.paper-remapped/Voting-5.3.0.jar' in "
+                 "'plugins/.paper-remapped'", _at(now, 0)),
+            "org.bukkit.plugin.UnknownDependencyException: mysql://root:hunter2@db",
+            L(T, "Done (60s)!", _at(now, 2))]
+    srv, _ = _setup(env, body, when=now)
+    cp = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar")
+    assert (cp["status"], cp["reason"]) == ("failed", "failed to load or enable")
+    vt = _check(srv, "Voting", "5.3.0", "Voting-5.3.0.jar")
+    assert vt["status"] == "failed" and all("hunter2" not in ln for ln in vt["excerpt"])
+
+
+def test_runtime_errors_after_grace_are_not_startup_failures(env):
+    now = datetime.now() - timedelta(hours=3)
+    body = [L(T, "[Vivecraft-Spigot-Extension] Enabling Vivecraft-Spigot-Extension v1.3.15-1", _at(now, 1)),
+            L(T, "Done (60s)!", _at(now, 2)),
+            L(E, "Could not pass event PlayerQuitEvent to Vivecraft-Spigot-Extension v1.3.15-1", _at(now, 90)),
+            "java.lang.NullPointerException: null"]
+    srv, _ = _setup(env, body, when=now)
+    r = _check(srv, "Vivecraft-Spigot-Extension", "1.3.15-1", "Vivecraft-Spigot-Extension-1.3.15-1.jar")
+    assert r["status"] == "healthy" and len(r["later_errors"]) == 1
+    # the same new event error inside the grace window counts
+    body[2] = L(E, "Could not pass event PlayerQuitEvent to Vivecraft-Spigot-Extension v1.3.15-1", _at(now, 5))
+    srv, _ = _setup(env, body, when=now)
+    assert _check(srv, "Vivecraft-Spigot-Extension", "1.3.15-1", "V.jar")["status"] == "failed"
+
+
+def test_no_baseline_means_warning_not_failure(env):
+    now = datetime.now() - timedelta(hours=1)
+    body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+            L(E, "[CoreProtect] Something new", _at(now, 1)), L(T, "Done (60s)!", _at(now, 2))]
+    srv, _ = _setup(env, body, with_baseline=False, when=now)
+    r = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar")
+    assert r["status"] == "healthy" and r["warnings"] and r["baseline_runs"] == 0
+
+
+def test_run_spans_daily_rollover_and_since_selects_run(env):
+    logs = env["src"].parent / "logs"
+    start = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=10)
+    write_log(logs, start, [L(T, "[CoreProtect] Enabling CoreProtect v24.1", "00:01:00"), L(T, "Done (60s)!", "00:01:10")],
+              name=start.strftime("%Y-%m-%d-2.log.gz"))
+    (logs / "latest.log").write_text("[00:00:01] [Server thread/INFO]: a new day\n")  # rollover, no restart
     srv = inventory.get_server("elChapo01")
-    res = health.plugin_health(srv, health.read_runs(srv, None), PLUGIN, DESC)
-    assert (res["status"], res["reason"]) == (status, reason)
-    if status == "failed":
-        assert res["excerpt"] and all("hunter2" not in ln for ln in res["excerpt"])
+    assert _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar")["status"] == "healthy"
+    assert abs(health.last_startup(srv) - start.timestamp()) < 2
+    # asking about a change after that start: no start since → unknown
+    runs = health.read_runs(srv, time.time())
+    r = health.plugin_health(srv, runs, {"name": "CoreProtect", "version": "24.1", "jar": "c.jar"}, None, since=time.time())
+    assert r["status"] == "unknown" and "no server start" in r["reason"]
 
 
-def test_health_uses_runs_since_and_is_bounded(env, monkeypatch):
-    since = time.time()
-    # older run (before the update) failed; the newest run is clean
-    _write_logs(env, "src", PAPER_OK, gz=PAPER_ENABLE_FAIL, gz_mtime=since - 3600)
-    srv = inventory.get_server("elChapo01")
-    assert health.plugin_health(srv, health.read_runs(srv, since), PLUGIN, DESC)["status"] == "healthy"
-    monkeypatch.setattr(health, "MAX_LOG_BYTES", 100)  # only the tail of latest.log is read
-    runs = health.read_runs(srv, since)
-    assert sum(len("\n".join(r["lines"])) for r in runs) <= 110
+def test_start_older_than_logs_is_unknown(env):
+    logs = env["src"].parent / "logs"
+    logs.mkdir()
+    (logs / "latest.log").write_text("[06:01:13] [Craft Scheduler Thread - 1 - Vault/INFO]: [Vault] Checking for Updates ...\n")
+    r = _check(inventory.get_server("elChapo01"), "Vault", "1.7.3", "Vault.jar")
+    assert r["status"] == "unknown" and "older than the available logs" in r["reason"]
 
 
-def test_health_refuses_logs_outside_server(env, tmp_path):
+def test_velocity_plugins(env):
+    logs = env["proxy"].parent / "logs"
+    now = datetime.now() - timedelta(hours=1)
+    v = "[{t}] [main/INFO] [com.velocitypowered.proxy.plugin.VelocityPluginManager]: "
+    body = [L(v, "Loaded plugin luckperms 5.5 by Luck", _at(now, 0)),
+            L(v, "Loaded plugin plan 5.8 build 3638 by AuroraLS3", _at(now, 0)),
+            "[" + _at(now, 0) + "] [main/ERROR] [com.velocitypowered.proxy.plugin.VelocityPluginManager]: Can't create plugin maintenance",
+            "[" + _at(now, 30) + "] [Netty epoll Worker #4/ERROR] [com.velocitypowered.proxy.connection.MinecraftConnection]: [initial connection] /213.1.2.3:11493: read timed out",
+            "[" + _at(now, 1) + "] [main/INFO] [com.velocitypowered.proxy.Velocity]: Done (4.62s)!"]
+    when = now
+    body = ["[" + when.strftime("%H:%M:%S") + "] [main/INFO] [com.velocitypowered.proxy.VelocityServer]: Booting up Velocity 3.4.0"] + body
+    logs.mkdir()
+    (logs / "latest.log").write_text("\n".join(body) + "\n")
+    os.utime(logs / "latest.log", (when.timestamp(), when.timestamp()))
+    srv = inventory.get_server("M0-proxy01")
+    runs = health.read_runs(srv)
+    ok = health.plugin_health(srv, runs, {"name": "LuckPerms", "version": "5.5", "jar": "LuckPerms-Velocity-5.5.jar"},
+                              {"id": "luckperms"})
+    assert ok["status"] == "healthy"
+    plan = health.plugin_health(srv, runs, {"name": "Plan", "version": "5.8 build 3638", "jar": "Plan.jar"}, {"id": "plan"})
+    assert plan["status"] == "healthy"
+    bad = health.plugin_health(srv, runs, {"name": "Maintenance", "version": "4.3.0", "jar": "M.jar"}, {"id": "maintenance"})
+    assert bad["status"] == "failed"
+
+
+def test_health_is_bounded_and_confined(env, monkeypatch, tmp_path):
+    now = datetime.now() - timedelta(hours=1)
+    srv, _ = _setup(env, [L(T, "x" * 200, _at(now, 1))] * 50, when=now)
+    monkeypatch.setattr(health, "MAX_LOG_BYTES", 1000)
+    assert sum(len(ln) for r in health.read_runs(srv) for _t, ln in r["lines"]) <= 1100
     outside = tmp_path / "elsewhere"
     outside.mkdir()
-    (outside / "latest.log").write_text(PAPER_ENABLE_FAIL)
-    (env["src"].parent / "logs").symlink_to(outside)
-    assert health.read_runs(inventory.get_server("elChapo01"), None) == []
+    (outside / "latest.log").write_text("x\n")
+    logs = env["a"].parent / "logs"
+    logs.symlink_to(outside)
+    assert health.read_runs(inventory.get_server("M1-hub01")) == []
 
 
-def test_server_health_endpoint(env):
-    (env["src"] / "CoreProtect-24.1.jar").unlink()
-    make_jar(env["src"] / "CoreProtect-24.1.jar", "CoreProtect", "24.1")
-    _write_logs(env, "src", PAPER_ENABLE_FAIL + "[12:00:02 INFO]: [Vault] Enabling Vault v1.7.3\n")
+def test_server_health_endpoint_known_issues(env):
+    now = datetime.now() - timedelta(hours=1)
+    make_jar(env["src"] / "voicechat-bukkit-2.6.6.jar", "voicechat", "2.6.6")
+    body = [L(T, "[voicechat] Enabling voicechat v2.6.6", _at(now, 1)),
+            f"[{_at(now, 1)}] [VoiceChatServerThread/ERROR]: [voicechat] Failed to run voice chat at UDP port 24454, make sure no other application is running at that port",
+            L(T, "[Vault] Enabling Vault v1.7.3", _at(now, 1)), L(T, "Done (60s)!", _at(now, 2))]
+    _setup(env, body, when=now)
     with client_for(app) as c:
         r = c.get("/api/v2/servers/elChapo01/health").json()
-        assert r["counts"] == {"healthy": 1, "failed": 1, "unknown": 0} and r["startup_complete"] is True
-        assert r["plugins"][0]["name"] == "CoreProtect" and r["plugins"][0]["status"] == "failed"
-        assert r["restarted"] is False and r["restarted_at"] is None  # no rotated log yet
+        assert r["startup_complete"] and r["baseline_runs"] == 1 and r["counts"]["failed"] == 0
+        assert r["preexisting_errors"][0]["plugin"] == "voicechat"
+        assert "UDP port #" in r["preexisting_errors"][0]["signature"]
         assert c.get("/api/v2/servers/elChapo01/health", params={"since": "yesterday"}).status_code == 400
-        assert c.get("/api/v2/servers/elChapo01/health", params={"since": "2026-09-01T00:00:00Z"}).status_code == 200
 
 
 def test_failed_canary_holds_rollout_and_is_audited(env):
     make_jar(env["src"] / "CoreProtect-24.1.jar", "CoreProtect", "24.1")
     applied = time.time() - 3600
     st = {"canary": {"bukkit:coreprotect|24.1": {"at": applied, "server": "elChapo01", "sha1": None}}}
-    _write_logs(env, "src", PAPER_ENABLE_FAIL, gz="[old run]\n", gz_mtime=time.time())  # restarted after
+    now = datetime.now() - timedelta(minutes=30)
+    _setup(env, [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+                 L(E, "Error occurred while enabling CoreProtect v24.1 (Is it up to date?)", _at(now, 1)),
+                 L(T, "Done (60s)!", _at(now, 2))], when=now)
     scheduler.check_canary_health(st, inventory.get_server("elChapo01"))
     c = st["canary"]["bukkit:coreprotect|24.1"]
     assert c["health"]["status"] == "failed"
@@ -157,7 +259,6 @@ def test_failed_canary_holds_rollout_and_is_audited(env):
                                             "elChapo01", True, time.time(),
                                             {"bukkit:coreprotect": ("24.1", "x")}, set(st["held"]))
     assert waiting[0]["reason"].startswith("held")
-    # not re-evaluated / not re-audited on the next cycle
     scheduler.check_canary_health(st, inventory.get_server("elChapo01"))
     assert len(audit.read(action="canary-failed")) == 1
 

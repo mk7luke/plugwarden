@@ -294,20 +294,32 @@ def test_error_after_backup_still_marks_pending_restart(env, monkeypatch):
 
 
 def test_checklist_resets_after_natural_restart(env):
+    from datetime import datetime, timedelta
+    from conftest import write_log
     srv = inventory.get_server("M1-hub01")
-    j1 = deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"jars": ["Vault.jar"]}})
     logs = srv.root / "Minecraft" / "logs"
-    logs.mkdir()
-    (logs / "2099-01-01-1.log.gz").write_text("")  # server restarted (rotated log is newer)
-    import os
-    os.utime(logs / "2099-01-01-1.log.gz", (time.time() + 5, time.time() + 5))
+    j1 = deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"jars": ["Vault.jar"]}})
+    write_log(logs, datetime.now() + timedelta(seconds=5), ["[x] Done (5s)!"])  # server started after j1
     assert not actions.pending_restart(srv)
     j2 = deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync",
                  "items": {"paths": ["Essentials/config.yml"]}})
-    os.utime(logs / "2099-01-01-1.log.gz", (0, 0))
+    write_log(logs, datetime(2000, 1, 1, 0, 0, 1), [])  # pretend the last start was long ago
     checklist = actions.restart_checklist([srv])
     assert [j["job_id"] for j in checklist[0]["jobs"]] == [j2.id]
     assert j1.id
+
+
+def test_daily_log_rollover_is_not_a_restart(env):
+    from datetime import datetime, timedelta
+    from conftest import write_log
+    srv = inventory.get_server("M1-hub01")
+    logs = srv.root / "Minecraft" / "logs"
+    started = datetime.now() - timedelta(days=2)
+    write_log(logs, started, ["[x] Done (5s)!"], name=started.strftime("%Y-%m-%d-2.log.gz"))
+    (logs / "latest.log").write_text("[00:00:01] [Server thread/INFO]: just another day\n")  # midnight rollover
+    deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "sync", "items": {"jars": ["Vault.jar"]}})
+    assert actions.pending_restart(srv)  # still pending: no start since the change
+    assert abs(actions._last_start(srv) - started.replace(microsecond=0).timestamp()) < 2
 
 
 def test_update_plan_conflicts_when_other_version_added(outdated):

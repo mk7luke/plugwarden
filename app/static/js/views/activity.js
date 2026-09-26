@@ -62,7 +62,7 @@ export function Activity({ id, tab }) {
 }
 
 // Read-access log: who viewed which config diffs (secrets are redacted in the diff itself).
-const ACTION_LABEL = { diff: "viewed diff", settings: "changed settings", pin: "pin", ignore: "ignore", source_map: "source mapping", upload: "uploaded jar", "plan-values": "saw server-specific values" };
+const ACTION_LABEL = { "canary-failed": "canary check failed", diff: "viewed diff", settings: "changed settings", pin: "pin", ignore: "ignore", source_map: "source mapping", upload: "uploaded jar", "plan-values": "saw server-specific values" };
 // before → after for change entries, shortened to what differs.
 function change(e) {
   if (e.before === undefined && e.after === undefined) return e.detail || "";
@@ -95,8 +95,8 @@ function AccessLog() {
         : !entries.length ? html`<${Empty} icon="eye" title="Nothing recorded yet">${Object.values(f).some(Boolean) ? "Nothing matches these filters." : "Config diff views and settings, pin, ignore, source and upload changes are recorded here."}<//>`
         : html`<div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Access log, newest first</caption>
           <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">What</th><th scope="col" class="hide-sm">Servers</th><th scope="col" class="hide-md">Detail</th></tr></thead>
-          <tbody>${entries.map(e => html`<tr><td class="small muted" title=${absTime(e.at)} style="white-space:nowrap">${relTime(e.at)}</td><td>${e.user}</td>
-            <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · last ${relTime(e.last_at || e.at)}` : ""}</span></div></td>
+          <tbody>${entries.map(e => html`<tr><td class="small muted" title=${absTime(e.last_seen || e.at)} style="white-space:nowrap">${relTime(e.last_seen || e.at)}</td><td>${e.user}</td>
+            <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · ${new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}–${new Date(e.last_seen || e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</span></div></td>
             <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted audit-change" title=${change(e)}>${change(e)}</td></tr>`)}</tbody></table></div>`}
     </section>`;
 }

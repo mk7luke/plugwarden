@@ -1,4 +1,4 @@
-/* LGT AMP Sync — design tokens.
+/* PlugWarden — design tokens.
    Dark is the default theme. index.html sets [data-theme] before first paint from the
    saved choice, falling back to the OS preference. */
 

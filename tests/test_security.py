@@ -500,15 +500,16 @@ def test_scheduler_apply_cycle_end_to_end(env):
     _mock_modrinth(env, new_bytes)
     settings.update({"auto_update": {"mode": "apply", "min_release_age_hours": 0, "canary_soak_hours": 0,
                                      "canary_server": "elChapo01"}})
-    import gzip, os
+    from datetime import datetime, timedelta
+    from conftest import write_log
     logs = env["src"].parent / "logs"
-    logs.mkdir()
-    (logs / "latest.log").write_text("[10:00:00 INFO]: [CoreProtect] Enabling CoreProtect v24.1\n"
-                                     "[10:00:05 INFO]: Done (5.1s)! For help, type \"help\"\n")
-    with gzip.open(logs / "2026-01-01-1.log.gz", "wt") as f:
-        f.write("[09:00:00 INFO]: old run\n")
-    t = time.time() + 60  # the canary restarted after the scheduler first saw 24.1 on it
-    os.utime(logs / "2026-01-01-1.log.gz", (t, t))
+    before = datetime.now() - timedelta(days=1)
+    write_log(logs, before, ["[x] [Server thread/INFO]: [CoreProtect] Enabling CoreProtect v23.4",
+                             "[x] Done (5.1s)!"], name=before.strftime("%Y-%m-%d-2.log.gz"))
+    # the canary restarted after the scheduler first saw 24.1 on it, and enabled it cleanly
+    write_log(logs, datetime.now() + timedelta(seconds=60),
+              [datetime.now().strftime("[%H:%M:%S]") + " [Server thread/INFO]: [CoreProtect] Enabling CoreProtect v24.1",
+               datetime.now().strftime("[%H:%M:%S]") + " [Server thread/INFO]: Done (5.1s)! For help, type \"help\""])
     result = scheduler.run_cycle()
     assert "apply: done" in result, result
     jars = [p["jar"] for p in inventory.list_plugins(inventory.get_server("M1-hub01")) if p["key"] == "bukkit:coreprotect"]

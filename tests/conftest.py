@@ -101,3 +101,23 @@ def client_for(app, **kw):
     from fastapi.testclient import TestClient
     headers = {**CSRF, **kw.pop("headers", {})}
     return TestClient(_loopback(app), base_url="http://localhost", headers=headers, **kw)
+
+
+def write_log(logs_dir, when, lines, name="latest.log"):
+    """A server log whose first line is a Paper start at `when` (datetime); latest.log gets mtime `when`,
+    rotated files are named by date (YYYY-MM-DD-N.log.gz) like Log4j does."""
+    import gzip as _gz
+    import os as _os
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stamp = when.strftime("%H:%M:%S")
+    text = f"[{stamp}] [ServerMain/INFO]: [bootstrap] Running Java 21 on Linux\n" + "".join(
+        ln if ln.endswith("\n") else ln + "\n" for ln in lines)
+    p = logs_dir / name
+    if name.endswith(".gz"):
+        with _gz.open(p, "wt") as f:
+            f.write(text)
+    else:
+        p.write_text(text)
+    ts = when.timestamp()
+    _os.utime(p, (ts, ts))
+    return p
