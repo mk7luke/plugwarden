@@ -36,6 +36,7 @@ export function Updates() {
         </div>
         ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
           : q.loading ? html`<${SkelRows} n=${6} cols=${[4, 28, 20, 30]} />`
+          : !ups.length && !q.data?.last_check ? html`<${Empty} icon="circle-dashed" title="No update check yet" action=${html`<${Btn} kind="primary" icon="refresh-cw" onClick=${checkUpdates}>Run first check<//>`}>A check looks up every jar on Modrinth by file hash (and mapped Hangar, Spiget or GitHub sources). It never installs anything.<//>`
           : !ups.length ? html`<${Empty} ok icon="circle-check" title="All caught up" action=${html`<${Btn} size="sm" icon="refresh-cw" onClick=${checkUpdates}>Check again<//>`}>Every tracked plugin is on its latest compatible version for its server's Minecraft version.<//>`
           : html`<div>${ups.map(u => html`<div class="upd-group" key=${u.key}><div class="upd-row">
               <${Check} label=${`Select ${u.name}`} checked=${sel.has(u.key)} onChange=${v => setSel(s => { const n = new Set(s); v ? n.add(u.key) : n.delete(u.key); return n; })} />
@@ -46,7 +47,7 @@ export function Updates() {
                 <${CompatSummary} u=${u} mcOf=${mcOf} />
               </div>
               <${Chips} ids=${u.servers} />
-              <${Btn} size="sm" onClick=${() => review([u])} aria-label=${`Review ${u.name} update on ${plural(u.servers.length, "server")}`}>Review<//>
+              <${Btn} size="sm" data-nav onClick=${() => review([u])} aria-label=${`Review ${u.name} update on ${plural(u.servers.length, "server")}`}>Review<//>
             </div></div>`)}</div>`}
         ${chosen.length > 0 && html`<div class="panel-foot" style="position:sticky;bottom:0;background:var(--surface-2);flex-wrap:wrap">
           <b class="small">${plural(chosen.length, "plugin")} · ${plural(installs, "install")} selected</b><span class="grow"></span>

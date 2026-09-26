@@ -3,6 +3,7 @@ import { html, useRef } from "../lib.js";
 import { useStore, setState, useQuery, setTheme } from "../store.js";
 import { Icon, Btn, Kbd, modKey } from "./ui.js";
 import { checkUpdates } from "../actions.js";
+import { isActive } from "../jobs.js";
 import { relTime, initials } from "../fmt.js";
 import { FIXTURES } from "../api.js";
 import { updateCounts } from "../summary.js";
@@ -81,7 +82,9 @@ export function Drawer({ route }) {
 
 export function Topbar({ crumbs }) {
   const { data: ov } = useQuery("/overview");
-  const checking = useStore(s => s.jobs.some(j => j.status === "running" && j.title === "Update check"));
+  const checkJob = useStore(s => s.jobs.find(j => isActive(j.status) && j.title === "Update check"));
+  const checking = !!checkJob;
+  const pct = checkJob?.progress?.total ? Math.round(100 * checkJob.progress.done / checkJob.progress.total) : null;
   return html`<header class="topbar">
     <${Btn} kind="ghost" icon="menu" cls="menu-btn" aria-label="Open menu" onClick=${() => setState({ drawer: true })} />
     <nav class="crumbs" aria-label="Breadcrumb">
@@ -95,7 +98,7 @@ export function Topbar({ crumbs }) {
       <span class="kbds"><${Kbd}>${modKey}<//><${Kbd}>K<//></span>
     </button>
     <div class="top-actions">
-      <span class="check-status" title="Last update check">${checking ? "Checking…" : ov ? `Checked ${relTime(ov.last_check)}` : ""}</span>
+      <span class="check-status" title="Last update check">${checking ? (pct != null ? `Checking… ${pct}%` : "Checking…") : ov ? (ov.last_check ? `Checked ${relTime(ov.last_check)}` : "Never checked") : ""}</span>
       <${Btn} icon="refresh-cw" busy=${checking} onClick=${checkUpdates} aria-label="Check for updates"><span class="hide-sm">Check updates</span><//>
     </div>
   </header>`;

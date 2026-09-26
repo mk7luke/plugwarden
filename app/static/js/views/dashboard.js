@@ -1,11 +1,11 @@
 // Dashboard — one headline ("is anything out of date?"), every server at a glance, recent real changes.
 import { html, useMemo, useState } from "../lib.js";
-import { useQuery } from "../store.js";
+import { useQuery, useStore } from "../store.js";
 import { Icon, Btn, Tag, Platform, VerArrow, Skel, ErrorState, Empty } from "../components/ui.js";
 import { openChangeset } from "../components/changeset.js";
 import { checkUpdates } from "../actions.js";
 import { relTime, plural } from "../fmt.js";
-import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary } from "../jobs.js";
+import { JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { updateCounts, updateHeadline, updateDetail, restartList, checkLine, updatesOf } from "../summary.js";
 
 const MODE = { off: "Off", notify: "Notify only", apply: "Automatic" };
@@ -50,15 +50,22 @@ export function Dashboard() {
           </div></div>
         ${!d ? html`<div class="tiles">${Array.from({ length: 9 }, () => html`<div class="tile tile-skel"><${Skel} w="55%" h=${12} /><${Skel} w="40%" h=${10} /><${Skel} w="80%" h=${8} /><${Skel} w="70%" h=${8} /><${Skel} w="60%" h=${8} /></div>`)}</div>`
           : view === "list" ? html`<${ServerList} servers=${d.servers} byServer=${byServer} />`
-          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} />`)}</div>`}
+          : html`<div class="tiles">${d.servers.map(s => html`<${ServerTile} key=${s.id} s=${s} ups=${byServer[s.id] || []} loadingUps=${up.loading} vers=${versions[s.id]} checked=${!!d.last_check} />`)}</div>`}
       </section>
       <aside aria-labelledby="feed-h"><${Feed} q=${jobs} /></aside>
     </div>`;
 }
 
 function Headline({ d, c, restarts }) {
+  const checking = useStore(s => s.jobs.some(j => isActive(j.status) && j.title === "Update check"));
   if (!d) return html`<div class="headline" aria-busy="true"><span class="ub-icon skel"></span><div class="grow"><${Skel} w="40%" h=${14} /><${Skel} w="60%" h=${9} style="margin-top:8px" /></div><${Skel} w="160px" h=${32} /></div>`;
   const has = c.plugins > 0;
+  if (!d.last_check) return html`<section class="headline is-new" aria-label="Update status">
+    <span class="ub-icon"><${Icon} n="circle-dashed" cls="i-lg" /></span>
+    <div class="grow" style="min-width:220px"><p class="hl-title">No update check yet</p>
+      <p class="hl-meta">Run the first check to see which plugins have newer compatible versions. Checking never installs anything.</p></div>
+    <${Btn} kind="primary" icon="refresh-cw" busy=${checking} onClick=${checkUpdates}>${checking ? "Checking…" : "Run first check"}<//>
+  </section>`;
   return html`<section class=${"headline" + (has ? " has-updates" : "")} aria-label="Update status">
     <span class="ub-icon"><${Icon} n=${has ? "circle-arrow-up" : "circle-check"} cls="i-lg" /></span>
     <div class="grow" style="min-width:220px">
@@ -70,41 +77,42 @@ ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls=
     </div>
     <div class="row wrap" style="gap:8px">
       ${has ? html`<${Btn} kind="primary" icon="circle-arrow-up" onClick=${() => openChangeset("all", "Review: update everything")}>Review & update all<//>`
-        : html`<${Btn} icon="refresh-cw" onClick=${checkUpdates}>Check now<//>`}
+        : html`<${Btn} icon="refresh-cw" busy=${checking} onClick=${checkUpdates}>${checking ? "Checking…" : "Check now"}<//>`}
     </div>
   </section>`;
 }
 
-function Flags({ s, n, restart = true }) {
+function Flags({ s, n, restart = true, compact = false }) {
   const driftTip = s.drift_plugins?.length ? `Differs from the network majority: ${s.drift_plugins.map(p => `${p.name} ${p.version} (network: ${p.expected})`).join(", ")}` : `${plural(s.drift, "plugin")} on a different version than the network majority`;
   return html`<div class="tile-flags">
     ${n > 0 && html`<span class="tag tag-update tip" tabindex="0" data-tip=${`${plural(n, "plugin")} can be updated on ${s.id}`}>${plural(n, "update")}</span>`}
-    ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip}><${Icon} n="git-compare-arrows" />${s.drift} drift</span>`}
+    ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip} aria-label=${`${s.drift} drift: ${driftTip}`}><${Icon} n="git-compare-arrows" />${s.drift}${compact ? "" : " drift"}</span>`}
     ${restart && s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started"><${Icon} n="rotate-ccw" />Restart</span>`}
-    ${s.is_source && html`<span class="tag tag-plain tip" tabindex="0" data-tip="Default deploy source"><${Icon} n="circle-dot" />source</span>`}
+    ${!compact && s.is_source && html`<span class="tag tag-plain tip" tabindex="0" data-tip="Default deploy source"><${Icon} n="circle-dot" />source</span>`}
   </div>`;
 }
 
-function ServerTile({ s, ups, loadingUps, vers }) {
+function ServerTile({ s, ups, loadingUps, vers, checked }) {
   const href = `#/servers/${encodeURIComponent(s.id)}`;
   const empty = s.plugin_count === 0;
   const n = ups.length;
   return html`<article class=${"tile" + (empty ? " is-empty" : "")} aria-labelledby=${`t-${s.id}`}>
     <a class="tile-link" href=${href} aria-label=${`Open ${s.id}`} tabindex="-1"></a>
     <div class="tile-head">
-      <a class="tile-name" id=${`t-${s.id}`} href=${href}>${s.id}</a>
-      <${Flags} s=${s} n=${n} restart=${false} />
+      <a class="tile-name" id=${`t-${s.id}`} href=${href} data-nav>${s.id}</a>
+      <${Flags} s=${s} n=${n} restart=${false} compact=${true} />
     </div>
     <div class="watch">
       ${empty ? html`<div class="watch-empty"><${Icon} n="blocks" cls="i-sm" />${s.note || (s.platform === "fabric" ? "Fabric server — no plugins" : "No plugins installed")}</div>`
         : loadingUps ? html`<${Skel} w="80%" h=${8} /><${Skel} w="66%" h=${8} />`
         : n ? ups.slice(0, 3).map(u => html`<div class="watch-row"><span class="n">${u.name}</span>
-            <${VerArrow} from=${u.from} to=${u.to_version} /></div>`).concat(n > 3 ? [html`<a class="watch-more link" href=${href} aria-label=${`${n - 3} more updates on ${s.id}`}>+${n - 3} more</a>`] : [])
+            <${VerArrow} from=${u.from} to=${u.to_version} compact=${true} /></div>`).concat(n > 3 ? [html`<a class="watch-more link" href=${href} aria-label=${`${n - 3} more updates on ${s.id}`}>+${n - 3} more</a>`] : [])
+        : !checked ? html`<div class="watch-empty"><${Icon} n="circle-dashed" cls="i-sm" />Not checked yet · ${plural(s.plugin_count, "plugin")}</div>`
         : html`<div class="watch-empty ok"><${Icon} n="circle-check" cls="i-sm" />All tracked plugins current</div>`}
     </div>
     <div class="tile-foot">
-      ${s.pending_restart ? html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started — restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart needed</span>`
-        : html`<span class="ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} />`}</span>`}
+      <span class="tile-plat ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} short=${!!s.pending_restart} />`}${s.is_source ? html` <span class="muted">· source</span>` : ""}</span>
+      ${s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started — restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart</span>`}
       ${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}
         aria-label=${`Review ${plural(n, "update")} on ${s.id}`}>Review ${n}<//>`}
     </div>
@@ -117,7 +125,7 @@ function ServerList({ servers, byServer }) {
     <tbody>${servers.map(s => { const n = (byServer[s.id] || []).length; return html`<tr>
       <td><a class="strong" href=${`#/servers/${encodeURIComponent(s.id)}`}>${s.id}</a></td>
       <td class="hide-sm"><${Platform} p=${s.platform} mc=${s.mc_version} /></td>
-      <td><${Flags} s=${s} n=${n} />${!n && !s.drift && !s.pending_restart && html`<span class="small muted">${s.plugin_count ? "Current" : s.note || "No plugins"}</span>`}</td>
+      <td><div class="flags-left"><${Flags} s=${s} n=${n} /></div>${!n && !s.drift && !s.pending_restart && html`<span class="small muted">${s.plugin_count ? "Current" : s.note || "No plugins"}</span>`}</td>
       <td class="num hide-sm">${s.plugin_count}</td>
       <td class="col-actions">${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}>Review ${n}<//>`}</td>
     </tr>`; })}</tbody></table></div>`;
@@ -145,10 +153,10 @@ function Feed({ q }) {
       : !list.length ? html`<div class="empty" style="padding:24px"><p>No changes yet. Updates, deploys and removals appear here.</p></div>`
       : html`<ol class="feed">${list.map(j => { const undone = j.status === "undone" || j.undone_by; return html`<li class=${"feed-item" + (undone ? " is-undone" : "")}>
         <span class=${"feed-icon " + (undone ? "" : jobTone(j))}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
-        <div style="min-width:0"><a class="feed-title" href=${`#/activity/${j.id}`}>${j.group ? `${j.group} update checks` : JOB_TITLES[j.kind] || j.kind}</a>
+        <div style="min-width:0"><a class="feed-title" href=${`#/activity/${j.id}`}>${j.group ? `${j.group} update checks` : jobTitle(j)}</a>
           ${j.dry_run ? html` <${Tag}>dry run<//>` : ""}${undone ? html` <${Tag}>reverted<//>` : ""}
           ${j.summary && !j.group && html`<div class="feed-sum">${jobSummary(j)}</div>`}
-          <div class="feed-meta"><span>${j.group ? "last " : ""}${relTime(j.started || j.created)}</span><span>·</span><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
+          <div class="feed-meta"><span>${j.group ? "last " : ""}${relTime(j.started || j.created)}</span><span>·</span><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length > 1 ? html`<span>·</span><span>${plural(j.servers.length, "server")}</span>` : ""}</div></div>
       </li>`; })}</ol>
       <div class="panel-foot"><a class="link small" href="#/activity">All activity</a></div>`}
   </div>`;

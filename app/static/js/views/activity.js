@@ -2,7 +2,7 @@
 import { html, useState, useMemo, useEffect } from "../lib.js";
 import { useQuery, useStore, confirmDialog } from "../store.js";
 import { post } from "../api.js";
-import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary } from "../jobs.js";
+import { runJob, JOB_TITLES, KIND_ICON, jobTone, isActive, jobSummary, jobTitle } from "../jobs.js";
 import { navigate } from "../router.js";
 import { LogView } from "../components/overlays.js";
 import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
@@ -24,6 +24,10 @@ export function Activity({ id, tab }) {
   const list = useMemo(() => base.filter(j => kind === "all" || j.kind === kind), [base, kind]);
   const count = (k) => k === "all" ? base.length : base.filter(j => j.kind === k).length;
   const selected = id || null;
+  // Wide screens have room for the detail pane: open the newest job instead of an empty "Select a job".
+  useEffect(() => {
+    if (!id && kind !== "access" && list.length && matchMedia("(min-width: 1280px)").matches) navigate(`#/activity/${list[0].id}`, { replace: true });
+  }, [id, list.length, kind]);
 
   return html`<${PageHead} title="Activity" sub="Every update, deploy and undo — who ran it, what changed, and the full log." />
     <div class="toolbar"><div class="seg" role="group" aria-label="Filter by kind">
@@ -32,14 +36,14 @@ export function Activity({ id, tab }) {
       <span class="spacer"></span>
       ${kind !== "access" && html`<label class="switch small"><input type="checkbox" checked=${hideDry} onChange=${e => setHD(e.currentTarget.checked)} />Hide dry runs</label>`}</div>
     ${kind === "access" ? html`<${AccessLog} />` : html`
-    <div class=${"act-layout" + (selected ? " has-detail" : "")}>
+    <div class=${"act-layout" + (selected ? " has-detail" : "") + (q.data && !q.data.length ? " is-empty" : "")}>
       <section class="panel job-list-panel" aria-label="Job history">
         ${q.error ? html`<div class="panel-body"><${ErrorState} error=${q.error} retry=${q.reload} /></div>`
           : q.loading ? html`<${SkelRows} n=${8} cols=${[4, 50, 12]} />`
           : !list.length ? html`<${Empty} icon="history" title=${kind === "all" ? "No activity yet" : "Nothing of this kind"}>Jobs appear here as soon as someone checks for updates, deploys, or undoes a change.<//>`
-          : html`<div class="job-list" role="list">${list.map(j => html`<a class="job-row" role="listitem" href=${`#/activity/${j.id}`} aria-current=${selected === j.id ? "true" : undefined}>
+          : html`<div class="job-list" role="list">${list.map(j => html`<a class="job-row" role="listitem" data-nav href=${`#/activity/${j.id}`} aria-current=${selected === j.id ? "true" : undefined}>
               <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
-              <div style="min-width:0"><div class=${"t" + (reverted(j) ? " is-reverted" : "")}>${JOB_TITLES[j.kind] || j.kind}${j.dry_run ? html` <span class="tag" style="vertical-align:1px">dry run</span>` : ""}${reverted(j) ? html` <span class="tag" style="vertical-align:1px">Reverted</span>` : ""}</div>
+              <div style="min-width:0"><div class=${"t" + (reverted(j) ? " is-reverted" : "")}>${jobTitle(j)}${j.dry_run ? html` <span class="tag" style="vertical-align:1px">dry run</span>` : ""}${reverted(j) ? html` <span class="tag" style="vertical-align:1px">Reverted</span>` : ""}</div>
                 <div class="m"><span class="ellipsis">${jobSummary(j) || (isActive(j.status) ? "In progress…" : "—")}</span></div>
                 <div class="m"><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`·<span>${plural(j.servers.length, "server")}</span>` : ""}${!["done", "undone"].includes(j.status) ? html`·<span class=${jobTone(j) === "danger" ? "outcome-error" : ""}>${j.status}</span>` : ""}</div></div>
               <span class="when" title=${absTime(j.started || j.created)}>${relTime(j.started || j.created)}</span>

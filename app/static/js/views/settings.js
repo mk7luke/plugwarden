@@ -62,7 +62,9 @@ function General({ d, set, servers }) {
     <div class="field-row"><div class="field-label">Keyboard<small>Everything is reachable without a mouse.</small></div>
       <div class="small muted stack" style="gap:6px">
         <span><kbd class="kbd">Ctrl</kbd> <kbd class="kbd">K</kbd> or <kbd class="kbd">/</kbd> command palette</span>
-        <span><kbd class="kbd">G</kbd> then <kbd class="kbd">D</kbd> <kbd class="kbd">S</kbd> <kbd class="kbd">P</kbd> <kbd class="kbd">U</kbd> <kbd class="kbd">Y</kbd> <kbd class="kbd">A</kbd> jump to Dashboard, Servers, Plugins, Updates, Deploy, Activity</span></div></div>`;
+        <span><kbd class="kbd">G</kbd> then <kbd class="kbd">D</kbd> <kbd class="kbd">S</kbd> <kbd class="kbd">P</kbd> <kbd class="kbd">U</kbd> <kbd class="kbd">Y</kbd> <kbd class="kbd">A</kbd> jump to Dashboard, Servers, Plugins, Updates, Deploy, Activity</span>
+        <span><kbd class="kbd">J</kbd> <kbd class="kbd">K</kbd> move through tiles and lists · <kbd class="kbd">Enter</kbd> opens</span>
+        <span>Matrix: arrow keys move between cells · <kbd class="kbd">Space</kbd> selects · <kbd class="kbd">U</kbd> reviews the selected updates</span></div></div>`;
 }
 
 function Groups({ d, set, servers }) {

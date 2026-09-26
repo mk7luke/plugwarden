@@ -2,7 +2,7 @@
 // automatic dry-run plan, then execute with a live log.
 import { html, useState, useEffect, useMemo, useRef } from "../lib.js";
 import { useQuery, useStore, confirmDialog, toast, setState } from "../store.js";
-import { api, get, post } from "../api.js";
+import { api, get, post, searchFiles } from "../api.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "../components/overlays.js";
 import { Icon, Btn, Tag, SkelRows, ErrorState, Empty, PageHead, Check, Skel } from "../components/ui.js";
@@ -34,9 +34,10 @@ export function Deploy({ query }) {
   const [items, setItems] = useState(emptyItems);
   const [targets, setTargets] = useState(() => new Set((query.targets || "").split(",").filter(Boolean)));
   const [action, setAction] = useState(query.action || "sync");
-  const [opts, setOpts] = useState({ install: false, backup: true });
+  const [opts, setOpts] = useState({ install: false, include_data: false });
   const [jobId, setJobId] = useState(null);
   const [force, setForce] = useState(false);
+  const [identity, setIdentity] = useState(null); // null | "keep" | "overwrite" — required when a push changes server-specific keys
   const [nonce, setNonce] = useState(0);       // bump to re-plan
   const [planInfo, setPlanInfo] = useState(null); // {changes, servers} for the mobile bar
 
@@ -46,7 +47,8 @@ export function Deploy({ query }) {
     if (query.jar || query.folders || query.paths) setItems(i => ({ ...i, jars: list(query.jar), folders: list(query.folders), paths: list(query.paths) }));
     if (query.targets) setTargets(new Set(query.targets.split(",").filter(Boolean)));
     if (query.action) setAction(query.action);
-  }, [query.jar, query.folders, query.paths, query.targets, query.action]);
+    if (query.data === "1") setOpts(o => ({ ...o, include_data: true }));
+  }, [query.data, query.jar, query.folders, query.paths, query.targets, query.action]);
 
   // "Remove plugin X" from the matrix: resolve its jar + folder in the source root.
   const root = useQuery(source && query.plugin ? `/servers/${encodeURIComponent(source)}/tree?path=` : null);
@@ -60,6 +62,9 @@ export function Deploy({ query }) {
   }, [query.plugin, root.data]);
 
   const count = items.jars.length + items.folders.length + items.paths.length + items.uploads.length;
+  // Replace jar swaps versioned jars only; a folder here would become an rsync --delete mirror.
+  const nonJars = [...items.folders.map(f => f + "/"), ...items.paths.filter(p => !/\.jar$/i.test(p))];
+  const replaceBlocked = action === "replace" && nonJars.length > 0;
   const sv = servers.data || [];
   const srcObj = sv.find(x => x.id === source);
   const tgt = [...targets].filter(t => t !== source && sv.some(x => x.id === t && !ineligible(x, srcObj)));
@@ -67,7 +72,8 @@ export function Deploy({ query }) {
     source, targets: tgt, action,
     items: { jars: items.jars, folders: items.folders, paths: items.paths, uploads: items.uploads.map(u => u.upload_id) },
     options: opts, ...(force && action === "delete" ? { force: true } : {}),
-  }), [source, tgt.join(","), action, items, opts, force]);
+    ...(identity === "keep" ? { preserve_keys: "server_specific" } : identity === "overwrite" ? { overwrite_server_specific: true } : {}),
+  }), [source, tgt.join(","), action, items, opts, force, identity]);
 
   const running = useStore(s => s.jobs.find(j => j.id === jobId));
   useEffect(() => { setState({ inlineJob: jobId }); return () => setState({ inlineJob: null }); }, [jobId]);
@@ -104,22 +110,27 @@ export function Deploy({ query }) {
       ${(count > 0 || targets.size > 0) && html`<${Btn} kind="ghost" icon="x" onClick=${() => { reset(); setTargets(new Set()); history.replaceState(null, "", "#/deploy"); }}>Clear<//>`}
     <//>
     <div class="composer">
-      <${SourceCol} source=${source} setSource=${(s) => { setSource(s); setItems(emptyItems()); }} servers=${sv} items=${items} setItems=${setItems} setAction=${setAction} autoUpload=${query.upload} initialFilter=${query.q} />
-      <${TargetCol} source=${source} servers=${sv} groups=${settings.data?.groups || {}} targets=${targets} setTargets=${setTargets} action=${action} setAction=${setAction} opts=${opts} setOpts=${setOpts} />
+      <${SourceCol} source=${source} setSource=${(s) => { setSource(s); setItems(emptyItems()); }} servers=${sv} items=${items} setItems=${setItems} setAction=${setAction} autoUpload=${query.upload} initialFilter=${query.q} action=${action} />
+      <${TargetCol} source=${source} servers=${sv} groups=${settings.data?.groups || {}} targets=${targets} setTargets=${setTargets} action=${action} setAction=${setAction} opts=${opts} setOpts=${setOpts} hasFolders=${items.folders.length > 0} />
       <div class="plan-col" id="plan">
         ${jobId ? html`<${Execution} job=${running} jobId=${jobId} onNew=${reset} />`
+          : replaceBlocked ? html`<${ReplaceBlocked} nonJars=${nonJars} onRemove=${() => setItems(it => ({ ...it, folders: [], paths: it.paths.filter(p => /\.jar$/i.test(p)) }))} onSync=${() => setAction("sync")} />`
           : html`<${PlanCol} body=${body} nonce=${nonce} ready=${count > 0 && tgt.length > 0} count=${count} targets=${tgt.length} onExecute=${execute} action=${action}
-              force=${force} setForce=${setForce} onInstall=${() => setOpts(o => ({ ...o, install: true }))} onSummary=${setPlanInfo} />`}
+              force=${force} setForce=${setForce} identity=${identity} setIdentity=${setIdentity} onInstall=${() => setOpts(o => ({ ...o, install: true }))} onSummary=${setPlanInfo} />`}
       </div>
     </div>
     ${!jobId && (count > 0 || tgt.length > 0) && html`<div class="plan-bar only-sm" role="region" aria-label="Plan summary">
-      <span class="small"><b>${plural(count, "item")}</b> · ${plural(tgt.length, "server")}${planInfo ? html` · <b>${plural(planInfo.changes, "change")}</b>` : ""}</span>
-      <${Btn} kind="primary" size="sm" onClick=${() => document.getElementById("plan")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review plan<//>
+      <span class="plan-bar-sum">${plural(count, "item")} · ${plural(tgt.length, "server")}${planInfo ? html` · <b>${plural(planInfo.changes, "change")}</b>` : ""}</span>
+      ${planInfo && planInfo.changes === 0
+        ? html`<${Btn} kind="ghost" disabled>Nothing to change<//>`
+        : html`<${Btn} kind="primary" onClick=${() => document.getElementById("plan")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review plan<//>`}
     </div>`}`;
 }
 
 // ---------- column 1: source browser ----------
-function SourceCol({ source, setSource, servers, items, setItems, setAction, autoUpload, initialFilter }) {
+function SourceCol({ source, setSource, servers, items, setItems, setAction, autoUpload, initialFilter, action }) {
+  const jarOnly = action === "replace";
+  const blocked = (kind) => jarOnly && kind !== "jar";
   const [path, setPath] = useState("");
   const [filter, setFilter] = useState(initialFilter || "");
   const [over, setOver] = useState(false);
@@ -131,7 +142,14 @@ function SourceCol({ source, setSource, servers, items, setItems, setAction, aut
   // Two or more characters search the whole plugins folder (recursive), not just this folder.
   const [q, setQ] = useState("");
   useEffect(() => { const t = setTimeout(() => setQ(filter.trim().length >= 2 ? filter.trim() : ""), 220); return () => clearTimeout(t); }, [filter]);
-  const found = useQuery(source && q ? `/servers/${encodeURIComponent(source)}/search?q=${encodeURIComponent(q)}` : null);
+  const [found, setFound] = useState({ loading: false });
+  useEffect(() => {
+    if (!source || !q) { setFound({ loading: false }); return; }
+    let live = true;
+    setFound({ loading: true });
+    searchFiles(source, q).then(d => live && setFound({ data: d }), e => live && setFound({ error: e, reload: () => setQ(q + "") }));
+    return () => { live = false; };
+  }, [source, q]);
 
   const full = (name) => (path ? `${path}/${name}` : name);
   const isPicked = (e) => path === ""
@@ -144,7 +162,7 @@ function SourceCol({ source, setSource, servers, items, setItems, setAction, aut
     const [k, v] = pickOf(rel, kind);
     return { ...it, [k]: it[k].includes(v) ? it[k].filter(x => x !== v) : [...it[k], v] };
   });
-  const toggle = (e) => toggleRel(full(e.name), e.kind);
+  const toggle = (e) => !blocked(e.kind) && toggleRel(full(e.name), e.kind);
   const entries = useMemo(() => {
     const es = (tree.data?.entries || []).map(e => ({ ...e, kind: kindOf(e) }));
     const f = filter.toLowerCase();
@@ -189,21 +207,22 @@ function SourceCol({ source, setSource, servers, items, setItems, setAction, aut
     </div>
     <div class="browser-tools">
       <div class="input-wrap"><${Icon} n="search" cls="i-sm" /><input class="input" type="search" placeholder="Search all files, e.g. config.yml" aria-label="Search source files" value=${filter} onInput=${e => setFilter(e.currentTarget.value)} /></div>
+      ${jarOnly && html`<p class="small jar-only-note"><${Icon} n="info" cls="i-xs" />Replace jar only works on .jar files — folders and config files are disabled.</p>`}
       <nav class="path-bar" aria-label="Folder path" hidden=${!!q}>
         <button type="button" onClick=${() => setPath("")}>plugins</button>
         ${crumbs.map((c, i) => html`<span aria-hidden="true">/</span><button type="button" onClick=${() => setPath(crumbs.slice(0, i + 1).join("/"))}>${c}</button>`)}
       </nav>
     </div>
     <div class="tree" role="list" aria-label=${q ? `Search results for ${q}` : "Source files"}>
-      ${q ? html`<${SearchResults} found=${found} q=${q} picked=${pickedRel} toggle=${toggleRel} open=${(p) => { setPath(p); setFilter(""); }} />`
+      ${q ? html`<${SearchResults} found=${found} q=${q} picked=${pickedRel} toggle=${(p, k) => !blocked(k) && toggleRel(p, k)} blocked=${blocked} open=${(p) => { setPath(p); setFilter(""); }} />`
         : tree.error ? html`<div style="padding:8px"><${ErrorState} error=${tree.error} retry=${tree.reload} /></div>`
         : tree.loading ? Array.from({ length: 10 }, (_, i) => html`<div class="tree-row"><${Skel} w="16px" h=${16} /><${Skel} w=${`${40 + (i * 13) % 45}%`} /></div>`)
         : !entries.length ? html`<div class="empty" style="padding:24px"><p>${filter ? `Nothing matches “${filter}”.` : "This folder is empty."}</p></div>`
         : entries.map(e => {
           const pk = isPicked(e);
           const ico = e.kind === "jar" ? ["package", "ico-jar"] : e.kind === "dir" ? ["folder", "ico-dir"] : [/\.(ya?ml|json|toml|conf|properties)$/.test(e.name) ? "file-code" : "file-text", "ico-file"];
-          return html`<div class=${"tree-row" + (pk ? " is-picked" : "")} role="listitem" onClick=${ev => !ev.target.closest("button, input, label") && toggle(e)} onDblClick=${() => e.kind === "dir" && (setPath(full(e.name)), setFilter(""))}>
-            <${Check} label=${`Pick ${e.name}`} checked=${pk} onChange=${() => toggle(e)} />
+          return html`<div class=${"tree-row" + (pk ? " is-picked" : "") + (blocked(e.kind) ? " is-blocked" : "")} title=${blocked(e.kind) ? "Replace jar only works on .jar files" : undefined} role="listitem" onClick=${ev => !ev.target.closest("button, input, label") && toggle(e)} onDblClick=${() => e.kind === "dir" && (setPath(full(e.name)), setFilter(""))}>
+            <${Check} label=${`Pick ${e.name}`} checked=${pk} disabled=${blocked(e.kind)} onChange=${() => toggle(e)} />
             <${Icon} n=${ico[0]} cls=${"i-sm " + ico[1]} />
             <span class=${"name" + (e.kind !== "dir" ? " mono" : "") + (e.name.startsWith(".") ? " muted" : "")} title=${e.name}>${e.name}</span>
             ${e.size != null && html`<span class="size">${bytes(e.size)}</span>`}
@@ -224,7 +243,7 @@ function SourceCol({ source, setSource, servers, items, setItems, setAction, aut
 }
 
 // ---------- column 2: targets + action ----------
-function TargetCol({ source, servers, groups, targets, setTargets, action, setAction, opts, setOpts }) {
+function TargetCol({ source, servers, groups, targets, setTargets, action, setAction, opts, setOpts, hasFolders }) {
   const src = servers.find(s => s.id === source);
   const eligible = servers.filter(s => s.id !== source && !ineligible(s, src));
   const set = (ids) => setTargets(new Set(ids.filter(id => eligible.some(s => s.id === id))));
@@ -263,6 +282,7 @@ function TargetCol({ source, servers, groups, targets, setTargets, action, setAc
         </div>
         <div class="row wrap" style="gap:16px">
           ${action === "sync" && html`<label class="switch small"><input type="checkbox" checked=${opts.install} onChange=${e => setOpts({ ...opts, install: e.currentTarget.checked })} />Also install where missing</label>`}
+          ${hasFolders && (action === "sync" || action === "install") && html`<label class="switch small"><input type="checkbox" checked=${opts.include_data} onChange=${e => setOpts({ ...opts, include_data: e.currentTarget.checked })} />Include data files (databases, userdata, logs)</label>`}
           <span class="small muted row" style="gap:6px"><${Icon} n="shield" cls="i-sm" />Every change is backed up and can be undone from Activity</span>
         </div>
       </div>
@@ -278,6 +298,9 @@ function groupPlan(raw, targets) {
   return {
     // Reported even when force is set, so the acknowledgement stays visible.
     shared: (raw.warnings || []).filter(w => w.shared_with?.length).map(w => ({ server: w.server, item: w.folder, shared_with: w.shared_with })),
+    identity: (raw.warnings || []).filter(w => w.type === "server_specific"),
+    dataWarn: (raw.warnings || []).find(w => w.type === "include_data"),
+    needsDecision: !!raw.needs_decision,
     servers: [...by].map(([server, rows]) => ({ server, rows, changed: rows.filter(r => r.outcome === "changed").length, skipped: rows.filter(r => r.outcome === "skipped").length, errors: rows.filter(r => r.outcome === "error").length })),
     summary: raw.summary || {},
     plan_id: raw.plan_id,
@@ -295,7 +318,7 @@ function sharedGroups(rows) {
   return [...m.values()];
 }
 
-function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force, setForce, onInstall, onSummary }) {
+function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force, setForce, identity, setIdentity, onInstall, onSummary }) {
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -323,8 +346,12 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
         <ul class="shared-list">${sharedGroups(shared).map(g => html`<li><span class="mono">${g.item}/</span> — ${g.names.join(", ")} <span class="muted">(${g.servers.join(", ")})</span></li>`)}</ul>
         <label class="check"><input type="checkbox" checked=${force} onChange=${e => setForce(e.currentTarget.checked)} />Delete them anyway — I understand shared data will be lost</label></div>
     </div>`}
+    ${plan?.dataWarn && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plan.dataWarn.message}</div>`}
     ${errors > 0 && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plural(errors, "item")} would fail — see details below.</div>`}
     <div class="plan-body">
+      ${plan?.servers.some(sv => sv.rows.some(r => r.data_excluded)) && html`<div class="data-note small"><${Icon} n="shield" cls="i-sm" />
+        <span><b>Data files protected.</b> Databases (*.db, *.sqlite, *.h2), userdata, playerdata, data, logs, cache and backups inside folders are left untouched. Turn on “Include data files” to mirror them too.</span></div>`}
+      ${plan?.identity.length > 0 && html`<${IdentityBlock} warnings=${plan.identity} choice=${identity} setChoice=${setIdentity} />`}
       ${!ready ? html`<${Empty} icon="list-checks" title="Nothing planned yet">
           ${!count && !targets ? "Pick items on the left and target servers, and a dry-run plan appears here automatically."
             : !count ? "Now pick at least one jar, folder or file to deploy." : "Now pick at least one target server."}<//>`
@@ -338,20 +365,24 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
                 ${!s.changed && !s.skipped && !s.errors ? html`<${Tag} kind="ok" icon="check">no change<//>` : ""}</span></summary>
             <div class="plan-ops">
               ${!s.rows.length ? html`<div class="small muted">Nothing to do on this server.</div>`
-                : s.rows.map(r => html`<${PlanRow} r=${r} action=${action} source=${body.source} install=${body.options.install} onInstall=${onInstall} />`)}
+                : s.rows.map(r => html`<${PlanRow} r=${r} action=${action} source=${body.source} install=${body.options.install} onInstall=${onInstall}
+                    idKeys=${(plan.identity || []).filter(w => w.server === s.server && (w.path === r.item || w.path.startsWith(r.item.replace(/\/$/, "") + "/")))} identity=${identity} />`)}
             </div></details>`)}
     </div>
     <div class="panel-foot exec-bar" style="align-items:stretch">
       <span class="summary">${plan ? (changes ? `${plural(changes, "change")} on ${plural(affected, "server")} · backed up for undo` : "Targets already match. Nothing to do.") : "Execute unlocks when the plan has changes."}</span>
-      <${Btn} kind=${action === "delete" ? "danger-solid" : "primary"} size="lg" icon=${action === "delete" ? "trash-2" : "play"} disabled=${!plan || !changes || loading} onClick=${() => onExecute(plan)}>
+      ${plan?.needsDecision && html`<span class="summary" style="color:var(--warn)">Choose how to handle server-specific values above.</span>`}
+      <${Btn} kind=${action === "delete" ? "danger-solid" : "primary"} size="lg" icon=${action === "delete" ? "trash-2" : "play"} disabled=${!plan || !changes || loading || plan.needsDecision} onClick=${() => onExecute(plan)}>
         ${action === "delete" ? "Delete…" : "Execute"}${plan && changes ? ` ${plural(changes, "change")}` : ""}<//>
     </div>
   </section>`;
 }
 
 
-function PlanRow({ r, action, source, install, onInstall }) {
+function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity }) {
   const [diff, setDiff] = useState(null); // null | "loading" | {lines} | Error
+  // Rows that change server-specific keys open their diff straight away.
+  useEffect(() => { if (idKeys.length && r.outcome === "changed" && !diff && !r.item.endsWith("/")) loadDiff(); }, [idKeys.length]);
   const del = action === "delete" && r.outcome === "changed";
   const [i, cl] = del ? ["minus", "op-delete"] : OUT[r.outcome] || OUT.changed;
   const swap = r.outcome === "changed" && r.new_jar;
@@ -364,7 +395,8 @@ function PlanRow({ r, action, source, install, onInstall }) {
       setDiff(d);
     } catch (e) { setDiff(e); }
   };
-  return html`<div class="plan-op-wrap">
+  return html`<div class=${"plan-op-wrap" + (idKeys.length ? " has-identity" : "")}>
+    ${idKeys.length > 0 && html`<div class="id-chip"><${Icon} n="triangle-alert" cls="i-xs" />${identity === "keep" ? "Keeps" : identity === "overwrite" ? "Overwrites" : "Changes"} ${idKeys.flatMap(w => w.keys.map(k => `${k.key}: ${k.target_value}`)).join(", ")}</div>`}
     <div class="plan-op"><${Icon} n=${i} cls=${"i-xs " + cl} />
       ${swap ? html`<div class="jar-swap">${(r.old_jars || []).map((j, k) => html`<span class="old">${j}${r.old_versions?.[k] ? ` (${r.old_versions[k]})` : ""}</span>`)}
           ${!(r.old_jars || []).length && html`<span class="small muted" style="font-family:var(--font-sans)">new install</span>`}
@@ -374,7 +406,19 @@ function PlanRow({ r, action, source, install, onInstall }) {
           ${r.reason_code === "not_installed" && !install && action !== "delete" && html`<button type="button" class="linkbtn" onClick=${onInstall}>Also install where missing</button>`}
           ${diffable && html`<button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide diff" : "Show diff"}</button>`}</span>`}
     </div>
+    ${r.delete_count > 0 && html`<${Deletions} r=${r} />`}
+    ${diff && identity === "keep" && idKeys.length > 0 && html`<div class="diff-note small muted"><${Icon} n="info" cls="i-xs" />This server keeps its own ${idKeys.flatMap(w => w.keys.map(k => k.key)).join(", ")} — those lines below won't change.</div>`}
     ${diff && html`<${DiffView} d=${diff} />`}
+  </div>`;
+}
+
+// A folder mirror deletes target files that aren't on the source: list them in red.
+function Deletions({ r }) {
+  const [open, setOpen] = useState(r.delete_count <= 5);
+  return html`<div class="deletes">
+    <button type="button" class="linkbtn del-toggle" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)}>
+      <${Icon} n="minus" cls="i-xs" />${plural(r.delete_count, "file")} would be deleted${r.delete_bytes ? ` (${bytes(r.delete_bytes)})` : ""}</button>
+    ${open && html`<ul>${(r.deletes || []).map(d => html`<li class="mono">− ${d}</li>`)}${r.delete_count > (r.deletes || []).length ? html`<li class="muted">… and ${r.delete_count - r.deletes.length} more</li>` : ""}</ul>`}
   </div>`;
 }
 
@@ -392,20 +436,69 @@ function DiffView({ d }) {
   return html`${redNote}<pre class="diff" aria-label=${`Diff of ${d.path}: this server becomes the source version`}>${lines.map(l => html`<span class=${l.startsWith("@@") ? "d-hunk" : l[0] === "+" ? "d-add" : l[0] === "-" ? "d-del" : ""}>${l || " "}</span>`)}</pre>`;
 }
 
-function SearchResults({ found, q, picked, toggle, open }) {
+function SearchResults({ found, q, picked, toggle, open, blocked }) {
   if (found.error) return html`<div style="padding:8px"><${ErrorState} error=${found.error} retry=${found.reload} /></div>`;
   if (found.loading) return Array.from({ length: 6 }, (_, i) => html`<div class="tree-row"><${Skel} w="16px" h=${16} /><${Skel} w=${`${40 + (i * 13) % 45}%`} /></div>`);
-  const rs = (found.data?.results || []).map(r => ({ ...r, kind: kindOf({ ...r, name: r.path }) }));
+  // Jars first: a search for "CoreProtect" offers the jar before its data folder.
+  const order = { jar: 0, file: 1, dir: 2 };
+  const rs = (found.data?.results || []).map(r => ({ ...r, kind: kindOf({ ...r, name: r.path }) })).sort((a, b) => order[a.kind] - order[b.kind]);
   if (!rs.length) return html`<div class="empty" style="padding:24px"><p>No files match “${q}” anywhere in plugins/.</p></div>`;
   return html`<div class="small muted" style="padding:4px 8px">${plural(rs.length, "match", "matches")} in all folders</div>
     ${rs.map(r => { const pk = picked(r.path, r.kind); const dir = r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/") + 1) : "";
-      return html`<div class=${"tree-row" + (pk ? " is-picked" : "")} role="listitem" onClick=${ev => !ev.target.closest("button, input, label") && toggle(r.path, r.kind)}>
-        <${Check} label=${`Pick ${r.path}`} checked=${pk} onChange=${() => toggle(r.path, r.kind)} />
+      const off = blocked(r.kind);
+      return html`<div class=${"tree-row" + (pk ? " is-picked" : "") + (off ? " is-blocked" : "")} title=${off ? "Replace jar only works on .jar files" : undefined} role="listitem" onClick=${ev => !ev.target.closest("button, input, label") && toggle(r.path, r.kind)}>
+        <${Check} label=${`Pick ${r.path}`} checked=${pk} disabled=${off} onChange=${() => toggle(r.path, r.kind)} />
         <${Icon} n=${r.kind === "jar" ? "package" : r.kind === "dir" ? "folder" : "file-code"} cls=${"i-sm " + (r.kind === "jar" ? "ico-jar" : r.kind === "dir" ? "ico-dir" : "ico-file")} />
         <span class="name mono" title=${r.path}><span class="muted">${dir}</span>${r.path.slice(dir.length)}</span>
         ${r.size != null && html`<span class="size">${bytes(r.size)}</span>`}
         ${r.kind === "dir" && html`<${Btn} size="sm" kind="ghost" icon="chevron-right" cls="open" aria-label=${`Open ${r.path}`} onClick=${() => open(r.path)} />`}
       </div>`; })}`;
+}
+
+// Per-file block listing keys whose value is this server's own (identity, ports, DB names…).
+function IdentityBlock({ warnings, choice, setChoice }) {
+  const [editing, setEditing] = useState(false);
+  const nKeys = new Set(warnings.flatMap(w => w.keys.map(k => w.path + k.key))).size;
+  if (choice && !editing) return html`<div class=${"identity is-chosen" + (choice === "overwrite" ? " is-overwrite" : "")} role="status">
+    <${Icon} n=${choice === "keep" ? "shield" : "triangle-alert"} cls="i-sm" />
+    <span class="grow small">${choice === "keep" ? `Keeping each server's own value for ${plural(nKeys, "server-specific key")}` : `Overwriting ${plural(nKeys, "server-specific key")} with the source's values`}</span>
+    <button type="button" class="linkbtn" onClick=${() => setEditing(true)}>Change</button></div>`;
+  const files = new Map();
+  for (const w of warnings) for (const k of w.keys) {
+    const f = files.get(w.path) || files.set(w.path, new Map()).get(w.path);
+    (f.get(k.key) || f.set(k.key, { source: k.source_value, targets: [] }).get(k.key)).targets.push([w.server, k.target_value]);
+  }
+  const servers = new Set(warnings.map(w => w.server)).size;
+  return html`<section class="identity" aria-labelledby="id-h" role="group">
+    <h3 id="id-h"><${Icon} n="triangle-alert" cls="i-sm" />Server-specific values detected</h3>
+    <p class="small">This push would change values that differ on each server (identity, ports, database names) on ${plural(servers, "server")}.</p>
+    ${[...files].map(([path, keys]) => html`<div class="id-file"><div class="mono small id-path">${path}</div>
+      <table class="id-tbl"><thead><tr><th scope="col">Key</th><th scope="col">This server now</th><th scope="col">Source value</th></tr></thead>
+        <tbody>${[...keys].map(([key, v]) => v.targets.map(([srv, tv], i) => html`<tr>
+          ${i === 0 && html`<th scope="row" rowspan=${v.targets.length} class="mono">${key}</th>`}
+          <td><span class="small muted">${srv}</span> <span class="mono">${tv}</span></td>
+          ${i === 0 && html`<td rowspan=${v.targets.length} class="mono">${v.source}</td>`}</tr>`))}</tbody></table></div>`)}
+    <div class="id-choice" role="radiogroup" aria-label="Server-specific values" aria-required="true">
+      <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "keep"} onChange=${() => { setChoice("keep"); setEditing(false); }} />
+        <div><b>Keep each server's own values <span class="tag tag-ok">recommended</span></b><span>Push everything else; these keys stay as they are on every target.</span></div></label>
+      <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "overwrite"} onChange=${() => { setChoice("overwrite"); setEditing(false); }} />
+        <div><b>Overwrite with source values</b><span>Every target gets the source's values above — only if you really want them identical.</span></div></label>
+    </div>
+  </section>`;
+}
+
+function ReplaceBlocked({ nonJars, onRemove, onSync }) {
+  return html`<section class="panel plan" aria-labelledby="rb-h">
+    <div class="panel-head"><span class="step-n idle">–</span><h2 id="rb-h">Plan preview</h2></div>
+    <div class="panel-body stack">
+      <div class="shared-warn" role="alert"><${Icon} n="triangle-alert" cls="i-sm" />
+        <div><b>Replace jar only works on .jar files</b>
+          <p>${nonJars.join(", ")} ${nonJars.length === 1 ? "is" : "are"} not a jar. A folder would be mirrored with deletions, which can wipe plugin data such as a CoreProtect database.</p>
+          <div class="row wrap" style="gap:8px"><${Btn} size="sm" icon="x" onClick=${onRemove}>Remove non-jar items<//><${Btn} size="sm" icon="refresh-cw" onClick=${onSync}>Switch to Sync instead<//></div></div>
+      </div>
+    </div>
+    <div class="panel-foot exec-bar"><${Btn} kind="primary" size="lg" icon="play" disabled>Execute<//></div>
+  </section>`;
 }
 
 function Execution({ job, jobId, onNew }) {

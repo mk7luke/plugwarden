@@ -17,7 +17,7 @@ export function ServersList() {
         : html`<div class="tbl-wrap"><table class="tbl">
           <thead><tr><th scope="col">Server</th><th scope="col" class="hide-sm">Platform</th><th scope="col" class="num hide-sm">Plugins</th><th scope="col">Status</th><th scope="col" class="hide-md">Role</th><th class="col-actions"><span class="sr-only">Open</span></th></tr></thead>
           <tbody>${q.data.map(s => html`<tr key=${s.id} onClick=${() => navigate(`#/servers/${encodeURIComponent(s.id)}`)} style="cursor:pointer">
-            <td><div class="cell-name"><a class="strong" href=${`#/servers/${encodeURIComponent(s.id)}`} onClick=${e => e.stopPropagation()}>${s.id}</a>
+            <td><div class="cell-name"><a class="strong" data-nav href=${`#/servers/${encodeURIComponent(s.id)}`} onClick=${e => e.stopPropagation()}>${s.id}</a>
               <span class="only-sm small muted" style="margin-top:2px">${s.platform} ${s.mc_version || ""} · ${plural(s.plugin_count, "plugin")}</span></div></td>
             <td class="hide-sm"><${Platform} p=${s.platform} mc=${s.mc_version} /></td>
             <td class="num hide-sm">${s.plugin_count}</td>
@@ -48,7 +48,8 @@ export function ServerDetail({ id }) {
   const [search, setSearch] = useState("");
   const [sel, setSel] = useState(new Set());
   const srv = servers.data?.find(s => s.id === id);
-  const total = servers.data?.filter(s => s.plugin_count > 0).length || 0;
+  const mx = useQuery("/matrix");
+  const cellsOf = (key) => mx.data?.plugins.find(p => p.key === key)?.cells || {};
 
   const rows = useMemo(() => {
     let r = plugins.data || [];
@@ -107,17 +108,17 @@ export function ServerDetail({ id }) {
           <tbody>${rows.map(p => html`<tr key=${p.key} class=${sel.has(p.key) ? "is-selected" : ""}>
             <td class="col-check">${p.status === "outdated" ? html`<${Check} label=${`Select ${p.name}`} checked=${sel.has(p.key)} onChange=${v => toggle(p.key, v)} />` : null}</td>
             <td><div class="cell-name"><b>${p.name}</b><span class="jar" title=${`${p.jar} · ${bytes(p.size)} · modified ${relTime(p.mtime)}`}>${p.jar}</span>
-              <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${Status} p=${p} id=${id} total=${total} /></span>`}</span></div></td>
+              <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${Status} p=${p} id=${id} /></span>`}</span></div></td>
             <td class="hide-sm"><span class="ver">${p.version || "—"}</span>
               ${p.current_compat?.ok === false && html`<div><${Tag} kind="warn" icon="triangle-alert" title=${`${p.jar} lists ${p.current_compat.mc_versions.join(", ")}; this server runs ${p.current_compat.mc}`}>built for MC ${p.current_compat.mc_versions.slice(-1)[0]}<//></div>`}
               ${p.drift && p.expected_version && html`<div class="small" style="color:var(--drift)">network runs ${p.expected_version}</div>`}</td>
             <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
                 ${p.latest.changelog_url && p.status === "outdated" && html` <a class="link small" href=${p.latest.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
               : html`<span class="muted small">—</span>`}</td>
-            <td class="hide-sm"><${Status} p=${p} id=${id} total=${total} /></td>
+            <td class="hide-sm"><${Status} p=${p} id=${id} /></td>
             <td class="col-actions"><div class="row-actions">
               ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => review([p], `Update ${p.name} on ${id}`)} aria-label=${`Review ${p.name} update`}><span class="hide-sm">Review</span><//>`}
-              <${RowMenu} p=${p} id=${id} total=${total} />
+              <${RowMenu} p=${p} id=${id} cells=${cellsOf(p.key)} />
             </div></td>
           </tr>`)}</tbody></table></div>`}
     </div>
@@ -134,7 +135,7 @@ function Status({ p, id }) {
   const where = (scope) => scope === "*" ? "network-wide" : Array.isArray(scope) && scope.length > 1 ? `on ${plural(scope.length, "server")}` : "this server";
   if (p.status === "pinned") return html`<${Tag} kind="plain" icon="pin" title=${`Pinned ${where(p.pin_scope)}`}>Pinned ${p.pinned_version || p.version} · ${where(p.pin_scope)}<//>`;
   if (p.status === "ignored") return html`<${Tag} kind="plain" icon="eye-off">Ignored · ${where(p.ignore_scope)}<//>`;
-  if (p.status === "unknown") return html`<button type="button" class="tag tag-btn" onClick=${() => setState({ mapSource: p })} aria-label=${`No update source for ${p.name}. Map one`}><${Icon} n="circle-dashed" />No source · Map…</button>`;
+  if (p.status === "unknown") return html`<button type="button" class="tag tag-btn" onClick=${() => setState({ mapSource: p })} aria-label=${`No update source for ${p.name}. Map one`}><${Icon} n="circle-dashed" />No source · Map</button>`;
   return html`<${StatusTag} status=${p.status} />`;
 }
 
@@ -148,7 +149,10 @@ async function hold(p, kind, on, servers, label) {
   } catch (e) { toast({ kind: "err", title: "Couldn't save", body: e.message }); }
 }
 
-function RowMenu({ p, id, total }) {
+function RowMenu({ p, id, cells }) {
+  const on = Object.keys(cells);
+  const others = Object.entries(cells).filter(([s, c]) => s !== id && c.version !== p.version);
+  const netNote = others.length ? `${others.map(([s, c]) => `${s} is on ${c.version}`).join(", ")} — pinning blocks their updates but doesn't downgrade them` : "";
   const [open, setOpen] = useState(false);
   const ref = useRef();
   useEffect(() => {
@@ -174,7 +178,7 @@ function RowMenu({ p, id, total }) {
       : [`Pin at ${p.version} on ${id}`, "pin", () => hold(p, "pin", true, [id], `Pinned ${p.name} at ${p.version} on ${id}`)],
     pinnedHere && net(p.pin_scope)
       ? [`Unpin on all servers`, "pin", () => hold(p, "pin", false, "*", `Unpinned ${p.name} network-wide`)]
-      : !pinnedHere && [`Pin at ${p.version} on all ${total} servers`, "pin", () => hold(p, "pin", true, "*", `Pinned ${p.name} at ${p.version} network-wide`)],
+      : !pinnedHere && [`Pin at ${p.version} on all ${on.length} servers with ${p.name}`, "pin", () => hold(p, "pin", true, "*", `Pinned ${p.name} at ${p.version} on ${on.length} servers`), netNote],
     ignoredHere
       ? [`Track updates again on ${id}`, "eye", () => hold(p, "ignore", false, [id], `Tracking ${p.name} on ${id} again`)]
       : [`Ignore updates on ${id}`, "eye-off", () => hold(p, "ignore", true, [id], `Ignoring updates for ${p.name} on ${id}`)],
@@ -186,7 +190,8 @@ function RowMenu({ p, id, total }) {
   return html`<div class="menu-wrap" ref=${ref}>
     <${Btn} size="sm" kind="ghost" icon="ellipsis" aria-haspopup="menu" aria-expanded=${open ? "true" : "false"} aria-label=${`More actions for ${p.name}`} onClick=${() => setOpen(!open)} />
     ${open && html`<div class="menu" role="menu" aria-label=${`${p.name} actions`}>
-      ${items.map(([label, icon, run]) => html`<button type="button" role="menuitem" class="menu-item" onClick=${() => { setOpen(false); run(); }}><${Icon} n=${icon} cls="i-sm" />${label}</button>`)}
+      ${items.map(([label, icon, run, note]) => html`<button type="button" role="menuitem" class="menu-item" onClick=${() => { setOpen(false); run(); }}><${Icon} n=${icon} cls="i-sm" />
+        <span class="menu-label">${label}${note && html`<small>${note}</small>`}</span></button>`)}
     </div>`}
   </div>`;
 }

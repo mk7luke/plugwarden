@@ -60,7 +60,8 @@ def ensure_usable(plan: dict) -> None:
     if time.time() > plan["expires"]:
         raise PlanError(409, {"message": "plan expired; create a new plan", "conflicts": []})
     if plan.get("applied_by"):
-        raise PlanError(409, {"message": f"plan already applied by job {plan['applied_by']}", "conflicts": []})
+        raise PlanError(409, {"message": "this plan was already applied", "applied_by": plan["applied_by"],
+                              "conflicts": []})
 
 
 def consume(plan: dict, job_id: str) -> None:

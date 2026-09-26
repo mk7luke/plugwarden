@@ -7,7 +7,7 @@ import { get, post } from "../api.js";
 import { updatesOf, compatOf } from "../summary.js";
 import { trackJob, isActive, jobTone } from "../jobs.js";
 import { LogView } from "./overlays.js";
-import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check } from "./ui.js";
+import { Icon, Btn, Tag, Skel, ErrorState, Empty, Check, VerArrow } from "./ui.js";
 import { plural, bytes } from "../fmt.js";
 
 // scope: "all" | {server} | {keys:[key]} | {items:[{key, servers?}]} — translated to the API's {items}.
@@ -45,6 +45,7 @@ function Changeset({ cs }) {
   const [jobId, setJobId] = useState(null);
   const [applyErr, setApplyErr] = useState(null);
   const [n, setN] = useState(0); // re-plan counter
+  const [by, setBy] = useState(null); // "plugin" | "server"; defaults once the plan arrives
   const ref = useRef();
   const live = useStore(s => s.jobs.find(j => j.id === jobId));
 
@@ -58,6 +59,7 @@ function Changeset({ cs }) {
       const rows = (p.rows || []).map(r => ({ ...r, row_id: `${r.server}|${r.key}`, compat: compatOf(r.compat) }));
       setPlan({ ...p, rows });
       setExcluded(new Set());
+      setBy(b => b || (new Set(rows.map(r => r.server)).size > 1 && new Set(rows.map(r => r.key)).size > 1 ? "plugin" : "server"));
     })().catch(setErr);
   }, [n]);
 
@@ -67,6 +69,11 @@ function Changeset({ cs }) {
     for (const r of rows) (m.get(r.server) || m.set(r.server, []).get(r.server)).push(r);
     return [...m];
   }, [plan]);
+  const byPlugin = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) (m.get(r.key) || m.set(r.key, []).get(r.key)).push(r);
+    return [...m];
+  }, [plan]);
   const included = rows.filter(r => !excluded.has(r.row_id));
   const tot = {
     changes: included.length,
@@ -74,6 +81,7 @@ function Changeset({ cs }) {
     servers: new Set(included.map(r => r.server)).size,
     bytes: included.reduce((a, r) => a + (r.size || 0), 0),
     compatWarn: included.filter(r => r.compat && !r.compat.ok).length,
+    unverified: included.filter(r => !r.verified).length,
   };
   const skipped = plan?.skipped || [];
   const toggle = (ids, on) => setExcluded(s => { const x = new Set(s); ids.forEach(id => on ? x.delete(id) : x.add(id)); return x; });
@@ -98,7 +106,7 @@ function Changeset({ cs }) {
   const done = jobId && live && !running;
 
   return html`<div class="scrim" onClick=${close}></div>
-  <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="cs-t" ref=${ref} tabindex="-1">
+  <aside class=${"sheet" + (!jobId && plan && rows.length <= 5 ? " is-small" : "")} role="dialog" aria-modal="true" aria-labelledby="cs-t" ref=${ref} tabindex="-1">
     <header class="sheet-head">
       <div class="grow"><h2 id="cs-t">${done ? (jobTone(job) === "ok" ? "Updates applied" : "Update finished with problems") : running ? "Applying updates…" : cs.title}</h2>
         <p class="small muted">${jobId ? html`<a class="link" href=${`#/activity/${jobId}`} onClick=${close}>Job details</a>` : "Exactly these changes will be applied — nothing else."}</p></div>
@@ -112,25 +120,14 @@ function Changeset({ cs }) {
         : html`${(plan.warnings || []).map(w => html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${w}</div>`)}
           ${skipped.length > 0 && html`<details class="cs-skipped"><summary>${plural(skipped.length, "update")} left out of this plan</summary>
             <ul>${skipped.map(k => html`<li><b>${k.name || k.key}</b>${k.server ? ` on ${k.server}` : ""} — <span class="muted">${k.reason || k.detail || "skipped"}</span></li>`)}</ul></details>`}
-          <table class="tbl cs-tbl">
-            <caption class="sr-only">Planned plugin updates by server</caption>
-            <thead><tr><th class="col-check"><${Check} label="Include all" checked=${!excluded.size} indeterminate=${excluded.size > 0 && included.length > 0} onChange=${v => toggle(rows.map(r => r.row_id), v)} /></th>
-              <th scope="col">Plugin</th><th scope="col">Change</th><th scope="col" class="hide-sm">Compatibility</th><th scope="col" class="num hide-sm">Size</th></tr></thead>
-            ${groups.map(([server, rs]) => { const inc = rs.filter(r => !excluded.has(r.row_id)).length; return html`<tbody>
-              <tr class="cs-group"><th class="col-check"><${Check} label=${`Include all on ${server}`} checked=${inc === rs.length} indeterminate=${inc > 0 && inc < rs.length} onChange=${v => toggle(rs.map(r => r.row_id), v)} /></th>
-                <th colspan="4" scope="rowgroup"><span class="row" style="gap:8px">${server}<span class="small muted" style="font-weight:500">${inc} of ${plural(rs.length, "change")}</span></span></th></tr>
-              ${rs.map(r => { const off = excluded.has(r.row_id); return html`<tr class=${off ? "is-off" : ""}>
-                <td class="col-check"><${Check} label=${`Include ${r.name} on ${server}`} checked=${!off} onChange=${v => toggle([r.row_id], v)} /></td>
-                <td><div class="cell-name"><b>${r.name}</b>${r.changelog_url && html`<a class="link small" href=${r.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${r.name} (opens in new tab)</span></a>`}</div></td>
-                <td><div class="jar-swap"><span class="old" title=${r.from_jar}>${r.from_jar || r.from_version}</span><span class="new" title=${r.to_jar}><${Icon} n="arrow-right" cls="i-xs" />${r.to_jar || r.to_version}</span>
-                  ${r.also_removes?.length > 0 && html`<span class="small muted" style="font-family:var(--font-sans)">also removes ${r.also_removes.join(", ")}</span>`}
-                  <span class="only-sm" style="margin-top:4px"><${CompatChip} c=${r.compat} /></span>
-</div></td>
-                <td class="hide-sm"><${CompatChip} c=${r.compat} />${r.verified && html`<span class="small muted row" style="gap:3px;margin-top:3px"><${Icon} n="shield" cls="i-xs" />hash verified</span>`}</td>
-                <td class="num hide-sm small muted">${r.size ? bytes(r.size) : "—"}</td>
-              </tr>`; })}
-            </tbody>`; })}
-          </table>`}
+          <div class="cs-bar">
+            <${Check} label="Include all" checked=${!excluded.size} indeterminate=${excluded.size > 0 && included.length > 0} onChange=${v => toggle(rows.map(r => r.row_id), v)}><span class="small">All</span><//>
+            <span class="spacer"></span>
+            <div class="seg" role="group" aria-label="Group changes">
+              <button type="button" aria-pressed=${by === "plugin" ? "true" : "false"} onClick=${() => setBy("plugin")}>By plugin</button>
+              <button type="button" aria-pressed=${by === "server" ? "true" : "false"} onClick=${() => setBy("server")}>By server</button></div>
+          </div>
+          <div class="cs-groups">${(by === "plugin" ? byPlugin : groups).map(([gk, rs]) => html`<${Group} key=${by + gk} by=${by} rs=${rs} excluded=${excluded} toggle=${toggle} small=${rows.length <= 6} />`)}</div>`}
     </div>
     <footer class="sheet-foot">
       ${applyErr && html`<div class="error-box" style="width:100%;padding:10px 12px" role="alert"><${Icon} n="triangle-alert" />
@@ -138,11 +135,53 @@ function Changeset({ cs }) {
           ${applyErr.conflicts?.length > 0 && html`<ul class="small" style="margin:-4px 0 8px">${applyErr.conflicts.map(c => html`<li>${c.server} · ${c.from_jar || c.key}: ${c.reason}</li>`)}</ul>`}
           <${Btn} size="sm" icon="refresh-cw" onClick=${() => setN(n + 1)}>Re-plan<//></div></div>`}
       <div class="grow small">${plan && rows.length ? html`<b>${plural(tot.changes, "change")}</b><span class="muted"> · ${plural(tot.plugins, "plugin")} · ${plural(tot.servers, "server")}${tot.bytes ? ` · ${bytes(tot.bytes)} download` : ""}</span>
-        ${tot.compatWarn > 0 && html`<div style="color:var(--warn)">${plural(tot.compatWarn, "change")} not listed for the server's MC version</div>`}` : ""}</div>
+        <div class=${tot.compatWarn || tot.unverified ? "" : "cs-allok"}>${tot.compatWarn || tot.unverified
+          ? html`<span style="color:var(--warn)">${[tot.compatWarn && `${plural(tot.compatWarn, "change")} not listed for its server's MC version`, tot.unverified && `${tot.unverified} without a verified hash`].filter(Boolean).join(" · ")}</span>`
+          : html`<${Icon} n="check" cls="i-xs" />All compatible · all hashes verified`}</div>` : ""}</div>
       <${Btn} onClick=${close}>Cancel<//>
       <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!plan || !tot.changes} onClick=${apply} data-autofocus>Apply ${plural(tot.changes, "change")}<//>
     </footer>`}
   </aside>`;
+}
+
+// Exceptions only: a chip appears when compat is doubtful or the hash isn't verified.
+const RowFlags = ({ r }) => html`${r.compat && !r.compat.ok && html`<${CompatChip} c=${r.compat} />`}
+  ${!r.verified && html`<${Tag} kind="warn" icon="shield">hash not verified<//>`}`;
+
+function Group({ by, rs, excluded, toggle, small }) {
+  const first = rs[0];
+  const inc = rs.filter(r => !excluded.has(r.row_id)).length;
+  const multi = rs.length > 1;
+  // Single-change groups are one line; bigger plugin groups start condensed.
+  const [open, setOpen] = useState(multi && (by === "server" || small));
+  const flagged = rs.find(r => (r.compat && !r.compat.ok) || !r.verified);
+  const same = rs.every(r => r.from_version === first.from_version && r.to_version === first.to_version);
+  const title = by === "plugin" ? first.name : first.server;
+  const bytesAll = rs.reduce((a, r) => a + (r.size || 0), 0);
+  return html`<section class=${"cs-group" + (inc === 0 ? " is-off" : "")}>
+    <div class="cs-ghead">
+      <${Check} label=${`Include all ${title}`} checked=${inc === rs.length} indeterminate=${inc > 0 && inc < rs.length} onChange=${v => toggle(rs.map(r => r.row_id), v)} />
+      <button type="button" class="cs-gtoggle" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)} disabled=${!multi && by === "plugin"}>
+        ${multi && html`<${Icon} n=${open ? "chevron-down" : "chevron-right"} cls="i-sm" />`}<b>${title}</b></button>
+      ${by === "plugin"
+        ? html`<span class="cs-gsum">${same ? html`<${VerArrow} from=${first.from_version} to=${first.to_version} compact=${true} />` : html`<span class="small muted">→ ${first.to_version}</span>`}
+            <span class="small muted nowrap">${multi ? `${inc} of ${plural(rs.length, "server")}` : first.server}</span>
+            ${!open && multi && html`<span class="small muted ellipsis">${rs.map(r => r.server).join(", ")}</span>`}</span>`
+        : html`<span class="cs-gsum"><span class="small muted">${inc} of ${plural(rs.length, "change")}</span></span>`}
+      <span class="cs-gmeta small muted">${by === "plugin" && first.changelog_url && html`<a class="link" href=${first.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${first.name} (opens in new tab)</span></a>`}
+        ${bytesAll ? bytes(bytesAll) : ""}</span>
+    </div>
+    ${!open && flagged && html`<div class="cs-gflags"><${RowFlags} r=${flagged} /></div>`}
+    ${!multi && by === "plugin" && html`<div class="cs-single"><span class="cs-rjar"><span class="from">from ${first.from_jar || first.from_version}</span><span class="to"><${Icon} n="arrow-right" cls="i-xs" />${first.to_jar || first.to_version}</span>
+      ${first.also_removes?.length > 0 && html`<span class="small muted">also removes ${first.also_removes.join(", ")}</span>`}</span></div>`}
+    ${open && html`<ul class="cs-rows">${rs.map(r => { const off = excluded.has(r.row_id); return html`<li class=${off ? "is-off" : ""}>
+      <${Check} label=${`Include ${r.name} on ${r.server}`} checked=${!off} onChange=${v => toggle([r.row_id], v)} />
+      <span class="cs-rname">${by === "plugin" ? r.server : r.name}</span>
+      <span class="cs-rjar"><span class="from">from ${r.from_jar || r.from_version}</span><span class="to"><${Icon} n="arrow-right" cls="i-xs" />${r.to_jar || r.to_version}</span>
+        ${r.also_removes?.length > 0 && html`<span class="small muted">also removes ${r.also_removes.join(", ")}</span>`}</span>
+      <span class="cs-rflags"><${RowFlags} r=${r} />${by === "server" && r.changelog_url && html`<a class="link small" href=${r.changelog_url} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${r.name}</span></a>`}</span>
+    </li>`; })}</ul>`}
+  </section>`;
 }
 
 async function scopeItems(scope) {

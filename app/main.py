@@ -63,7 +63,7 @@ async def _path_error(_: Request, exc: PathError):
 
 @app.exception_handler(engine.DeployError)
 async def _deploy_error(_: Request, exc: engine.DeployError):
-    return JSONResponse({"detail": str(exc)}, status_code=400)
+    return JSONResponse({"detail": str(exc)}, status_code=exc.status)
 
 
 @app.exception_handler(plans.PlanError)
@@ -150,6 +150,7 @@ def snapshot() -> dict:
     for rows in plugins.values():
         for r in rows:
             r["versions_differ"] = r["key"] in drift_keys
+            r["installed_on"] = list(per_key[r["key"]])
     pending = updates.pending_updates(servers, plugins)
     return {"settings": st, "cache": cache, "servers": servers, "plugins": plugins, "drift": drift_keys,
             "expected": expected, "source": source, "pending": pending, "counts": updates.update_counts(pending)}

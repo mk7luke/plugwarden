@@ -259,6 +259,17 @@ def check(job=None) -> dict:
     inventory.flush_cache()
     all_hashes = sorted({h for g in groups.values() for h in g})
     log(f"Checking {len(all_hashes)} unique jars across {len(servers)} servers")
+    mapped_steps = len({(smap[p["key"]]["kind"], smap[p["key"]]["id"], fam, mc)
+                        for (fam, mc), g in groups.items() for p in g.values() if p["key"] in smap})
+    progress = {"done": 0, "total": 2 + len(groups) + mapped_steps}
+
+    def step(n: int = 1) -> None:
+        progress["done"] = min(progress["total"], progress["done"] + n)
+        if job:
+            job.progress = dict(progress)
+            job.save()
+
+    step(0)
 
     entries: dict[str, dict] = {}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -272,6 +283,7 @@ def check(job=None) -> dict:
                 r.raise_for_status()
                 identified.update(r.json())
             log(f"Modrinth recognised {len(identified)} jar(s) by hash")
+            step()
         except httpx.HTTPError as e:
             # Without identification every result would be wrong; keep the previous cache untouched.
             raise RuntimeError(f"Modrinth hash lookup failed, previous results kept: {e}") from e
@@ -287,6 +299,7 @@ def check(job=None) -> dict:
                     titles[p["id"]] = {"name": p.get("title"), "slug": p.get("slug")}
         except httpx.HTTPError as e:
             log(f"Modrinth project lookup failed: {e}")
+        step()
 
         mapped_cache: dict[tuple, Any] = {}
         for (family, mc), plugins in groups.items():
@@ -311,6 +324,7 @@ def check(job=None) -> dict:
                 errors += 1
                 group_failed = True
                 log(f"Modrinth update lookup failed for {family}/{mc or 'any'}: {e}")
+            step()
 
             for sha1, p in plugins.items():
                 ck = cache_key(sha1, family, mc)
@@ -341,6 +355,7 @@ def check(job=None) -> dict:
                     entry["source"] = _source_info(kind, sid)
                     mk = (kind, sid, family, mc)
                     if mk not in mapped_cache:
+                        step()
                         try:
                             if kind == "modrinth":
                                 mapped_cache[mk] = _resolve_modrinth_project(c, sid, family, mc)
@@ -379,6 +394,7 @@ def check(job=None) -> dict:
         cache["stats"] = {"jars": len(entries), "identified": n_src, "errors": errors}
         write_json(_cache_file(), cache)
     log(summary)
+    step(progress["total"])
     return {"summary": summary, "outdated": counts["installs"], "errors": errors, "counts": counts}
 
 

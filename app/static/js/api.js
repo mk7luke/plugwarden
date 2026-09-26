@@ -53,3 +53,13 @@ export function streamJob(id, { onLine, onDone, onError }) {
   es.onerror = () => { if (!finished) finish(null); };
   return () => { finished = true; es.close(); };
 }
+
+// Multi-word file search: the server matches one contiguous string, so query the longest word
+// and keep results whose path contains every word ("essentials config" → Essentials/config.yml).
+export async function searchFiles(server, q, limit = 200) {
+  const words = q.toLowerCase().split(/[\s/]+/).filter(Boolean);
+  if (!words.length) return { results: [] };
+  const longest = words.reduce((a, b) => b.length > a.length ? b : a);
+  const r = await get(`/servers/${encodeURIComponent(server)}/search?q=${encodeURIComponent(longest)}&limit=${limit}`);
+  return { ...r, results: (r.results || []).filter(x => words.every(w => x.path.toLowerCase().includes(w))) };
+}

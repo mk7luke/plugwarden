@@ -1,5 +1,6 @@
 // Shared UI primitives.
 import { html } from "../lib.js";
+import { compactVer } from "../fmt.js";
 
 export const Icon = ({ n, cls = "", label, style }) => html`
   <svg class=${"i " + cls} style=${style} aria-hidden=${label ? undefined : "true"} role=${label ? "img" : undefined} aria-label=${label}>
@@ -37,13 +38,17 @@ export const StatusTag = ({ status, label }) => {
 
 const PF = { purpur: ["Pu", "Purpur"], paper: ["Pa", "Paper"], velocity: ["V", "Velocity"], fabric: ["Fa", "Fabric"], unknown: ["?", "Unknown"] };
 export const platformName = (p) => (PF[p] || PF.unknown)[1];
-export const Platform = ({ p, mc }) => {
+export const Platform = ({ p, mc, short }) => {
   const [g, n] = PF[p] || PF.unknown;
-  return html`<span class="platform"><span class="pf-glyph" aria-hidden="true">${g}</span>${n}${mc && html`<span class="mono muted">${mc}</span>`}</span>`;
+  return html`<span class="platform" title=${short ? `${n} ${mc || ""}` : undefined}><span class="pf-glyph" aria-hidden="true">${g}</span>${short ? html`<span class="sr-only">${n}</span>` : n}${mc && html`<span class="mono muted">${mc}</span>`}</span>`;
 };
 
-export const VerArrow = ({ from, to }) => html`<span class="ver-arrow">
-  <span class="from">${Array.isArray(from) ? from.join(", ") : from}</span><${Icon} n="arrow-right" cls="i-xs" /><span class="to">${to}</span></span>`;
+// compact: shorten build suffixes (full value in the tooltip); both sides are always shown in full otherwise.
+export const VerArrow = ({ from, to, compact }) => {
+  const f = Array.isArray(from) ? from.join(", ") : from;
+  return html`<span class="ver-arrow" title=${compact ? `${f} → ${to}` : undefined}>
+  <span class="from">${compact ? compactVer(f) : f}</span><${Icon} n="arrow-right" cls="i-xs" /><span class="to">${compact ? compactVer(to) : to}</span></span>`;
+};
 
 export const Skel = ({ w = "100%", h = 10, r, style = "" }) =>
   html`<span class="skel" style=${`display:block;width:${w};height:${h}px;${r ? `border-radius:${r}px;` : ""}${style}`} aria-hidden="true"></span>`;
@@ -72,7 +77,7 @@ export function PageHead({ title, sub, children }) {
 
 export const ServerChip = ({ id }) => html`<a class="srv-chip" href=${"#/servers/" + encodeURIComponent(id)}>${id}</a>`;
 
-export function Check({ checked, indeterminate, onChange, label, children }) {
-  return html`<label class="check"><input type="checkbox" checked=${!!checked} aria-label=${label}
+export function Check({ checked, indeterminate, onChange, label, children, disabled }) {
+  return html`<label class="check"><input type="checkbox" checked=${!!checked} aria-label=${label} disabled=${!!disabled}
     ref=${el => el && (el.indeterminate = !!indeterminate)} onChange=${e => onChange(e.currentTarget.checked)} />${children}</label>`;
 }

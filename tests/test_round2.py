@@ -156,12 +156,13 @@ def test_undone_job_status_and_summary(env):
     undo = jobs.wait(actions.start_undo("t", job.id), 30)
     d = jobs.get(job.id).to_dict()
     assert d["status"] == "undone" and d["run_status"] == "done"
-    assert d["summary"].startswith(f"Undone by {undo.id}")
+    assert d["summary"].startswith("Undone by t · ") and undo.id not in d["summary"]
+    assert d["undone_by"] == undo.id and d["undone_user"] == "t"
     listed = next(j for j in jobs.list_jobs() if j["id"] == job.id)
     assert listed["status"] == "undone"
     # raw status on disk is untouched (no double prefix after reload)
     jobs._live.pop(job.id, None)
-    assert jobs.get(job.id).to_dict()["summary"].count("Undone by") == 1
+    assert jobs.get(job.id).to_dict()["summary"].count("Undone") == 1
 
 
 # ---------------------------------------------------------------- pending restart

@@ -1,6 +1,7 @@
 // Background job tracking: start or attach to a job, stream its log into the dock, toast the result.
-import { streamJob } from "./api.js";
+import { streamJob, get } from "./api.js";
 import { setState, getState, toast, invalidate } from "./store.js";
+import { relTime } from "./fmt.js";
 
 const patch = (id, p) => setState(s => ({ jobs: s.jobs.map(j => j.id === id ? { ...j, ...p } : j) }));
 
@@ -21,7 +22,17 @@ export function jobVerb(j) {
   const t = jobTone(j);
   return t === "ok" ? (j.status === "undone" ? "was reverted" : "finished") : t === "warn" ? "finished with errors" : j.status === "interrupted" ? "was interrupted" : "failed";
 }
-export const jobSummary = (j) => j?.summary || "";
+// Reverted jobs: "Reverted 25m ago · was 1 changed" (the undo job id lives in the detail view).
+export function jobSummary(j) {
+  if (!j?.summary) return "";
+  if (j.status === "undone" || j.undone_by) {
+    const was = /was:\s*(.*)$/.exec(j.summary)?.[1];
+    return `Reverted${j.undone_at ? " " + relTime(j.undone_at) : ""}${was ? ` · was ${was}` : ""}`;
+  }
+  return j.summary;
+}
+// "Apply updates · M5-kitpvp01" when a job touched exactly one server.
+export const jobTitle = (j) => `${JOB_TITLES[j.kind] || j.kind}${j.servers?.length === 1 ? ` · ${j.servers[0]}` : ""}`;
 
 export async function runJob(request, { title, onDone } = {}) {
   let res;
@@ -35,6 +46,12 @@ export function trackJob(id, { title, onDone, quiet } = {}) {
   const entry = { id, title: title || "Job", status: "running", lines: [], job: null, min: false };
   setState(s => ({ jobs: [entry, ...s.jobs.filter(j => isActive(j.status))].slice(0, 5) }));
   invalidate("/jobs", "/overview");
+  // The stream carries log lines only; poll the job for progress {done, total} while it runs.
+  const poll = setInterval(async () => {
+    const cur = getState().jobs.find(j => j.id === id);
+    if (!cur || !isActive(cur.status)) return clearInterval(poll);
+    try { const j = await get(`/jobs/${encodeURIComponent(id)}`); if (j.progress) patch(id, { progress: j.progress }); } catch {}
+  }, 1500);
   return new Promise(resolve => {
     streamJob(id, {
       onLine: (l) => {
@@ -42,6 +59,7 @@ export function trackJob(id, { title, onDone, quiet } = {}) {
         if (j) patch(id, { lines: [...j.lines, l].slice(-800) });
       },
       onDone: (job) => {
+        clearInterval(poll);
         const st = job?.status || "done";
         patch(id, { status: st, job });
         const tone = jobTone(job || st);

@@ -42,10 +42,10 @@ function view(r) {
 }
 
 const PALETTE_ACTIONS = [
-  { label: "Check for updates now", icon: "refresh-cw", run: checkUpdates },
-  { label: "Review & update all…", icon: "circle-arrow-up", run: openUpdateAll },
-  { label: "Push a file to servers…", icon: "rocket", run: () => navigate("#/deploy") },
-  { label: "Upload and roll out a jar…", icon: "upload", run: () => navigate("#/deploy?upload=1") },
+  { label: "Check for updates now", icon: "refresh-cw", run: checkUpdates, keywords: "refresh scan" },
+  { label: "Review & update all…", icon: "circle-arrow-up", run: openUpdateAll, keywords: "update everything upgrade" },
+  { label: "Push a file to servers…", icon: "rocket", run: () => navigate("#/deploy"), keywords: "deploy sync config" },
+  { label: "Upload and roll out a jar…", icon: "upload", run: () => navigate("#/deploy?upload=1"), keywords: "install new plugin" },
 ];
 
 function App() {
@@ -67,6 +67,17 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && k === "k") { e.preventDefault(); setState({ palette: !getState().palette }); return; }
       const t = e.target;
       if (e.metaKey || e.ctrlKey || e.altKey || t.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(t.tagName) || getState().palette || getState().confirm) return;
+      // j/k walk the current view's list (tiles, job rows, server rows); Enter opens.
+      if (k === "j" || k === "k") {
+        const items = [...document.querySelectorAll("#main [data-nav]")].filter(el => el.offsetParent);
+        if (items.length) {
+          e.preventDefault();
+          const i = items.indexOf(document.activeElement);
+          const next = items[k === "j" ? Math.min(items.length - 1, i + 1) : Math.max(0, i < 0 ? 0 : i - 1)];
+          next.focus(); next.scrollIntoView({ block: "nearest" });
+        }
+        return;
+      }
       if (k === "g") { g = Date.now(); return; }
       if (Date.now() - g < 900) {
         const hit = NAV.find(n => n[3] === `g ${k}`);

@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import secrets
 import shutil
 import subprocess
 import threading
 from pathlib import Path
 from typing import Any
 
-from . import config, inventory, plans
+from . import config, configmerge, inventory, plans
 from .inventory import PathError, Server
 from .storage import read_json, write_json
 
@@ -26,12 +28,51 @@ MAX_CHANGE_LINES = 200
 
 
 class DeployError(ValueError):
-    pass
+    status = 400
+
+
+class DeployInvalid(DeployError):
+    """Semantically invalid request (e.g. replace with a folder): HTTP 422."""
+    status = 422
+
+
+# Never mirrored/copied inside folders unless the request says include_data: databases, logs and player
+# data are live server state, not configuration. rsync patterns are case-sensitive, so letters are
+# bracketed ([Dd][Aa]...) to match any capitalisation.
+DATA_DIR_NAMES = {"userdata", "playerdata", "players", "data", "claimdata", "logs", "cache", "backups", "backup"}
+DATA_FILE_GLOBS = ["*.db", "*.db-*", "*.sqlite", "*.sqlite*", "*.h2*", "*.log", "*.log.gz", "usercache.json",
+                   "????????-????-????-????-????????????.*"]  # per-player files named by UUID
+
+
+def _ci(pattern: str) -> str:
+    return "".join(f"[{c.upper()}{c.lower()}]" if c.isalpha() else c for c in pattern)
+
+
+DATA_EXCLUDES = ([_ci(d) + "/" for d in sorted(DATA_DIR_NAMES)] + ["*-[Ss][Tt][Oo][Rr][Aa][Gg][Ee]/"]
+                 + [_ci(g) for g in DATA_FILE_GLOBS])
+_UUID_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.", re.I)
+
+
+def is_data_dir(name: str) -> bool:
+    n = name.lower()
+    return n in DATA_DIR_NAMES or n.endswith("-storage")
+
+
+def is_data_file(name: str) -> bool:
+    n = name.lower()
+    return (bool(re.search(r"\.(db|sqlite\d?|log)$|\.db-|\.h2|\.log\.gz$", n)) or n == "usercache.json"
+            or bool(_UUID_FILE.match(n)))
+MAX_CONFIG_SCAN = 500
+
+
+def _rsync_escape(rel: str) -> str:
+    return "".join("\\" + ch if ch in "*?[]\\" else ch for ch in rel)
 
 
 # ---------------------------------------------------------------- rsync
 
-def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: bool = False) -> tuple[int, list[str], str]:
+def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: bool = False,
+          excludes: list[str] | None = None) -> tuple[int, list[str], str]:
     # --checksum: size+mtime quick-check misses same-size config edits made within the same second.
     # --safe-links: never copy source symlinks that point outside the copied tree.
     cmd = ["rsync", "-a", "--itemize-changes", "--checksum", "--safe-links"]
@@ -41,6 +82,8 @@ def rsync(src: str, dest: str, *, dry_run: bool, delete: bool = False, mkpath: b
         cmd.append("--delete")
     if mkpath:
         cmd.append("--mkpath")
+    # Excluded paths are neither copied nor deleted (no --delete-excluded).
+    cmd += [f"--exclude={pat}" for pat in excludes or []]
     if not (src.startswith("/") and dest.startswith("/")):
         raise ValueError("rsync paths must be absolute")
     cmd += [src, dest]  # absolute paths can never be read as options or host:path
@@ -190,6 +233,14 @@ class Ctx:
         self.results: list[dict] = []
         self.warnings: list[dict] = []
         self.fps: dict[tuple, str] = {}  # (server, item, action) -> digest of the full planned change list
+        self.include_data = False
+        self.keeps: dict[tuple[str, str], list[str]] = {}  # (server, config rel) -> keys to keep from target
+
+    def keep_for(self, server: str, rel: str) -> list[str]:
+        return self.keeps.get((server, rel), [])
+
+    def keeps_under(self, server: str, rel: str) -> list[tuple[str, list[str]]]:
+        return sorted((f, k) for (s, f), k in self.keeps.items() if s == server and k and f.startswith(rel + "/"))
 
     def remember(self, server: str, item: str, action: str, lines: list[str]) -> None:
         self.fps[(server, item, action)] = hashlib.sha1("\n".join(lines).encode()).hexdigest()
@@ -277,7 +328,7 @@ def sync_folder(ctx: Ctx, src_srv: Server, tgt: Server, name: str, install: bool
         return ctx.result(tgt.id, item, "mirror", "error", "target exists and is not a folder")
     if not install and not dest.is_dir():
         return ctx.result(tgt.id, item, "mirror", "skipped", "not on target (install is off)")
-    _rsync_item(ctx, tgt, item, "mirror", str(src) + "/", str(dest) + "/", rel=name, delete=True)
+    _sync_dir(ctx, src_srv, tgt, name, item, "mirror", src, dest, delete=True, install=install)
 
 
 def sync_path(ctx: Ctx, src_srv: Server, tgt: Server, rel: str, install: bool) -> None:
@@ -294,28 +345,88 @@ def sync_path(ctx: Ctx, src_srv: Server, tgt: Server, rel: str, install: bool) -
     if dest.is_symlink() or (_exists(dest) and dest.is_dir() != src.is_dir()):
         return ctx.result(tgt.id, rel, "sync", "error", "target exists with a different type")
     if src.is_dir():
-        _rsync_item(ctx, tgt, rel + "/", "sync", str(src) + "/", str(dest) + "/", rel=rel)
+        _sync_dir(ctx, src_srv, tgt, rel, rel + "/", "sync", src, dest, delete=False, install=install)
     else:
+        keep = ctx.keep_for(tgt.id, rel)
+        if keep:
+            return merge_file(ctx, src_srv, tgt, rel, keep, rel)
         _rsync_item(ctx, tgt, rel, "sync", str(src), str(dest), rel=rel)
 
 
+def _sync_dir(ctx: Ctx, src_srv: Server, tgt: Server, rel: str, item: str, action: str, src: Path, dest: Path,
+              *, delete: bool, install: bool) -> None:
+    """Folder copy (mirror or not) that skips live data unless include_data, and hands config files with
+    server-specific values to the merge path instead of overwriting them."""
+    excludes = [] if ctx.include_data else list(DATA_EXCLUDES)
+    merges = [(f, keep) for f, keep in ctx.keeps_under(tgt.id, rel)]
+    excludes += ["/" + _rsync_escape(f[len(rel) + 1:]) for f, _ in merges]
+    _rsync_item(ctx, tgt, item, action, str(src) + "/", str(dest) + "/", rel=rel, delete=delete, excludes=excludes,
+                data_excluded=not ctx.include_data)
+    for f, keep in merges:
+        merge_file(ctx, src_srv, tgt, f, keep, f)
+
+
+def merge_file(ctx: Ctx, src_srv: Server, tgt: Server, rel: str, keep: list[str], item: str) -> None:
+    """Write the source config but keep the target's values for `keep` (format-preserving)."""
+    src, dest = src_srv.plugins_dir / rel, tgt.plugins_dir / rel
+    src_lines, tgt_lines = configmerge.read_lines(src), configmerge.read_lines(dest)
+    if src_lines is None or tgt_lines is None:
+        return ctx.result(tgt.id, item, "merge", "error", "config file unreadable, too large or binary",
+                          reason_code="merge_unsafe")
+    try:
+        merged, kept = configmerge.merge(rel, src_lines, tgt_lines, keep)
+    except configmerge.MergeUnsafe as e:
+        return ctx.result(tgt.id, item, "merge", "error",
+                          f"refused: cannot keep this server's values safely ({e})", reason_code="merge_unsafe")
+    tmpdir = config.state("staging", "merge", secrets.token_hex(8))
+    tmpdir.mkdir(parents=True)
+    try:
+        tmp = tmpdir / src.name
+        tmp.write_text("".join(merged), encoding="utf-8")
+        shutil.copystat(src, tmp)  # deterministic itemize flags (mtime) between plan and apply
+        digest = inventory.file_hash(tmp)
+        _rsync_item(ctx, tgt, item, "merge", str(tmp), str(dest), rel=rel, kept_keys=kept, fp_extra=[digest])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _rsync_item(ctx: Ctx, tgt: Server, item: str, action: str, src: str, dest: str, *, rel: str,
-                delete: bool = False) -> None:
-    rc, changes, err = rsync(src, dest, dry_run=True, delete=delete, mkpath=True)
+                delete: bool = False, excludes: list[str] | None = None, fp_extra: list[str] | None = None,
+                **fields) -> None:
+    rc, changes, err = rsync(src, dest, dry_run=True, delete=delete, mkpath=True, excludes=excludes)
     if rc != 0:
-        return ctx.result(tgt.id, item, action, "error", err or f"rsync exited {rc}")
+        return ctx.result(tgt.id, item, action, "error", err or f"rsync exited {rc}", **fields)
+    kept = fields.get("kept_keys")
+    note = f"; kept this server's {', '.join(kept)}" if kept else ""
     if not changes:
-        return ctx.result(tgt.id, item, action, "unchanged", "already up to date")
+        return ctx.result(tgt.id, item, action, "unchanged", "already up to date" + note, **fields)
+    fields.update(_deletions(changes, Path(dest)))
     if ctx.dry_run:
         # A mirror of a live folder: the server keeps writing files, so only promise the deletions.
-        ctx.remember(tgt.id, item, action, [ln for ln in changes if ln.startswith("*deleting")] if delete else changes)
-        return ctx.result(tgt.id, item, action, "changed", f"{len(changes)} change(s)", changes)
+        ctx.remember(tgt.id, item, action,
+                     ([ln for ln in changes if ln.startswith("*deleting")] if delete else changes) + (fp_extra or []))
+        return ctx.result(tgt.id, item, action, "changed", f"{len(changes)} change(s){note}", changes, **fields)
     if ctx.backup:
         ctx.backup.save(tgt, rel)
-    rc, done, err = rsync(src, dest, dry_run=False, delete=delete, mkpath=True)
+    rc, done, err = rsync(src, dest, dry_run=False, delete=delete, mkpath=True, excludes=excludes)
     if rc != 0:
-        return ctx.result(tgt.id, item, action, "error", err or f"rsync exited {rc}", done)
-    ctx.result(tgt.id, item, action, "changed", f"{len(done)} change(s)", done)
+        return ctx.result(tgt.id, item, action, "error", err or f"rsync exited {rc}", done, **fields)
+    ctx.result(tgt.id, item, action, "changed", f"{len(done)} change(s){note}", done, **fields)
+
+
+def _deletions(changes: list[str], dest: Path) -> dict:
+    """Paths rsync would delete, with sizes, listed separately so they can be shown in red."""
+    dels = [ln[len("*deleting "):].strip() for ln in changes if ln.startswith("*deleting ")]
+    if not dels:
+        return {}
+    size = 0
+    for d in dels:
+        p = dest / d.rstrip("/")
+        try:
+            size += _tree_size(p) if p.exists() or p.is_symlink() else 0
+        except OSError:
+            pass
+    return {"deletes": dels[:MAX_CHANGE_LINES], "delete_count": len(dels), "delete_bytes": size}
 
 
 def delete_item(ctx: Ctx, tgt: Server, rel: str) -> None:
@@ -366,7 +477,7 @@ def delete_folder_checked(ctx: Ctx, tgt: Server, folder: str, removing_jars: set
         return delete_item(ctx, tgt, folder)
     shared = folder_sharers(tgt, folder, removing_jars)
     if shared:
-        ctx.warnings.append({"server": tgt.id, "folder": folder, "shared_with": shared})
+        ctx.warnings.append({"type": "shared_folder", "server": tgt.id, "folder": folder, "shared_with": shared})
         if not force:
             return ctx.result(tgt.id, folder, "delete", "skipped",
                               f"shared with {', '.join(shared)} — pass force:true", shared_with=shared,
@@ -496,6 +607,13 @@ def validate_deploy(body: dict) -> dict:
     # A top-level jar given as a path is a jar item (so it gets jar-replace semantics).
     jars += [p for p in paths if "/" not in p and p.lower().endswith(".jar") and p not in jars]
     paths = [p for p in paths if not ("/" not in p and p.lower().endswith(".jar"))]
+    if action == "replace":
+        bad = [n for n in jars if not n.lower().endswith(".jar")] + [f + "/" for f in folders] + paths
+        if bad:
+            raise DeployInvalid(f"'Replace jar' only works on .jar files; not allowed: {', '.join(bad)}")
+    preserve = body.get("preserve_keys")
+    if preserve is not None:
+        _check_preserve(preserve)
     # Drop items already covered by a parent item, so one job never touches a path twice.
     parents = folders + paths
     paths = [p for p in paths if p not in folders
@@ -540,11 +658,118 @@ def validate_deploy(body: dict) -> dict:
         "jars": jars, "folders": folders, "paths": paths, "uploads": list(zip(uploads, upload_files)),
         "install": action == "install" or bool(options.get("install")),
         "force": body.get("force") is True,
+        "include_data": options.get("include_data") is True or body.get("include_data") is True,
+        "preserve_keys": preserve,
+        "overwrite_server_specific": body.get("overwrite_server_specific") is True,
     }
+
+
+def _check_preserve(spec: Any, nested: bool = False) -> None:
+    if spec in ("server_specific", "none"):
+        return
+    if isinstance(spec, list) and all(isinstance(k, str) and 0 < len(k) <= 200 for k in spec):
+        return
+    if isinstance(spec, dict) and not nested:
+        for path, v in spec.items():
+            inventory.check_rel(path)
+            _check_preserve(v, nested=True)
+        return
+    raise DeployError('preserve_keys must be "server_specific", "none", a list of key paths, '
+                      'or {path: one of those}')
+
+
+def _preserve_spec(req: dict, rel: str) -> Any:
+    spec = req["preserve_keys"]
+    if isinstance(spec, dict):
+        best = None
+        for path, v in spec.items():
+            if rel == path or rel.startswith(path.rstrip("/") + "/"):
+                if best is None or len(path) > len(best[0]):
+                    best = (path, v)
+        return best[1] if best else None
+    return spec
+
+
+def _config_files(src_srv: Server, tgt: Server, rel: str) -> list[str]:
+    """Config files (relative to plugins/) that a sync of `rel` would overwrite on tgt."""
+    src = src_srv.plugins_dir / rel
+    if src.is_file():
+        return [rel] if configmerge.is_config(rel) and (tgt.plugins_dir / rel).is_file() else []
+    out = []
+    for root, dirs, files in os.walk(src):
+        dirs[:] = sorted(d for d in dirs if not is_data_dir(d))
+        for f in sorted(files):
+            fr = os.path.relpath(os.path.join(root, f), src_srv.plugins_dir).replace(os.sep, "/")
+            if configmerge.is_config(fr) and not is_data_file(f) and (tgt.plugins_dir / fr).is_file():
+                out.append(fr)
+                if len(out) > MAX_CONFIG_SCAN:
+                    return out
+    return out
+
+
+def analyze_server_specific(req: dict) -> tuple[list[dict], dict[tuple[str, str], list[str]]]:
+    """Warnings for config files whose target values look server-specific, and the keys to keep per
+    (server, file) according to preserve_keys."""
+    if req["action"] not in ("sync", "install") or req["source"] is None:
+        return [], {}
+    src_srv = req["source"]
+    peers = [s for s in inventory.discover() if s.family == src_srv.family and s.id != src_srv.id]
+    parsed: dict[tuple[str, str], Any] = {}
+
+    def parse(srv: Server, rel: str):
+        k = (srv.id, rel)
+        if k not in parsed:
+            lines = configmerge.read_lines(srv.plugins_dir / rel)
+            parsed[k] = None if lines is None else configmerge.parse(rel, lines)
+        return parsed[k]
+
+    warnings, keeps = [], {}
+    items = req["folders"] + req["paths"] + [j for j in req["jars"] if not j.lower().endswith(".jar")]
+    for tgt in req["targets"]:
+        for item in items:
+            try:
+                inventory.resolve_in(src_srv, item)
+                inventory.resolve_in(tgt, item)
+            except PathError:
+                continue
+            files = _config_files(src_srv, tgt, item)
+            if len(files) > MAX_CONFIG_SCAN:
+                files = files[:MAX_CONFIG_SCAN]
+                warnings.append({"type": "unchecked_config", "server": tgt.id, "path": item,
+                                 "reason": f"more than {MAX_CONFIG_SCAN} config files; the rest were not checked"})
+            for rel in files:
+                ps, pt = parse(src_srv, rel), parse(tgt, rel)
+                if ps is None or pt is None:
+                    if inventory.file_hash(src_srv.plugins_dir / rel) != inventory.file_hash(tgt.plugins_dir / rel):
+                        warnings.append({"type": "unchecked_config", "server": tgt.id, "path": rel,
+                                         "reason": "larger than 256 KB or not UTF-8 text; not checked"})
+                    continue
+                others = [p for s in peers if s.id != tgt.id and (p := parse(s, rel)) is not None]
+                keys = configmerge.server_specific(rel, ps, pt, others)
+                if keys:
+                    warnings.append({"type": "server_specific", "server": tgt.id, "path": rel, "keys": keys})
+                spec = _preserve_spec(req, rel)
+                if spec == "server_specific":
+                    keep = [k["key"] for k in keys]
+                elif isinstance(spec, list):
+                    # Hand every key that might be present to the merge, which refuses what it can't keep.
+                    keep = [k for k in spec if k in pt.leaves or configmerge._touches_unsafe(k, pt.unsafe)
+                            or configmerge._mentioned(configmerge.read_lines(tgt.plugins_dir / rel) or [], k)]
+                else:
+                    keep = []
+                if keep:
+                    keeps[(tgt.id, rel)] = keep
+    return warnings, keeps
 
 
 def run_deploy(ctx: Ctx, req: dict) -> None:
     action, source, install = req["action"], req["source"], req["install"]
+    ctx.include_data = req["include_data"]
+    warnings, ctx.keeps = analyze_server_specific(req)
+    ctx.warnings.extend(warnings)
+    if req["include_data"] and action in ("sync", "install") and (req["folders"] or req["paths"]):
+        ctx.warnings.append({"type": "include_data", "message": "databases, userdata, playerdata, data, logs, "
+                             "cache and backups inside folders will be copied and mirrored"})
     for tgt in req["targets"]:
         ctx.log(f"==> {tgt.id}")
         if action == "delete":
@@ -595,8 +820,18 @@ def dry_run(body: dict) -> dict:
 def plan(body: dict, user: str = "local") -> dict:
     """Dry run a deploy and store it; POST /deploy {plan_id} later applies exactly this."""
     out, ctx, req = _dry_run(body)
-    p = plans.create("deploy", user, body=body, fingerprint=fingerprint(ctx), sources=source_hashes(req))
+    out["needs_decision"] = needs_decision(req, out["warnings"])
+    p = plans.create("deploy", user, body=body, fingerprint=fingerprint(ctx), sources=source_hashes(req),
+                     needs_decision=out["needs_decision"], warnings=out["warnings"])
     return {"plan_id": p["plan_id"], "expires": plans.iso(p["expires"]), **out}
+
+
+def needs_decision(req: dict, warnings: list[dict]) -> bool:
+    """Some file with server-specific values has no explicit choice (preserve spec covering that file,
+    or overwrite_server_specific)."""
+    if req["overwrite_server_specific"]:
+        return False
+    return any(w.get("type") == "server_specific" and _preserve_spec(req, w["path"]) is None for w in warnings)
 
 
 def fingerprint(ctx: Ctx) -> list[list]:
@@ -648,6 +883,9 @@ def plan_drift(plan: dict) -> list[dict]:
     """Rows whose fresh dry run (or source content) no longer matches what was previewed."""
     out_now, ctx, req = _dry_run(plan["body"])
     out = []
+    if needs_decision(req, out_now["warnings"]):
+        out.append({"server": None, "item": None, "action": "decision", "planned": "no server-specific values",
+                    "now": "server-specific values present", "reason": "needs_decision"})
     old_src = {(k, n): h for k, n, h in plan.get("sources", [])}
     for k, n, h in source_hashes(req):
         if old_src.get((k, n)) != h:

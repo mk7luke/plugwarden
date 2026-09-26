@@ -44,3 +44,16 @@ export function initials(email) {
   const parts = name.split(/[._-]/).filter(Boolean);
   return ((parts[0] || "?")[0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
 }
+
+// Short, comparable version for tight spaces; callers put the full string in a tooltip.
+// 2.14.3-SNAPSHOT-1231+8090431 → 2.14.3·1231, 6.0.1+1.21.8 → 6.0.1, 2.0.40-SNAPSHOT (build 3990) → 2.0.40·3990
+export function compactVer(v) {
+  if (!v) return v;
+  return String(v)
+    .replace(/\s*\(git[^)]*\)/i, "")
+    .replace(/\+[0-9a-f]{6,}$/i, "")
+    .replace(/\+(mc)?1\.\d+(\.\d+)?$/i, "")
+    .replace(/-SNAPSHOT-?(\d+)/i, "·$1").replace(/-SNAPSHOT/i, "-S")
+    .replace(/\s*\(build (\d+)\)/i, "·$1").replace(/-b(?:uild-?)?(\d+)$/i, "·$1")
+    .trim();
+}

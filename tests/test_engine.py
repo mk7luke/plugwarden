@@ -74,7 +74,9 @@ def test_plan_and_dry_run_make_no_changes(env):
     body["action"] = "delete"
     engine.plan(body)
     body["action"] = "replace"
-    engine.plan(body)
+    with pytest.raises(engine.DeployInvalid):
+        engine.plan(body)
+    body["items"] = {"jars": ["CoreProtect-24.1.jar", "Vault.jar"]}
     assert engine.dry_run(body)["summary"]["changed"] > 0
     assert snapshot_tree(env["base"]) == before
 
@@ -106,7 +108,9 @@ def test_folder_is_mirrored_with_delete(env):
     deploy({"source": "elChapo01", "targets": ["M1-hub01", "M3-hunger01"], "action": "sync",
             "items": {"folders": ["Essentials"]}})
     ess = env["a"] / "Essentials"
-    assert snapshot_tree(ess) == snapshot_tree(env["src"] / "Essentials")
+    expected = snapshot_tree(env["src"] / "Essentials")
+    expected.update({"userdata": "<dir>", "userdata/u.yml": b"user\n"})  # player data is never mirrored
+    assert snapshot_tree(ess) == expected
     assert not (ess / "stale.yml").exists()
     assert not (env["b"] / "Essentials").exists()  # not installed there, install off
 
@@ -352,8 +356,10 @@ def test_out_of_order_undo_refused(env):
     make_jar(env["src"] / "CoreProtect-25.0.jar", "CoreProtect", "25.0")
     j2 = deploy({"source": "elChapo01", "targets": ["M1-hub01"], "action": "replace",
                  "items": {"jars": ["CoreProtect-25.0.jar"]}})
-    with pytest.raises(engine.DeployError, match=j2.id):
+    from app import plans
+    with pytest.raises(plans.PlanError) as e:
         actions.start_undo("t", j1.id)
+    assert e.value.detail["jobs"] == [j2.id] and j2.id not in e.value.detail["message"]
     jobs.wait(actions.start_undo("t", j2.id), timeout=30)
     jobs.wait(actions.start_undo("t", j1.id), timeout=30)
     assert jars_of("M1-hub01", "bukkit:coreprotect") == ["CoreProtect-23.1.jar"]
@@ -413,7 +419,7 @@ def test_remove_skips_shared_folder_unless_forced(env):
 def test_delete_plan_warns_about_shared_folder_with_size(env):
     _essentials(env)
     plan = engine.plan({"targets": ["M1-hub01"], "action": "delete", "items": {"folders": ["Essentials"]}})
-    assert plan["warnings"] == [{"server": "M1-hub01", "folder": "Essentials",
+    assert plan["warnings"] == [{"type": "shared_folder", "server": "M1-hub01", "folder": "Essentials",
                                  "shared_with": ["Essentials", "EssentialsChat", "EssentialsSpawn"]}]
     row = plan["results"][0]
     assert row["outcome"] == "skipped" and row["files"] == 3 and row["size"] > 0

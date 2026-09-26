@@ -7,12 +7,12 @@ import { openRemove } from "../components/removedialog.js";
 import { openChangeset } from "../components/changeset.js";
 import { Icon, Btn, Tag, StatusTag, SkelRows, ErrorState, Empty, PageHead, Skel } from "../components/ui.js";
 import { navigate } from "../router.js";
-import { plural } from "../fmt.js";
+import { plural, compactVer } from "../fmt.js";
 import { ineligible } from "./deploy.js";
 
 const FILTERS = [["all", "All"], ["outdated", "Updates"], ["drift", "Drift"], ["unknown", "Untracked"]];
 const LABEL = { current: "up to date", outdated: "update available", drift: "differs from other servers", unknown: "source unknown", pinned: "pinned", ignored: "ignored" };
-const shortVer = (v) => !v ? "?" : v.replace(/-SNAPSHOT/i, "-S").replace(/\s*\(build (\d+)\)/i, " b$1").replace(/-build-?/i, "-b").replace(/\+[0-9a-f]{6,}$/i, "");
+const shortVer = (v) => compactVer(v) || "?";
 const cid = (key, server) => `${key}\u0000${server}`;
 
 export function Matrix({ query }) {
@@ -57,6 +57,19 @@ export function Matrix({ query }) {
     anchor.current = { key: p.key, server: id };
   };
   const byKey = Object.fromEntries(all.map(p => [p.key, p]));
+  // Arrow keys move between installed cells; Space toggles (native button); "u" reviews the selection.
+  const gridKeys = (e) => {
+    const b = e.target.closest?.(".mcell"); if (!b) return;
+    const r = +b.dataset.r, c = +b.dataset.c;
+    const d = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] }[e.key];
+    if (d) {
+      e.preventDefault();
+      const cells = [...e.currentTarget.querySelectorAll(".mcell")];
+      const cand = cells.filter(x => d[0] ? Math.sign(+x.dataset.r - r) === d[0] : (+x.dataset.r === r && Math.sign(+x.dataset.c - c) === d[1]));
+      const dist = (x) => Math.abs(+x.dataset.r - r) * 100 + Math.abs(+x.dataset.c - c);
+      cand.sort((a, b) => dist(a) - dist(b))[0]?.focus();
+    } else if (e.key === "u" && sel.size) { e.preventDefault(); document.querySelector(".mx-bar .btn-primary")?.click(); }
+  };
   const picked = [...sel].map(x => { const [key, server] = x.split("\u0000"); return { key, server, p: byKey[key], c: byKey[key]?.cells[server] }; }).filter(x => x.c);
 
   return html`
@@ -92,19 +105,19 @@ export function Matrix({ query }) {
                 ${id === source && html`<${Icon} n="circle-dot" cls="i-xs" label="source" />`}${id}</a></th>`)}
             <th class="mx-pad" aria-hidden="true"></th>
           </tr></thead>
-          <tbody>${rows.map(p => html`<tr key=${p.key}>
+          <tbody onKeyDown=${gridKeys}>${rows.map((p, ri) => html`<tr key=${p.key}>
             <th scope="row"><div class="mx-name">
               <button type="button" class="mx-open" onClick=${() => setState({ pluginDrawer: p.key })} aria-label=${`${p.name} details`}>
                 <span>${p.name}</span>${p.drift && html`<${Icon} n="git-compare-arrows" cls="i-xs" style="color:var(--drift)" label="versions differ" />`}</button>
               <span class="mx-count" aria-label=${`on ${Object.keys(p.cells).length} of ${cols.length} servers`}>${Object.keys(p.cells).length}/${cols.length}</span>
             </div></th>
-            ${cols.map(id => {
+            ${cols.map((id, ci) => {
               const c = p.cells[id];
               if (!c) { const na = p.family && pf[id]?.family && pf[id].family !== p.family; return html`<td class=${na ? "cell-na" : "cell-empty"} title=${na ? `${id} runs a different plugin ecosystem` : undefined}><span class="sr-only">${na ? "not applicable" : "not installed"}</span></td>`; }
               // The backend marks the odd cell out; pinned installs never count as drift.
               const s = c.drift ? "drift" : c.status;
               const on = sel.has(cid(p.key, id));
-              return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "")} aria-pressed=${on ? "true" : "false"}
+              return html`<td><button type="button" class=${"mcell tip st-" + s + (on ? " is-sel" : "")} aria-pressed=${on ? "true" : "false"} data-r=${ri} data-c=${ci}
                 data-tip=${`${id}\n${c.jar}\n${c.version} — ${LABEL[s] || s}${p.latest_version && s === "outdated" ? ` (latest ${p.latest_version})` : ""}${c.drift_pinned ? `\nPinned — differs from the network (${p.expected_version}) on purpose` : ""}${p.expected_version && c.drift ? `\nNetwork majority: ${p.expected_version}` : ""}`}
                 aria-label=${`${p.name} on ${id}: ${c.version}, ${LABEL[s] || s}`} onClick=${e => clickCell(p, id, e)}>
                 <span class="mv">${(s === "pinned" || c.drift_pinned) && html`<${Icon} n="pin" cls="i-xs" />`}${shortVer(c.version)}</span></button></td>`;
@@ -132,7 +145,7 @@ function SelectionBar({ picked, source, pf, clear }) {
     <span class="spacer"></span>
     <${Btn} kind="ghost" onClick=${clear}>Clear<//>
     <div class="mx-bar-actions">
-    ${one && html`<${Btn} icon="trash-2" onClick=${() => openRemove({ ...one, cells: Object.fromEntries(servers.map(s => [s, one.cells[s]])) })} aria-label=${`Remove ${one.name} from ${plural(servers.length, "server")}`}>Remove<span class="hide-sm"> from ${plural(servers.length, "server")}</span>…<//>`}
+    ${one && html`<${Btn} icon="trash-2" onClick=${() => openRemove({ ...one, cells: Object.fromEntries(servers.map(s => [s, one.cells[s]])) })} aria-label=${`Remove ${one.name} from ${plural(servers.length, "server")}`}>Remove<span class="hide-sm"> from ${plural(servers.length, "server")}</span><//>`}
     ${alignTargets.length > 0 && html`<${Btn} icon="git-compare-arrows" onClick=${() => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}&targets=${alignTargets.map(encodeURIComponent).join(",")}`)} aria-label=${`Align to ${source} ${src.version}`}>Align<span class="hide-sm"> to ${source} (${shortVer(src.version)})</span><//>`}
     <${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} onClick=${review} title=${outdated.length ? "" : "None of the selected cells has an update"}>Review ${plural(outdated.length, "update")}<//>
     </div>

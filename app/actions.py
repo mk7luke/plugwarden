@@ -153,6 +153,13 @@ def start_deploy(user: str, plan_id: str) -> jobs.Job:
     with plans.lock:
         plan = plans.load(plan_id, "deploy")
         plans.ensure_usable(plan)
+        if plan.get("needs_decision"):
+            raise plans.PlanError(409, {
+                "code": "needs_decision",
+                "message": "this push would overwrite server-specific values; re-plan with preserve_keys "
+                           '("server_specific", "none" or key list) or overwrite_server_specific: true',
+                "warnings": [w for w in plan.get("warnings", []) if w.get("type") == "server_specific"],
+                "conflicts": []})
         drift = engine.plan_drift(plan)
         if drift:
             raise plans.PlanError(409, {"message": "targets changed since the preview; re-plan", "conflicts": drift})
@@ -211,15 +218,19 @@ def start_undo(user: str, job_id: str) -> jobs.Job:
             raise engine.DeployError("this job cannot be undone (no backups, dry run, still running, or already undone)")
         later = engine.overlapping_later_jobs(job_id)
         if later:
-            raise engine.DeployError("later jobs changed the same files; undo these first (newest first): "
-                                     + ", ".join(sorted(later, reverse=True)))
+            n = len(later)
+            raise plans.PlanError(400, {
+                "code": "later_jobs",
+                "message": f"{n} later job{'s' * (n != 1)} changed the same files; undo "
+                           f"{'them' if n != 1 else 'it'} first, newest first",
+                "jobs": sorted(later, reverse=True)})
         _undo_pending.add(job_id)
 
     def done(job: jobs.Job) -> None:
         with _undo_lock:
             _undo_pending.discard(job_id)
             if job.status == "done":
-                jobs.mark_undone(job_id, job.id)
+                jobs.mark_undone(job_id, job.id, job.user)
                 if original.undo_of:  # undoing an undo re-applies the first job: it is no longer undone
                     jobs.mark_undone(original.undo_of, None)
         _finish(job)

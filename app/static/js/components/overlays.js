@@ -1,7 +1,7 @@
 // Toasts, confirm dialog, command palette and job dock.
 import { html, useState, useEffect, useRef, useMemo } from "../lib.js";
 import { useStore, setState, dismissToast, peek, prefetch, setTheme, getState } from "../store.js";
-import { get } from "../api.js";
+import { searchFiles } from "../api.js";
 import { openChangeset } from "./changeset.js";
 import { openRemove } from "./removedialog.js";
 import { navigate } from "../router.js";
@@ -108,7 +108,13 @@ function score(q, text) {
   if (q.length >= 3 && t.includes(q)) return 40 - t.length / 100;
   return -1;
 }
+// Every token must match somewhere in the text.
+const tokScore = (tokens, text) => { let t = 0; for (const k of tokens) { const s = score(k, text); if (s < 0) return -1; t += s; } return t; };
 const GROUPS = ["Actions", "Plugins", "Servers", "Files", "Go to"];
+// Verb words a query may start or end with; "update core" = verb "update" + entity "core".
+const VERBS = { update: "update", upgrade: "update", review: "update", replace: "replace", swap: "replace", remove: "remove", delete: "remove", del: "remove", rm: "remove",
+  open: "open", go: "open", show: "open", push: "deploy", deploy: "deploy", sync: "deploy" };
+const verbOf = (tok) => Object.keys(VERBS).find(v => tok.length >= 2 && v.startsWith(tok)) ? VERBS[Object.keys(VERBS).find(v => v.startsWith(tok))] : null;
 
 function PaletteInner({ actions }) {
   const [q, setQ] = useState("");
@@ -120,13 +126,18 @@ function PaletteInner({ actions }) {
   const [, force] = useState(0);
   useEffect(() => { for (const p of ["/matrix", "/overview", "/settings"]) prefetch(p).then(() => force(x => x + 1)); }, []);
   const qq = q.trim().toLowerCase();
+  const tokens = qq ? qq.split(/\s+/) : [];
+  // A leading or trailing verb narrows entity actions; the rest is the entity query.
+  const verbs = tokens.length > 1 ? tokens.filter((t, i) => (i === 0 || i === tokens.length - 1) && verbOf(t)).map(verbOf) : [];
+  const ent = tokens.filter(t => !(tokens.length > 1 && verbOf(t) && verbs.includes(verbOf(t)))).join(" ");
 
   // File results come from a recursive search of the default source server.
   useEffect(() => {
     const src = peek("/settings")?.default_source;
-    if (!src || qq.length < 3) { setFiles([]); return; }
+    const fq = verbs.includes("deploy") ? ent : qq;
+    if (!src || fq.replace(/\s/g, "").length < 3) { setFiles([]); return; }
     let live = true;
-    const t = setTimeout(() => get(`/servers/${encodeURIComponent(src)}/search?q=${encodeURIComponent(qq)}&limit=6`)
+    const t = setTimeout(() => searchFiles(src, fq, 60)
       .then(r => live && setFiles((r.results || []).filter(f => f.type !== "dir").slice(0, 5).map(f => ({ ...f, src }))), () => live && setFiles([])), 200);
     return () => { live = false; clearTimeout(t); };
   }, [qq]);
@@ -136,31 +147,39 @@ function PaletteInner({ actions }) {
     const source = st?.default_source;
     const theme = getState().theme;
     const out = [];
-    const add = (group, label, icon, run, hint, base) => { const sc = score(qq, base ?? label); if (sc >= 0) out.push({ group, label, icon, run, hint, sc }); };
-    for (const a of actions) add("Actions", a.label, a.icon, a.run, a.hint);
-    add("Actions", `Switch to ${theme === "dark" ? "light" : "dark"} theme`, theme === "dark" ? "sun" : "moon", () => setTheme(theme === "dark" ? "light" : "dark"));
+    // Plain commands match on all tokens against label + keywords.
+    const cmd = (group, label, icon, run, hint, keywords = "") => { const sc = tokScore(tokens, `${label} ${keywords}`); if (sc >= 0) out.push({ group, label, icon, run, hint, sc, rank: 0 }); };
+    // Entity actions: entity query matches the name; a verb in the query must match the action's verb.
+    const act = (group, verb, rank, name, label, icon, run, hint) => {
+      if (verbs.length && !verbs.includes(verb)) return;
+      if (verb === "remove" && !verbs.includes("remove")) return; // destructive verbs only on explicit request
+      const sc = ent ? tokScore(ent.split(/\s+/), name) : (verbs.length ? 1 : -1);
+      if (sc >= 0) out.push({ group, label, icon, run, hint, sc, rank });
+    };
+    for (const a of actions) cmd("Actions", a.label, a.icon, a.run, a.hint, a.keywords);
+    cmd("Actions", `Switch to ${theme === "dark" ? "light" : "dark"} theme`, theme === "dark" ? "sun" : "moon", () => setTheme(theme === "dark" ? "light" : "dark"), null, "theme dark light mode appearance");
     if (qq) {
       for (const p of mx?.plugins || []) {
-        if (score(qq, p.name) < 0) continue;
         const cells = Object.entries(p.cells);
         const outd = cells.filter(([, c]) => c.status === "outdated").length;
         const src = source && p.cells[source];
-        if (outd) add("Plugins", `Update ${p.name} on ${plural(outd, "server")}…`, "circle-arrow-up", () => openChangeset({ keys: [p.key] }, `Update ${p.name} everywhere`), null, p.name);
-        if (src) add("Plugins", `Replace ${p.name} jar on other servers…`, "arrow-up-down", () => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}`), null, p.name);
-        add("Plugins", `Remove ${p.name}…`, "trash-2", () => { navigate("#/plugins"); setTimeout(() => openRemove({ ...p }), 50); }, null, p.name);
-        add("Plugins", `Open ${p.name}`, "package", () => { navigate(`#/plugins?q=${encodeURIComponent(p.name)}`); setState({ pluginDrawer: p.key }); }, plural(cells.length, "server"), p.name);
+        act("Plugins", "open", 0, p.name, `Open ${p.name}`, "package", () => { navigate(`#/plugins?q=${encodeURIComponent(p.name)}`); setState({ pluginDrawer: p.key }); }, plural(cells.length, "server"));
+        if (outd) act("Plugins", "update", 1, p.name, `Update ${p.name} on ${plural(outd, "server")}…`, "circle-arrow-up", () => openChangeset({ keys: [p.key] }, `Update ${p.name} everywhere`));
+        if (src) act("Plugins", "replace", 2, p.name, `Replace ${p.name} jar from ${source}…`, "arrow-up-down", () => navigate(`#/deploy?action=replace&jar=${encodeURIComponent(src.jar)}`));
+        act("Plugins", "remove", 3, p.name, `Remove ${p.name}…`, "trash-2", () => { navigate("#/plugins"); setTimeout(() => openRemove({ ...p }), 50); });
       }
       for (const s of ov?.servers || []) {
-        add("Servers", `Go to ${s.id}`, "server", () => navigate(`#/servers/${encodeURIComponent(s.id)}`), s.platform, s.id);
-        if (s.updates) add("Servers", `Review ${plural(s.updates, "update")} on ${s.id}…`, "circle-arrow-up", () => openChangeset({ server: s.id }, `Review updates on ${s.id}`), null, s.id);
-        if (s.eligible_target) add("Servers", `Deploy to ${s.id}…`, "rocket", () => navigate(`#/deploy?targets=${encodeURIComponent(s.id)}`), null, s.id);
+        act("Servers", "open", 0, s.id, `Go to ${s.id}`, "server", () => navigate(`#/servers/${encodeURIComponent(s.id)}`), s.platform);
+        if (s.updates) act("Servers", "update", 1, s.id, `Review ${plural(s.updates, "update")} on ${s.id}…`, "circle-arrow-up", () => openChangeset({ server: s.id }, `Review updates on ${s.id}`));
+        if (s.eligible_target) act("Servers", "deploy", 2, s.id, `Deploy to ${s.id}…`, "rocket", () => navigate(`#/deploy?targets=${encodeURIComponent(s.id)}`));
       }
-      for (const f of files) out.push({ group: "Files", label: `Push ${f.path}…`, icon: "file-code", hint: `from ${f.src}`, sc: 50, run: () => navigate(`#/deploy?paths=${encodeURIComponent(f.path)}`) });
+      if (!verbs.length || verbs.includes("deploy")) for (const f of files) out.push({ group: "Files", label: `Push ${f.path}…`, icon: "file-code", hint: `from ${f.src}`, sc: 50, rank: 0, run: () => navigate(`#/deploy?paths=${encodeURIComponent(f.path)}`) });
     }
-    for (const [label, href, icon, hint] of NAV) add("Go to", label, icon, () => navigate(href), hint);
-    // Group first (fixed order), then best score within the group.
-    return out.sort((a, b) => (GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group)) || (b.sc - a.sc))
-      .filter((it, i, arr) => arr.slice(0, i).filter(x => x.group === it.group).length < (it.group === "Plugins" ? 8 : 6));
+    for (const [label, href, icon, hint] of NAV) cmd("Go to", label, icon, () => navigate(href), hint);
+    // Group first (fixed order), then best match, then safe-before-destructive.
+    const sorted = out.sort((a, b) => (GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group)) || (Math.round(b.sc) - Math.round(a.sc)) || (a.rank - b.rank));
+    const per = {};
+    return sorted.filter(it => (per[it.group] = (per[it.group] || 0) + 1) <= (it.group === "Plugins" ? 8 : 6));
   }, [qq, files, peek("/matrix"), peek("/overview")]);
 
   useEffect(() => setSel(0), [qq]);
@@ -222,7 +241,9 @@ export function Dock() {
       <${Btn} kind="ghost" size="sm" icon=${j.min ? "chevron-down" : "minus"} aria-label=${j.min ? "Expand log" : "Minimise log"} onClick=${() => toggleJobMin(j.id)} />
       ${!running && html`<${Btn} kind="ghost" size="sm" icon="x" aria-label="Close" onClick=${() => dismissJob(j.id)} />`}
     </div>
-    <div class=${"progress" + (running ? "" : failed ? " fail" : " done")} role="progressbar" aria-label="Job progress" aria-valuetext=${j.status}></div>
+    ${running && j.progress?.total
+      ? html`<div class="progress is-det" role="progressbar" aria-label="Job progress" aria-valuemin="0" aria-valuemax=${j.progress.total} aria-valuenow=${j.progress.done}><span style=${`width:${100 * j.progress.done / j.progress.total}%`}></span></div>`
+      : html`<div class=${"progress" + (running ? "" : failed ? " fail" : " done")} role="progressbar" aria-label="Job progress" aria-valuetext=${j.status}></div>`}
     <${LogView} lines=${j.lines} live=${running} />
   </section>`;
 }

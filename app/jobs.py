@@ -117,16 +117,26 @@ class Job:
             "id": self.id, "kind": self.kind, "status": "undone" if undone else self.status,
             "run_status": self.status, "user": self.user,
             "created": self.created, "started": self.started, "finished": self.finished,
-            "summary": f"Undone by {self.undone_by} · was: {self.summary}" if undone else self.summary, "dry_run": self.dry_run, "params": self.params,
+            "summary": self._undone_summary() if undone else self.summary, "dry_run": self.dry_run, "params": self.params,
             "results": self.results, "undo_of": self.undo_of, "undone_by": self.undone_by,
             "undoable": self.undoable, "changed_servers": self.changed_servers,
             "restart_servers": [] if self.dry_run else self.changed_servers,
-            "undone_at": getattr(self, "undone_at", None),
+            "undone_at": getattr(self, "undone_at", None), "undone_user": getattr(self, "undone_user", None),
+            "progress": getattr(self, "progress", None),
             "has_backup": self.has_backup,
         }
         if with_log:
             d["log"] = "\n".join(self.log)
         return d
+
+    def _undone_summary(self) -> str:
+        """Human text only; ids stay in undone_by/undone_at fields."""
+        at = getattr(self, "undone_at", None)
+        when = ""
+        if at:
+            when = " · " + datetime.fromisoformat(at).astimezone().strftime("%b %d %H:%M")
+        who = getattr(self, "undone_user", None)
+        return f"Undone{' by ' + who if who else ''}{when} · was: {self.summary}"
 
     @property
     def undoable(self) -> bool:
@@ -160,7 +170,8 @@ def _from_disk(d: dict) -> Job:
         "created": d.get("created"), "started": d.get("started"), "finished": d.get("finished"),
         "summary": d.get("summary", ""), "results": d.get("results") or [], "log": d.get("log_lines") or [],
         "undo_of": d.get("undo_of"), "undone_by": d.get("undone_by"), "has_backup": d.get("has_backup", False),
-        "changed_servers": d.get("changed_servers") or [], "undone_at": d.get("undone_at"), "_last_save": 0.0, "_cond": threading.Condition(),
+        "changed_servers": d.get("changed_servers") or [], "undone_at": d.get("undone_at"), "undone_user": d.get("undone_user"),
+        "progress": d.get("progress"), "_last_save": 0.0, "_cond": threading.Condition(),
     })
     return j
 
@@ -203,11 +214,12 @@ def find_active(kind: str) -> Job | None:
     return None
 
 
-def mark_undone(job_id: str, by: str) -> None:
+def mark_undone(job_id: str, by: str | None, user: str | None = None) -> None:
     j = get(job_id)
     if j:
         j.undone_by = by
         j.undone_at = now_iso() if by else None
+        j.undone_user = user if by else None
         j.save()
 
 
