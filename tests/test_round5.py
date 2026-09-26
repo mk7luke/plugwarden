@@ -299,3 +299,24 @@ def test_failed_undo_marked_on_original(env, monkeypatch):
     undo = jobs.wait(actions.start_undo("t", job.id), 30)
     d = jobs.get(job.id).to_dict()
     assert undo.status == "failed" and d["undo_failed_by"] == undo.id and d["status"] == "done" and d["undoable"]
+
+
+def test_excerpt_contains_match_with_context_and_file_line(env):
+    now = datetime.now() - timedelta(hours=1)
+    body = [L(T, "[CoreProtect] Enabling CoreProtect v24.1", _at(now, 1)),
+            L(T, "[Vault] Enabling Vault v1.7.3", _at(now, 1)),
+            L(E, "[CoreProtect] Something brand new", _at(now, 1)),
+            "java.lang.IllegalStateException: boom", "\tat net.coreprotect.Foo.bar(Foo.java:1)",
+            L(T, "Done (60s)!", _at(now, 2)), L(T, "after 1", _at(now, 2)), L(T, "after 2", _at(now, 2))]
+    srv, _ = _setup(env, body, when=now)
+    r = _check(srv, "CoreProtect", "24.1", "CoreProtect-24.1.jar", "net.coreprotect.CoreProtect")
+    assert r["status"] == "failed"
+    assert "[CoreProtect] Something brand new" in r["excerpt"][r["match_index"]]
+    assert r["match_index"] == 2 and len(r["excerpt"]) >= r["match_index"] + 3  # context after the match
+    # line numbers point into the actual log file (line 1 is the start marker written by write_log)
+    lines = (env["src"].parent / "logs" / "latest.log").read_text().splitlines()
+    assert r["log"] == "latest.log" and "Something brand new" in lines[r["line"] - 1]
+    # preexisting entries too: baseline run's error, matched in a later run
+    report = health.server_report(srv, None)
+    for e in report["preexisting_errors"]:
+        assert e["signature"].split("]")[0] in e["excerpt"][e["match_index"]]

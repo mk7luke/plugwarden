@@ -113,17 +113,18 @@ def read_runs(srv: Server, since: float | None = None, want_before: int = BASELI
     runs: list[dict] = []
     cur = None
     for p, day, lines in reversed(chunks):
-        for ln in lines:
+        for n, ln in enumerate(lines, 1):
             t = _abs(day, ln)
             # One start logs several markers ("[bootstrap] Running Java", then "Starting minecraft server");
             # a marker only opens a new run once the current one finished starting or stopped.
             if _START.search(ln) and (cur is None or cur["start"] is None or cur.get("ended")):
-                cur = {"start": t, "file": p.name, "lines": [], "complete": True}
+                cur = {"start": t, "file": p.name, "lines": [], "pos": [], "complete": True}
                 runs.append(cur)
             elif cur is None:
-                cur = {"start": None, "file": p.name, "lines": [], "complete": False}  # started before our window
+                cur = {"start": None, "file": p.name, "lines": [], "pos": [], "complete": False}  # started before
                 runs.append(cur)
             cur["lines"].append((t, ln))
+            cur["pos"].append((p.name, n))  # file + 1-based line number, parallel to "lines"
             if "Done (" in ln or "Stopping server" in ln or "Shutting down the proxy" in ln:
                 cur["ended"] = True
     return runs
@@ -214,8 +215,15 @@ def _cut_shutdown(lines: list[tuple]) -> list[tuple]:
     return lines
 
 
-def _excerpt(lines: list[tuple], i: int, after: int = EXCERPT_AFTER) -> list[str]:
-    return [scrub_value(ln)[:500] for _t, ln in lines[max(0, i - EXCERPT_BEFORE):i + after]]
+def _hit(run: dict, lines: list[tuple], i: int, after: int = EXCERPT_AFTER) -> dict:
+    """Where a match is: its log file + line number, and an excerpt that always contains the matching
+    line (at excerpt[match_index]) with up to EXCERPT_BEFORE lines before and `after` lines after it."""
+    after = max(after, 3)
+    start = max(0, i - EXCERPT_BEFORE)
+    pos = run.get("pos") or []
+    log, line = pos[i] if i < len(pos) else (run.get("file"), i + 1)
+    return {"log": log, "line": line, "match_index": i - start,
+            "excerpt": [scrub_value(ln)[:500] for _t, ln in lines[start:i + 1 + after]]}
 
 
 class _Matcher:
@@ -270,11 +278,11 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
             enabled_version, enabled_i = e.group(1).strip(), i
         for h in m.hard:
             if h.search(ln):
-                return {"status": "failed", "reason": "failed to load or enable", "line": i + 1,
-                        "excerpt": _excerpt(lines, i), "preexisting": _in_baseline(baseline, h)}
+                return {"status": "failed", "reason": "failed to load or enable", **_hit(run, lines, i),
+                        "preexisting": _in_baseline(baseline, h)}
         if m.disabled and m.disabled.search(ln) and done_i is not None and i < done_i:
-            return {"status": "failed", "reason": "disabled during startup", "line": i + 1,
-                    "excerpt": _excerpt(lines, i), "preexisting": False}
+            return {"status": "failed", "reason": "disabled during startup", **_hit(run, lines, i),
+                    "preexisting": False}
     if base_sigs is None:
         base_sigs = baseline_signatures(baseline, players)
     new, known, late = [], [], []
@@ -283,7 +291,7 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
         block = "\n".join(ln for _t, ln in lines[a:b])
         if not m.references(head, block):
             continue
-        item = {"line": a + 1, "signature": signature(head, players), "excerpt": _excerpt(lines, a, min(b - a, 8) + 1)}
+        item = {"signature": signature(head, players), **_hit(run, lines, a, min(b - a, 8))}
         if start and t and t - start > GRACE_SECONDS:
             late.append(item)  # runtime error long after start: not the update's startup, reported only
         elif item["signature"] in base_sigs:
@@ -294,17 +302,17 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
             new.append(item)
     res = {"preexisting_errors": known, "later_errors": late, "warnings": []}
     if new and baseline:
-        return {**res, "status": "failed", "reason": "new error after the update", "line": new[0]["line"],
-                "excerpt": new[0]["excerpt"], "new_errors": new}
+        first = {k: new[0][k] for k in ("line", "log", "excerpt", "match_index")}
+        return {**res, "status": "failed", "reason": "new error after the update", **first, "new_errors": new}
     if new:
         res["warnings"] = [{**n, "reason": "error with no earlier run to compare against"} for n in new]
     if enabled_i is None:
         return {**res, "status": "unknown", "reason": "no enable line for this plugin in the run", "excerpt": []}
     if version and _norm(enabled_version) != _norm(version) and not _norm(enabled_version).startswith(_norm(version)):
         return {**res, "status": "unknown", "reason": f"the server ran v{enabled_version}, not v{version}",
-                "line": enabled_i + 1, "excerpt": []}
+                **_hit(run, lines, enabled_i, 0), "excerpt": [], "match_index": None}
     return {**res, "status": "healthy", "reason": "enabled" + (" (with known issues)" if known or new else ""),
-            "line": enabled_i + 1, "excerpt": [scrub_value(lines[enabled_i][1])[:500]]}
+            **_hit(run, lines, enabled_i, 0), "excerpt": [scrub_value(lines[enabled_i][1])[:500]], "match_index": 0}
 
 
 def _error_heads(run: dict) -> list[tuple]:
@@ -349,7 +357,8 @@ def plugin_health(srv: Server, runs: list[dict], plugin: dict, meta_desc: dict |
     pkg = main.rsplit(".", 1)[0] if main and main.count(".") >= 2 else None
     m = _Matcher(plugin["name"], plugin["jar"], pkg, srv.family, (meta_desc or {}).get("id"))
     res = analyse_run(target, baseline, m, plugin.get("version"), ctx["players"], ctx["base_sigs"])
-    return {**res, "log": target["file"], "run_started": target["start"], "baseline_runs": len(baseline)}
+    return {**res, "log": res.get("log") or target["file"], "run_started": target["start"],
+            "baseline_runs": len(baseline)}
 
 
 def context(runs: list[dict], since: float | None) -> dict:
