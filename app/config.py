@@ -4,9 +4,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_NAME = "LGT AMP Sync"
+APP_NAME = "PlugWarden"
 VERSION = "2.0"
-USER_AGENT = "lgt-amp-sync/2.0 (luke@interactep.com)"
+USER_AGENT = "plugwarden/2.0 (luke@interactep.com)"
 REL_PLUGINS = Path("Minecraft/plugins")
 DEFAULT_BASE = "/mnt/storage_ssd/ssd-live"
 USER_HEADER = "cf-access-authenticated-user-email"

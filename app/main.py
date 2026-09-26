@@ -1,4 +1,4 @@
-"""LGT AMP Sync 2.0 — FastAPI app and /api/v2 routes."""
+"""PlugWarden 2.0 — FastAPI app and /api/v2 routes."""
 from __future__ import annotations
 
 import asyncio

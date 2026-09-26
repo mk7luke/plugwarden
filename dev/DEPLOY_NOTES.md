@@ -1,10 +1,10 @@
-# LGT AMP Sync 2.0: deployment notes
+# PlugWarden 2.0: deployment notes
 
-How AMP Sync is deployed (Docker Compose), configured and secured. `INSTALL.md` has the short version.
+How PlugWarden (formerly LGT AMP Sync) is deployed (Docker Compose), configured and secured. `INSTALL.md` has the short version.
 
 ## 1. Running it: Docker Compose
 
-AMP Sync runs as the compose service `lgt-amp-sync`, like the owner's other apps. The files are in the repo root:
+PlugWarden runs as the compose service `lgt-amp-sync` (name kept for deployment continuity), like the owner's other apps. The files are in the repo root:
 
 | File | Purpose |
 |---|---|
@@ -103,7 +103,7 @@ The user shown in the audit and activity logs is the token's `email` (or `common
 ### Finding the team domain and AUD tag
 
 1. Cloudflare dashboard → **Zero Trust** → **Settings** → **Custom Pages** (or **General**). The team domain is shown as `<team>.cloudflareaccess.com`.
-2. **Zero Trust** → **Access** → **Applications** → the AMP Sync application → **Overview** (or **Basic information**). Copy the **Application Audience (AUD) Tag**.
+2. **Zero Trust** → **Access** → **Applications** → the PlugWarden (AMP Sync) application → **Overview** (or **Basic information**). Copy the **Application Audience (AUD) Tag**.
 3. Check it on the host:
    ```
    curl -s https://<team>.cloudflareaccess.com/cdn-cgi/access/certs | head -c 200

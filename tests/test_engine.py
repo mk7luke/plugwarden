@@ -199,7 +199,7 @@ def _mock_modrinth(env, new_jar_bytes, fail_hash=False):
 
     def handler(req: httpx.Request):
         seen.append(req)
-        assert req.headers["user-agent"].startswith("lgt-amp-sync/2.0")
+        assert req.headers["user-agent"].startswith("plugwarden/2.0")
         if req.url.path == "/v2/version_files":
             hashes = json.loads(req.content)["hashes"]
             return httpx.Response(200, json={old_sha1: cur} if old_sha1 in hashes else {})

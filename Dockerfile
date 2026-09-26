@@ -1,4 +1,4 @@
-# LGT AMP Sync 2.0 — see dev/DEPLOY_NOTES.md
+# PlugWarden 2.0 — see dev/DEPLOY_NOTES.md
 FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

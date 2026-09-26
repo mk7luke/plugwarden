@@ -1,6 +1,6 @@
-# LGT AMP Sync 2.0: install
+# PlugWarden 2.0: install
 
-AMP Sync runs as a Docker Compose service. Deployment, configuration (Cloudflare Access, datastore, retention) and migration from the old systemd install are described in **[dev/DEPLOY_NOTES.md](dev/DEPLOY_NOTES.md)**.
+PlugWarden (formerly LGT AMP Sync) runs as a Docker Compose service. Deployment, configuration (Cloudflare Access, datastore, retention) and migration from the old systemd install are described in **[dev/DEPLOY_NOTES.md](dev/DEPLOY_NOTES.md)**.
 
 Quick start on the host:
 

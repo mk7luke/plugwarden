@@ -68,12 +68,15 @@ export function knownIssues(report) {
 }
 
 // Warnings that were already there before the latest change (e.g. a UDP port already in use).
-export function KnownIssues({ issues, title = "Known issues on this server" }) {
+export function KnownIssues({ issues, title = "Known issues on this server", sub = "seen before this change — not caused by it" }) {
   if (!issues?.length) return null;
+  // The same message logged by several code paths reads as one issue with a count.
+  const grouped = [...issues.reduce((m, i) => { const k = `${i.name}|${i.reason}`; const g = m.get(k); g ? g.n++ : m.set(k, { ...i, n: 1 }); return m; }, new Map()).values()];
+  issues = grouped;
   return html`<section class="known" aria-label=${title}>
     <div class="row" style="gap:8px"><${Icon} n="info" cls="i-sm" /><b class="small">${title}</b>
-      <span class="small muted">${plural(issues.length, "warning")} seen before this change — not caused by it</span></div>
-    <ul>${issues.map(i => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}</span>
+      <span class="small muted">${plural(issues.length, "warning")} ${sub}</span></div>
+    <ul>${issues.map(i => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
       ${i.seen_in_runs > 1 && html`<span class="small muted"> · in the last ${i.seen_in_runs} starts</span>`}
       <${Excerpt} text=${i.excerpt} /></li>`)}</ul>
   </section>`;
@@ -88,7 +91,7 @@ export function ServerKnownIssues({ server }) {
         <span class="small muted">${q.data.restarted_at ? `started ${relTime(q.data.restarted_at)}` : ""}</span></div>
       <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting ? " (on every start)" : ""}</span><${Excerpt} text=${p.excerpt} /></li>`)}</ul>
     </section>`}
-    <${KnownIssues} issues=${knownIssues(q.data)} />`;
+    <${KnownIssues} issues=${knownIssues(q.data)} sub="that also appeared in earlier starts — informational, not failures" />`;
 }
 
 // On-demand startup report for one server since a point in time.

@@ -249,12 +249,17 @@ class _Matcher:
                 or bool(self.event.search(head)) or bool(self.pkg and self.pkg in block))
 
 
-def baseline_signatures(baseline: list[dict], players: set[str]) -> set[str]:
-    return {signature(h[1], players) for r in baseline for h in _error_heads(r)}
+def baseline_signatures(baseline: list[dict], players: set[str]) -> dict[str, list[float | None]]:
+    """signature -> start times of the baseline runs in which it appeared."""
+    out: dict[str, list[float | None]] = {}
+    for r in baseline:
+        for sig in {signature(h[1], players) for h in _error_heads(r)}:
+            out.setdefault(sig, []).append(r["start"])
+    return out
 
 
 def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | None, players: set[str],
-                base_sigs: set[str] | None = None) -> dict:
+                base_sigs: dict[str, list] | None = None) -> dict:
     lines = _cut_shutdown(run["lines"])
     start = run["start"] or (lines[0][0] if lines and lines[0][0] else None)
     done_i = next((i for i, (_t, ln) in enumerate(lines) if "Done (" in ln), None)
@@ -282,7 +287,9 @@ def analyse_run(run: dict, baseline: list[dict], m: _Matcher, version: str | Non
         if start and t and t - start > GRACE_SECONDS:
             late.append(item)  # runtime error long after start: not the update's startup, reported only
         elif item["signature"] in base_sigs:
-            known.append(item)
+            seen = [s for s in base_sigs[item["signature"]] if s]
+            known.append({**item, "seen_in_runs": len(base_sigs[item["signature"]]) + 1,
+                          "first_seen": min(seen) if seen else None})
         else:
             new.append(item)
     res = {"preexisting_errors": known, "later_errors": late, "warnings": []}
@@ -367,7 +374,8 @@ def server_report(srv: Server, since: float | None) -> dict:
     known = []
     for p in plugins:
         for e in p.get("preexisting_errors") or []:
-            known.append({"plugin": p["name"], **e})
+            known.append({"key": p["key"], "name": p["name"], "plugin": p["name"], "log": p.get("log"),
+                          "reason": "also in earlier starts", **e})
     last_start = last_startup(srv) or None
     lines = target["lines"] if target else []
     return {"server": srv.id, "since": since, "checked_at": time.time(),
