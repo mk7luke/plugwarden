@@ -221,7 +221,27 @@ def _desc(d: dict, kind: str) -> dict | None:
         "authors": [str(a) for a in authors if a][:10],
         "api_version": None if d.get("api-version") is None else str(d.get("api-version")),
         "folia_supported": bool(d.get("folia-supported", False)),
+        "depends": _dep_names(d),
     }
+
+
+def _dep_names(d: dict) -> list[str]:
+    """depend + softdepend (plugin.yml), dependencies (paper-plugin.yml / velocity-plugin.json)."""
+    out: list[str] = []
+    for field in ("depend", "softdepend"):
+        v = d.get(field)
+        if isinstance(v, list):
+            out += [str(x) for x in v if x]
+        elif isinstance(v, str) and v:
+            out.append(v)
+    deps = d.get("dependencies")
+    if isinstance(deps, list):  # velocity: [{"id": ...}]
+        out += [str(x.get("id")) for x in deps if isinstance(x, dict) and x.get("id")]
+    elif isinstance(deps, dict):  # paper-plugin.yml: {server: {Name: {...}}}
+        for group in deps.values():
+            if isinstance(group, dict):
+                out += [str(k) for k in group]
+    return sorted(set(out))[:100]
 
 
 def read_descriptors(path: Path) -> dict[str, dict]:
@@ -262,7 +282,7 @@ def jar_meta(path: Path) -> dict:
     """sha1 + descriptors, cached by (path, size, mtime_ns)."""
     global _meta_dirty
     st = path.stat()
-    ck = f"{st.st_size}:{st.st_mtime_ns}"
+    ck = f"v2:{st.st_size}:{st.st_mtime_ns}"  # bump the prefix when descriptor fields change
     key = str(path)
     with _meta_lock:
         cached = _load_cache().get(key)
@@ -353,6 +373,7 @@ def list_plugins(server: Server) -> list[dict]:
             "descriptor": desc.get("kind"),
             "website": desc.get("website"),
             "authors": desc.get("authors") or [],
+            "depends": desc.get("depends") or [],
             "valid": info["valid_zip"] and not info["foreign"],
         })
     keys: dict[str, int] = {}

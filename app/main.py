@@ -276,7 +276,7 @@ def plugin_remove(key: str, request: Request, body: dict = Body(default={})):
     if servers is not None and (not isinstance(servers, list) or not all(isinstance(s, str) for s in servers)):
         raise HTTPException(400, "servers must be a list of ids")
     job = actions.start_remove(user_of(request), key, servers, bool(body.get("remove_folder", False)),
-                               bool(body.get("dry_run", False)))
+                               bool(body.get("dry_run", False)), force=body.get("force") is True)
     return job_ref(job)
 
 

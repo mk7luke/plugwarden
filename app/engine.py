@@ -187,14 +187,15 @@ class Ctx:
         self.job = job
         self.backup = backup
         self.results: list[dict] = []
+        self.warnings: list[dict] = []
 
     def log(self, line: str) -> None:
         if self.job:
             self.job.write(line)
 
     def result(self, server: str, item: str, action: str, outcome: str, detail: str = "",
-               changes: list[str] | None = None) -> None:
-        extra: dict[str, Any] = {}
+               changes: list[str] | None = None, **fields) -> None:
+        extra: dict[str, Any] = dict(fields)
         if changes is not None:
             extra["changes"] = changes[:MAX_CHANGE_LINES]
             extra["change_count"] = len(changes)
@@ -297,14 +298,53 @@ def delete_item(ctx: Ctx, tgt: Server, rel: str) -> None:
         return ctx.result(tgt.id, str(rel), "delete", "error", str(e))
     if not _exists(path):
         return ctx.result(tgt.id, rel, "delete", "skipped", "not present")
-    n = _count_files(path)
+    n, size = _count_files(path), _tree_size(path)
     if ctx.dry_run:
-        return ctx.result(tgt.id, rel, "delete", "changed", f"would delete ({n} file(s))", [f"*deleting {rel}"])
+        return ctx.result(tgt.id, rel, "delete", "changed", f"would delete ({n} file(s))", [f"*deleting {rel}"],
+                          files=n, size=size)
     if ctx.backup:
         ctx.backup.save(tgt, rel, move=True)
     else:
         _remove(path)
-    ctx.result(tgt.id, rel, "delete", "changed", f"deleted ({n} file(s))", [f"*deleting {rel}"])
+    ctx.result(tgt.id, rel, "delete", "changed", f"deleted ({n} file(s))", [f"*deleting {rel}"],
+               files=n, size=size)
+
+
+def folder_sharers(tgt: Server, folder: str, removing_jars: set[str]) -> list[str]:
+    """Names of plugins that stay installed on tgt and still use plugins/<folder>.
+
+    A plugin uses the folder if it is its data folder, or if it depends on a plugin named like the
+    folder and its own name starts with that name (EssentialsChat/EssentialsSpawn → Essentials)."""
+    f = inventory.norm_name(folder)
+    out = []
+    for p in inventory.list_plugins(tgt):
+        if p["jar"] in removing_jars:
+            continue
+        owns = p["folder"] is not None and p["folder"].lower() == folder.lower()
+        addon = (any(inventory.norm_name(d) == f for d in p.get("depends") or [])
+                 and inventory.norm_name(p["name"]).startswith(f))
+        if owns or addon:
+            out.append(p["name"])
+    return sorted(set(out), key=str.lower)
+
+
+def delete_folder_checked(ctx: Ctx, tgt: Server, folder: str, removing_jars: set[str], force: bool) -> None:
+    """Delete a top-level folder unless another installed plugin still uses it (override with force)."""
+    try:
+        path = inventory.resolve_in(tgt, folder, single=True)
+    except PathError as e:
+        return ctx.result(tgt.id, folder, "delete", "error", str(e))
+    if not path.is_dir() or path.is_symlink():
+        return delete_item(ctx, tgt, folder)
+    shared = folder_sharers(tgt, folder, removing_jars)
+    if shared:
+        ctx.warnings.append({"server": tgt.id, "folder": folder, "shared_with": shared})
+        if not force:
+            return ctx.result(tgt.id, folder, "delete", "skipped",
+                              f"shared with {', '.join(shared)} — pass force:true", shared_with=shared,
+                              files=_count_files(path), size=_tree_size(path))
+        ctx.log(f"  warning: {folder} is shared with {', '.join(shared)}; deleting anyway (force)")
+    delete_item(ctx, tgt, folder)
 
 
 def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str | None = None,
@@ -380,15 +420,16 @@ def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str 
     ctx.result(tgt.id, item, action, "changed", detail, changes)
 
 
-def remove_plugin(ctx: Ctx, tgt: Server, key: str, remove_folder: bool) -> None:
+def remove_plugin(ctx: Ctx, tgt: Server, key: str, remove_folder: bool, force: bool = False) -> None:
     found = [p for p in inventory.list_plugins(tgt) if p["key"] == key]
     if not found:
         return ctx.result(tgt.id, key, "delete", "skipped", "not installed")
+    removing = {p["jar"] for p in found}
+    if remove_folder:  # decide sharing before the jars are gone
+        for folder in sorted({p["folder"] for p in found if p["folder"]}):
+            ctx.guard(tgt.id, folder, "delete", delete_folder_checked, ctx, tgt, folder, removing, force)
     for p in found:
-        delete_item(ctx, tgt, p["jar"])
-    if remove_folder:
-        for folder in {p["folder"] for p in found if p["folder"]}:
-            delete_item(ctx, tgt, folder)
+        ctx.guard(tgt.id, p["jar"], "delete", delete_item, ctx, tgt, p["jar"])
 
 
 # ---------------------------------------------------------------- deploy requests
@@ -467,6 +508,7 @@ def validate_deploy(body: dict) -> dict:
         "action": action, "source": source, "targets": targets,
         "jars": jars, "folders": folders, "paths": paths, "uploads": list(zip(uploads, upload_files)),
         "install": action == "install" or bool(options.get("install")),
+        "force": body.get("force") is True,
     }
 
 
@@ -475,7 +517,10 @@ def run_deploy(ctx: Ctx, req: dict) -> None:
     for tgt in req["targets"]:
         ctx.log(f"==> {tgt.id}")
         if action == "delete":
-            for n in req["jars"] + req["folders"] + req["paths"]:
+            removing = set(req["jars"])
+            for n in req["folders"] + [p for p in req["paths"] if "/" not in p]:
+                ctx.guard(tgt.id, n, "delete", delete_folder_checked, ctx, tgt, n, removing, req["force"])
+            for n in req["jars"] + [p for p in req["paths"] if "/" in p]:
                 ctx.guard(tgt.id, n, "delete", delete_item, ctx, tgt, n)
             continue
         for n in req["jars"]:
@@ -507,7 +552,8 @@ def plan(body: dict) -> dict:
     ctx = Ctx(dry_run=True)
     run_deploy(ctx, req)
     return {"action": req["action"], "source": req["source"].id if req["source"] else None,
-            "targets": [t.id for t in req["targets"]], "results": ctx.results, "summary": summarize(ctx.results)}
+            "targets": [t.id for t in req["targets"]], "results": ctx.results, "summary": summarize(ctx.results),
+            "warnings": ctx.warnings}
 
 
 def summarize(results: list[dict]) -> dict:

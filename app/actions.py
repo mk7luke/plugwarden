@@ -116,14 +116,14 @@ def start_apply(user: str, items, dry_run: bool, auto: bool = False) -> jobs.Job
 
 def start_deploy(user: str, body: dict, dry_run: bool = False) -> jobs.Job:
     req = engine.validate_deploy(body)
-    params = {k: body.get(k) for k in ("source", "targets", "action", "items", "options")}
+    params = {k: body.get(k) for k in ("source", "targets", "action", "items", "options", "force")}
     return jobs.submit("deploy", user, params,
                        lambda job: _mutating_body(job, lambda ctx: engine.run_deploy(ctx, req)),
                        dry_run=dry_run, on_done=_finish)
 
 
 def start_remove(user: str, key: str, server_ids: list[str] | None, remove_folder: bool,
-                 dry_run: bool) -> jobs.Job:
+                 dry_run: bool, force: bool = False) -> jobs.Job:
     known = inventory.servers_by_id()
     if server_ids is None:
         targets = [s for s in known.values() if any(p["key"] == key for p in inventory.list_plugins(s))]
@@ -134,12 +134,12 @@ def start_remove(user: str, key: str, server_ids: list[str] | None, remove_folde
         targets = [known[s] for s in server_ids]
     if not targets:
         raise engine.DeployError(f"{key} is not installed on any selected server")
-    params = {"key": key, "servers": [t.id for t in targets], "remove_folder": remove_folder}
+    params = {"key": key, "servers": [t.id for t in targets], "remove_folder": remove_folder, "force": force}
 
     def run(ctx: engine.Ctx) -> None:
         for t in targets:
             ctx.log(f"==> {t.id}")
-            engine.remove_plugin(ctx, t, key, remove_folder)
+            engine.remove_plugin(ctx, t, key, remove_folder, force)
 
     return jobs.submit("remove", user, params, lambda job: _mutating_body(job, run),
                        dry_run=dry_run, on_done=_finish)

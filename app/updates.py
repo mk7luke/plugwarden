@@ -82,6 +82,14 @@ def compare_versions(a: str | None, b: str | None) -> int | None:
     return (na > nb) - (na < nb)
 
 
+_LOADER_PREFIX = re.compile(r"^(bukkit|paper|spigot|purpur|folia|velocity|bungee|bungeecord|waterfall)[-_ ]+(?=v?\d)", re.I)
+
+
+def display_version(v: str | None) -> str | None:
+    """Modrinth version numbers sometimes carry a loader prefix ('bukkit-2.6.24'); drop it."""
+    return _LOADER_PREFIX.sub("", v) if v else v
+
+
 def _modrinth_file(version: dict) -> dict | None:
     files = version.get("files") or []
     for f in files:
@@ -95,7 +103,7 @@ def _modrinth_latest(v: dict) -> dict:
     f = _modrinth_file(v) or {}
     pid, vid = v.get("project_id"), v.get("id")
     return {
-        "version": v.get("version_number"), "version_id": vid, "type": v.get("version_type"),
+        "version": display_version(v.get("version_number")), "version_id": vid, "type": v.get("version_type"),
         "published": v.get("date_published"),
         "url": f"https://modrinth.com/project/{pid}/version/{vid}",
         "changelog_url": f"https://modrinth.com/project/{pid}/version/{vid}",
@@ -310,7 +318,7 @@ def check(job=None) -> dict:
                     cur = identified[sha1]
                     pid = cur.get("project_id")
                     entry["source"] = _source_info("modrinth", pid, titles.get(pid))
-                    entry["current"] = {"version": cur.get("version_number"), "version_id": cur.get("id"),
+                    entry["current"] = {"version": display_version(cur.get("version_number")), "version_id": cur.get("id"),
                                         "type": cur.get("version_type"), "published": cur.get("date_published")}
                     rel = latest_rel.get(sha1)
                     new = rel if _is_newer(rel, cur) or not latest_any.get(sha1) else latest_any[sha1]
