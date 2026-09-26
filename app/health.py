@@ -427,19 +427,17 @@ def _norm(v: str | None) -> str:
 
 
 def _pick(runs: list[dict], since: float | None) -> tuple[dict | None, list[dict]]:
-    """The run to judge (first run started after `since`, else the latest) and its baseline runs."""
+    """The run to judge (the latest run, or the latest one started after `since`) and its baseline runs."""
     if not runs:
         return None, []
     if since is not None:
+        # After a change (canary, update check) the baseline is only starts from BEFORE it, i.e. with the old
+        # version: a second post-change start that fails the same way must not make the failure "pre-existing".
+        before = [r for r in runs if r["start"] and r["start"] < since and (r["complete"] or r["lines"])]
         after = [r for r in runs if r["start"] and r["start"] >= since]
-        if not after:
-            return None, [r for r in runs if r["complete"]][-BASELINE_RUNS:]
-        target = after[-1]
-    else:
-        target = runs[-1]
-    idx = runs.index(target)
-    baseline = [r for r in runs[:idx] if r["complete"] or r["lines"]][-BASELINE_RUNS:]
-    return target, baseline
+        return (after[-1] if after else None), before[-BASELINE_RUNS:]
+    baseline = [r for r in runs[:-1] if r["complete"] or r["lines"]][-BASELINE_RUNS:]
+    return runs[-1], baseline
 
 
 def plugin_health(srv: Server, runs: list[dict], plugin: dict, meta_desc: dict | None,

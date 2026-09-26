@@ -583,3 +583,48 @@ def test_removed_settings_are_dropped(env):
         assert r.status_code == 200 and "auto_restart_rest" not in r.json()["auto_update"]
     stored = json.loads(config.state("settings.json").read_text())
     assert "amp_command_denylist" not in stored and "auto_restart_canary" not in stored["auto_update"]
+
+
+# ---------------------------------------------------------------- baseline = starts before the change only
+
+def _cp_run(when, version, fail):
+    t = when.strftime("%H:%M:%S")
+    body = [L(T, "Starting minecraft server version 1.21.6", t), L(T, f"[CoreProtect] Enabling CoreProtect v{version}", t)]
+    if fail:
+        body.append(L(E, f"Error occurred while enabling CoreProtect v{version} (Is it up to date?)", t))
+    return body + [L(T, "Done (60s)!", t)]
+
+
+def _canary_scenario(env, old_fails):
+    logs = env["src"].parent / "logs"
+    make_jar(env["src"] / "CoreProtect-24.1.jar", "CoreProtect", "24.1")
+    now = datetime.now()
+    before = (now - timedelta(days=2)).replace(hour=0, minute=0, second=10)
+    run1, run2 = now - timedelta(hours=2), now - timedelta(hours=1)
+    write_log(logs, before, _cp_run(before, "23.1", old_fails), name=before.strftime("%Y-%m-%d-1.log.gz"))
+    write_log(logs, run1, _cp_run(run1, "24.1", True), name=run1.strftime("%Y-%m-%d-2.log.gz"))
+    write_log(logs, run2, _cp_run(run2, "24.1", True))  # restarted again after the update: fails again
+    applied = (now - timedelta(hours=3)).timestamp()
+    srv = inventory.get_server("elChapo01")
+    res = health.plugin_health(srv, health.read_runs(srv, applied),
+                               {"name": "CoreProtect", "version": "24.1", "jar": "CoreProtect-24.1.jar"},
+                               {"main": None, "id": "CoreProtect"}, since=applied)
+    st = {"canary": {"bukkit:coreprotect|24.1": {"at": applied, "server": "elChapo01", "sha1": None}}}
+    scheduler.check_canary_health(st, srv)
+    return res, st
+
+
+def test_repeated_failure_after_update_is_not_preexisting(env):
+    res, st = _canary_scenario(env, old_fails=False)
+    assert res["status"] == "failed" and res["preexisting"] is False
+    assert res["baseline_runs"] == 1  # only the start with the old version, not the first post-update start
+    assert st["canary"]["bukkit:coreprotect|24.1"]["health"]["status"] == "failed"
+    assert "bukkit:coreprotect|24.1" in st["held"]
+
+
+def test_failure_also_with_old_version_is_preexisting_but_still_holds_the_canary(env):
+    res, st = _canary_scenario(env, old_fails=True)
+    assert res["status"] == "failed" and res["preexisting"] is True
+    c = st["canary"]["bukkit:coreprotect|24.1"]
+    assert c["health"]["status"] == "failed" and c["health"]["preexisting"] is True
+    assert "bukkit:coreprotect|24.1" in st["held"]  # never "healthy": the updated plugin does not run
