@@ -303,3 +303,15 @@ def test_flow_map_line_merged_and_verified():
     tgt = ['Channels: {"global": "222"}\n', "Other: 2\n"]
     out, kept = configmerge.merge("c.yml", src, tgt, ["Channels"])
     assert out == ['Channels: {"global": "222"}\n', "Other: 1\n"] and kept == ["Channels"]
+
+
+def test_diff_with_preserve_shows_merged_result(lp_env):
+    with TestClient(app) as c:
+        q = {"source": "elChapo01", "target": "M1-hub01", "path": "LuckPerms/config.yml"}
+        raw = c.get("/api/v2/diff", params=q).json()
+        assert "-server: hub" in raw["diff"] and "+server: survival" in raw["diff"]
+        kept = c.get("/api/v2/diff", params={**q, "preserve_keys": "server_specific"}).json()
+        assert kept["kept_keys"] == ["server"] and kept["merge_error"] is None
+        assert "server:" not in kept["diff"] and "+sync-minutes: 5" in kept["diff"]
+        bad = c.get("/api/v2/diff", params={**q, "preserve_keys": "disabled-contexts"}).json()
+        assert bad["merge_error"] and "+server: survival" in bad["diff"]

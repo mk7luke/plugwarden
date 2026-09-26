@@ -385,6 +385,9 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
   const [diff, setDiff] = useState(null); // null | "loading" | {lines} | Error
   // Rows that change server-specific keys open their diff straight away.
   useEffect(() => { if (idKeys.length && r.outcome === "changed" && !diff && !r.item.endsWith("/")) loadDiff(); }, [idKeys.length]);
+  // An open diff follows the Keep/Overwrite choice: with Keep it shows the merged file that would be written.
+  useEffect(() => { if (diff && diff !== "loading") { setDiff(null); setTimeout(() => loadDiffRef.current?.(), 0); } }, [identity]);
+  const loadDiffRef = useRef();
   const del = action === "delete" && r.outcome === "changed";
   const [i, cl] = del ? ["minus", "op-delete"] : OUT[r.outcome] || OUT.changed;
   const swap = r.outcome === "changed" && r.new_jar;
@@ -393,10 +396,12 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
     if (diff && diff !== "loading") { setDiff(null); return; }
     setDiff("loading");
     try {
-      const d = await get(`/diff?source=${encodeURIComponent(source)}&target=${encodeURIComponent(r.server)}&path=${encodeURIComponent(r.item)}`);
+      const keep = identity === "keep" ? "&preserve_keys=server_specific" : "";
+      const d = await get(`/diff?source=${encodeURIComponent(source)}&target=${encodeURIComponent(r.server)}&path=${encodeURIComponent(r.item)}${keep}`);
       setDiff(d);
     } catch (e) { setDiff(e); }
   };
+  loadDiffRef.current = loadDiff;
   return html`<div class=${"plan-op-wrap" + (idKeys.length ? " has-identity" : "")}>
     ${idKeys.length > 0 && html`<div class="id-chip"><${Icon} n="triangle-alert" cls="i-xs" />${identity === "keep" ? "Keeps" : identity === "overwrite" ? "Overwrites" : "Changes"} ${idKeys.flatMap(w => w.keys.map(k => `${k.key}: ${k.target_value}`)).join(", ")}</div>`}
     <div class="plan-op"><${Icon} n=${i} cls=${"i-xs " + cl} />
@@ -409,7 +414,6 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
           ${diffable && html`<button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide diff" : "Show diff"}</button>`}</span>`}
     </div>
     ${r.delete_count > 0 && html`<${Deletions} r=${r} />`}
-    ${diff && identity === "keep" && idKeys.length > 0 && html`<div class="diff-note small muted"><${Icon} n="info" cls="i-xs" />This server keeps its own ${idKeys.flatMap(w => w.keys.map(k => k.key)).join(", ")} — those lines below won't change.</div>`}
     ${diff && html`<${DiffView} d=${diff} />`}
   </div>`;
 }
@@ -431,11 +435,13 @@ function DiffView({ d }) {
   if (d.too_large) return html`<div class="diff small muted">File too large to diff.</div>`;
   const red = d.redacted || [];
   const redNote = red.length > 0 && html`<div class="diff-note small muted"><${Icon} n="shield" cls="i-xs" />${plural(red.length, "secret value")} hidden (${[...new Set(red.map(x => x.key.replace(/ \(\d+\)$/, "")))].join(", ")})${d.redacted_changed ? " — at least one differs" : ""}</div>`;
-  if (d.identical) return html`<div class="diff small muted">Identical — nothing would change.</div>`;
+  const kept = d.kept_keys?.length > 0 && html`<div class="diff-note small"><${Icon} n="shield" cls="i-xs" style="color:var(--ok)" />Merged preview — keeps this server's ${d.kept_keys.join(", ")}</div>`;
+  const mergeErr = d.merge_error && html`<div class="diff-note small" style="color:var(--danger)"><${Icon} n="triangle-alert" cls="i-xs" />Can't keep this server's values here (${d.merge_error}) — this file will be refused; diff shows the raw source.</div>`;
+  if (d.identical) return html`${kept}<div class="diff small muted">Identical after merge — nothing would change.</div>`;
   if (!d.diff && d.redacted_changed) return html`<div class="diff small">Only redacted values differ (${red.filter(x => x.changed).map(x => x.key).join(", ")}).</div>`;
   if (!d.target_exists) return html`<div class="diff small muted">New file on this server.</div>`;
   const lines = (d.diff || "").split("\n").filter(l => !/^(---|\+\+\+) /.test(l));
-  return html`${redNote}<pre class="diff" aria-label=${`Diff of ${d.path}: this server becomes the source version`}>${lines.map(l => html`<span class=${l.startsWith("@@") ? "d-hunk" : l[0] === "+" ? "d-add" : l[0] === "-" ? "d-del" : ""}>${l || " "}</span>`)}</pre>`;
+  return html`${kept}${mergeErr}${redNote}<pre class="diff" aria-label=${`Diff of ${d.path}: this server becomes the source version`}>${lines.map(l => html`<span class=${l.startsWith("@@") ? "d-hunk" : l[0] === "+" ? "d-add" : l[0] === "-" ? "d-del" : ""}>${l || " "}</span>`)}</pre>`;
 }
 
 function SearchResults({ found, q, picked, toggle, open, blocked }) {
