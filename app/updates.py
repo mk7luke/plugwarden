@@ -8,7 +8,8 @@ import re
 import secrets
 import threading
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +336,257 @@ def _source_info(kind: str, sid: str, extra: dict | None = None) -> dict:
     return {"kind": kind, "id": sid, "url": url, **(extra or {})}
 
 
+# ---------------------------------------------------------------- Modrinth lookups (POST first, GET fallback)
+# Modrinth's WAF can block POST from a host (403 with an HTML "Request blocked" page) while GET keeps
+# working. The bulk POST endpoints stay the first choice; when refused, the same answers are built from
+# GET /version_file/{sha1} and GET /project/{id}/version, and POST is skipped for POST_BLOCK_HOURS.
+
+POST_BLOCK_HOURS = 24
+MISS_TTL = timedelta(days=7)         # "hash unknown to Modrinth" is re-asked after this
+GET_WORKERS = 4
+GET_RETRIES = 3                      # extra attempts, only on 429/5xx
+GET_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+MAX_WAIT = 60.0
+_sleep = time.sleep                  # tests replace this
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_VERSION_FIELDS = ("id", "project_id", "version_number", "version_type", "date_published",
+                   "game_versions", "loaders")
+
+
+class PostBlocked(Exception):
+    """Modrinth refused a POST lookup (403/429 or a non-JSON block page)."""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def _post_json(c: httpx.Client, path: str, body: dict) -> dict:
+    r = c.post(f"{MODRINTH}{path}", json=body)
+    if r.status_code in (403, 429):
+        raise PostBlocked(f"HTTP {r.status_code}")
+    r.raise_for_status()
+    if "json" not in r.headers.get("content-type", ""):
+        raise PostBlocked(f"non-JSON response ({r.headers.get('content-type') or 'no content type'})")
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise PostBlocked("unparseable JSON response") from e
+    if not isinstance(data, dict):
+        raise PostBlocked("unexpected JSON response")
+    return data
+
+
+def _parallel(fn, items: list) -> dict:
+    """{item: fn(item) or the exception it raised}, GET_WORKERS at a time."""
+    out: dict = {}
+    if not items:
+        return out
+    with ThreadPoolExecutor(max_workers=GET_WORKERS) as ex:
+        futs = {ex.submit(fn, it): it for it in items}
+        for f in as_completed(futs):
+            try:
+                out[futs[f]] = f.result()
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+                out[futs[f]] = e
+    return out
+
+
+def _header_num(r: httpx.Response, name: str) -> float | None:
+    try:
+        return float(r.headers[name])
+    except (KeyError, ValueError):
+        return None
+
+
+class _ModrinthRun:
+    """One check's Modrinth lookups. Hash results persist in the update cache ("hashes": immutable, so
+    kept; unknown hashes expire after MISS_TTL); project version lists are cached for this run only."""
+
+    def __init__(self, c: httpx.Client, cache: dict, log):
+        self.c, self.log = c, log
+        self.hashes: dict[str, dict] = dict(cache.get("hashes") or {})
+        until = _parse_time(cache.get("post_blocked_until"))
+        self.blocked_until = until if until and until > _now() else None
+        self.use_post = self.blocked_until is None
+        self.versions: dict[tuple, Any] = {}
+        self.requests = 0
+        self._lock = threading.Lock()
+        self._remaining: float | None = None
+        self._reset_at = 0.0
+        c.event_hooks["request"].append(self._count)
+        if not self.use_post:
+            log(f"Modrinth POST lookups blocked until {_iso(self.blocked_until)}; using GET lookups")
+
+    def _count(self, request: httpx.Request) -> None:
+        if request.url.host == "api.modrinth.com":
+            with self._lock:
+                self.requests += 1
+
+    def _blocked(self, e: Exception) -> None:
+        self.use_post = False
+        self.blocked_until = _now() + timedelta(hours=POST_BLOCK_HOURS)
+        self.log(f"Modrinth refused POST lookups ({e}); using GET lookups for the next {POST_BLOCK_HOURS} h")
+
+    # -- paced GET
+
+    def get(self, url: str, params: dict | None = None) -> httpx.Response:
+        """GET within Modrinth's rate limit (X-Ratelimit-Remaining/-Reset); retries 429/5xx with backoff."""
+        for attempt in range(GET_RETRIES + 1):
+            with self._lock:
+                wait = 0.0
+                if self._remaining is not None:
+                    if self._remaining <= 0:
+                        wait = max(0.0, self._reset_at - time.monotonic())
+                    self._remaining -= 1
+            if wait:
+                _sleep(min(wait, MAX_WAIT))
+            r = self.c.get(url, params=params, timeout=GET_TIMEOUT)
+            remaining, reset = _header_num(r, "x-ratelimit-remaining"), _header_num(r, "x-ratelimit-reset")
+            if remaining is not None:
+                with self._lock:
+                    self._remaining = remaining
+                    self._reset_at = time.monotonic() + (reset or 0.0)
+            if not (r.status_code == 429 or r.status_code >= 500) or attempt == GET_RETRIES:
+                return r
+            if r.status_code == 429:  # hold every worker until the limit resets (waited at the top)
+                delay = _header_num(r, "retry-after") or reset or 2.0 ** attempt
+                with self._lock:
+                    self._remaining, self._reset_at = 0, time.monotonic() + delay
+            else:
+                _sleep(min(2.0 ** attempt, MAX_WAIT))
+        raise AssertionError("unreachable")
+
+    def _get_json(self, url: str, params: dict | None = None) -> Any:
+        r = self.get(url, params)
+        r.raise_for_status()
+        return r.json()
+
+    # -- identification: sha1 -> installed version
+
+    def _remember(self, sha1: str, version: dict | None) -> None:
+        if isinstance(version, dict) and version.get("project_id"):
+            self.hashes[sha1] = {"v": {k: version.get(k) for k in _VERSION_FIELDS}}
+        else:
+            self.hashes[sha1] = {"miss_at": _iso(_now())}
+
+    def _known(self, sha1: str) -> bool:
+        h = self.hashes.get(sha1) or {}
+        if h.get("v"):
+            return True
+        miss = _parse_time(h.get("miss_at"))
+        return bool(miss and _now() - miss < MISS_TTL)
+
+    def _by_hash(self, sha1: str) -> dict | None:
+        r = self.get(f"{MODRINTH}/version_file/{sha1}", {"algorithm": "sha1"})
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        d = r.json()
+        if not isinstance(d, dict):
+            raise ValueError("unexpected version_file response")
+        return d
+
+    def identify(self, hashes: list[str]) -> tuple[dict[str, dict], set[str]]:
+        """-> ({sha1: installed version}, sha1s whose lookup failed). Non-block POST errors propagate."""
+        if self.use_post:
+            try:
+                found: dict = {}
+                for chunk in _chunks(hashes, 500):
+                    found.update(_post_json(self.c, "/version_files", {"hashes": chunk, "algorithm": "sha1"}))
+            except PostBlocked as e:
+                self._blocked(e)
+            else:
+                self.blocked_until = None
+                for h in hashes:
+                    self._remember(h, found.get(h))
+                return self._identified(hashes, set()), set()
+        todo = [h for h in hashes if not self._known(h)]
+        failed: dict[str, Exception] = {}
+        for h, res in _parallel(self._by_hash, todo).items():
+            if isinstance(res, Exception):
+                failed[h] = res
+            else:
+                self._remember(h, res)
+        if failed:
+            first = str(next(iter(failed.values()))).splitlines()[0:1] or ["error"]
+            msg = f"GET hash lookup failed for {len(failed)} of {len(todo)} jar(s): {first[0]}"
+            if not self._identified(hashes, set(failed)):
+                raise httpx.HTTPError(msg)
+            self.log(f"Modrinth {msg}")
+        return self._identified(hashes, set(failed)), set(failed)
+
+    def _identified(self, hashes: list[str], failed: set[str]) -> dict[str, dict]:
+        return {h: self.hashes[h]["v"] for h in hashes
+                if h not in failed and (self.hashes.get(h) or {}).get("v")}
+
+    # -- latest compatible version per installed jar
+
+    def _project_versions(self, key: tuple) -> list[dict]:
+        pid, family, mc = key
+        if not isinstance(pid, str) or not re.fullmatch(r"[A-Za-z0-9]{1,64}", pid):
+            raise ValueError(f"bad Modrinth project id {pid!r}")
+        params = {"loaders": _json_list(LOADERS[family])}
+        if mc:
+            params["game_versions"] = _json_list([mc])
+        vs = self._get_json(f"{MODRINTH}/project/{pid}/version", params)
+        if not isinstance(vs, list):
+            raise ValueError("unexpected project versions response")
+        vs = [v for v in vs if isinstance(v, dict)]
+        # newest first, as /version_files/update picks it
+        return sorted(vs, key=lambda v: _parse_time(v.get("date_published")) or _EPOCH, reverse=True)
+
+    def latest(self, family: str, mc: str | None, hashes: list[str],
+               identified: dict[str, dict]) -> tuple[dict, dict, set[str]]:
+        """-> (latest release per sha1, latest of any type for pre-release installs, sha1s that failed)."""
+        latest_rel: dict[str, dict] = {}
+        latest_any: dict[str, dict] = {}
+        if self.use_post:
+            body = {"algorithm": "sha1", "loaders": LOADERS[family], "game_versions": [mc] if mc else []}
+            try:
+                for chunk in _chunks(hashes, 500):
+                    latest_rel.update(_post_json(self.c, "/version_files/update",
+                                                 {**body, "hashes": chunk, "version_types": ["release"]}))
+                # Pre-release installs may move to a newer pre-release when no newer release exists.
+                pre = [h for h in hashes if identified[h].get("version_type") != "release"
+                       and not _is_newer(latest_rel.get(h), identified[h])]
+                for chunk in _chunks(pre, 500):
+                    latest_any.update(_post_json(self.c, "/version_files/update", {**body, "hashes": chunk}))
+                return latest_rel, latest_any, set()
+            except PostBlocked as e:
+                self._blocked(e)
+                latest_rel, latest_any = {}, {}
+        keys = sorted({(identified[h]["project_id"], family, mc) for h in hashes} - self.versions.keys())
+        for k, res in _parallel(self._project_versions, keys).items():
+            self.versions[k] = res
+            if isinstance(res, Exception):
+                self.log(f"Modrinth versions for project {k[0]} ({family}/{mc or 'any'}) failed: "
+                         f"{str(res).splitlines()[0] if str(res) else type(res).__name__}")
+        failed = set()
+        for h in hashes:
+            vs = self.versions[(identified[h]["project_id"], family, mc)]
+            if isinstance(vs, Exception):
+                failed.add(h)
+                continue
+            rel = next((v for v in vs if v.get("version_type") == "release"), None)
+            if rel:
+                latest_rel[h] = rel
+            if vs and identified[h].get("version_type") != "release" and not _is_newer(rel, identified[h]):
+                latest_any[h] = vs[0]
+        return latest_rel, latest_any, failed
+
+    def save(self) -> None:
+        with _cache_lock:
+            cache = load_cache()
+            cache["hashes"] = self.hashes
+            cache["post_blocked_until"] = _iso(self.blocked_until) if self.blocked_until else None
+            write_json(_cache_file(), cache)
+
+
 # ---------------------------------------------------------------- check
 
 def check(job=None) -> dict:
@@ -365,26 +617,28 @@ def check(job=None) -> dict:
     entries: dict[str, dict] = {}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     errors = 0
-    previous = load_cache().get("entries", {})
+    started = time.monotonic()
+    prev_cache = load_cache()
+    previous = prev_cache.get("entries", {})
     with _client() as c:
-        identified: dict[str, dict] = {}
+        mr = _ModrinthRun(c, prev_cache, log)
         try:
-            for chunk in _chunks(all_hashes, 500):
-                r = c.post(f"{MODRINTH}/version_files", json={"hashes": chunk, "algorithm": "sha1"})
-                r.raise_for_status()
-                identified.update(r.json())
-            log(f"Modrinth recognised {len(identified)} jar(s) by hash")
-            step()
+            identified, unresolved = mr.identify(all_hashes)
         except httpx.HTTPError as e:
             # Without identification every result would be wrong; keep the previous cache untouched.
+            mr.save()
             raise RuntimeError(f"Modrinth hash lookup failed, previous results kept: {e}") from e
+        log(f"Modrinth recognised {len(identified)} jar(s) by hash")
+        if unresolved:
+            errors += 1
+        step()
 
         # Project titles for nicer source labels.
         titles: dict[str, dict] = {}
         pids = sorted({v["project_id"] for v in identified.values() if v.get("project_id")})
         try:
             for chunk in _chunks(pids, 100):
-                r = c.get(f"{MODRINTH}/projects", params={"ids": _json_list(chunk)})
+                r = mr.get(f"{MODRINTH}/projects", params={"ids": _json_list(chunk)})
                 r.raise_for_status()
                 for p in r.json():
                     titles[p["id"]] = {"name": p.get("title"), "slug": p.get("slug")}
@@ -397,23 +651,15 @@ def check(job=None) -> dict:
             hashes = [h for h in plugins if h in identified]
             latest_rel: dict[str, dict] = {}
             latest_any: dict[str, dict] = {}
-            group_failed = False
-            body = {"algorithm": "sha1", "loaders": LOADERS[family], "game_versions": [mc] if mc else []}
+            failed = set(unresolved)
             try:
-                for chunk in _chunks(hashes, 500):
-                    r = c.post(f"{MODRINTH}/version_files/update", json={**body, "hashes": chunk, "version_types": ["release"]})
-                    r.raise_for_status()
-                    latest_rel.update(r.json())
-                # Pre-release installs may move to a newer pre-release when no newer release exists.
-                pre = [h for h in hashes if identified[h].get("version_type") != "release"
-                       and not _is_newer(latest_rel.get(h), identified[h])]
-                for chunk in _chunks(pre, 500):
-                    r = c.post(f"{MODRINTH}/version_files/update", json={**body, "hashes": chunk})
-                    r.raise_for_status()
-                    latest_any.update(r.json())
+                latest_rel, latest_any, lookup_failed = mr.latest(family, mc, hashes, identified)
+                if lookup_failed:
+                    errors += 1
+                    failed |= lookup_failed
             except httpx.HTTPError as e:
                 errors += 1
-                group_failed = True
+                failed |= set(hashes)
                 log(f"Modrinth update lookup failed for {family}/{mc or 'any'}: {e}")
             step()
 
@@ -422,7 +668,7 @@ def check(job=None) -> dict:
                 mapping = smap.get(p["key"])
                 entry: dict[str, Any] = {"key": p["key"], "source": None, "current": None, "latest": None,
                                          "outdated": False, "error": None, "checked_at": now}
-                if sha1 in identified and (not mapping or mapping["kind"] == "modrinth") and group_failed:
+                if sha1 in failed and (not mapping or mapping["kind"] == "modrinth"):
                     old = previous.get(ck)
                     entry = dict(old) if old else entry
                     entry["error"] = None if old else "update lookup failed"
@@ -475,6 +721,9 @@ def check(job=None) -> dict:
                         entry["outdated"] = cmpv == 1 if cmpv is not None else (
                             (res["version"] or "").lower() != (p["version"] or "").lower())
                 entries[ck] = entry
+    mr.save()
+    log(f"Modrinth: {mr.requests} API request(s) via {'POST' if mr.use_post else 'GET'} "
+        f"in {time.monotonic() - started:.1f}s")
     with _cache_lock:
         cache = load_cache()
         prev_checked = cache.get("checked_at")
