@@ -1,8 +1,11 @@
 """Server discovery, platform/MC version detection, jar metadata and safe path resolution."""
 from __future__ import annotations
 
+import difflib
 import hashlib
+import itertools
 import json
+import os
 import re
 import threading
 import zipfile
@@ -411,3 +414,101 @@ def list_tree(server: Server, rel: str) -> dict:
     return {"server": server.id, "path": rel_norm,
             "parent": None if not rel_norm else "/".join(rel_norm.split("/")[:-1]),
             "entries": entries}
+
+
+# ---------------------------------------------------------------- search / diff
+
+# Player/world data folders: huge and never what someone deploys.
+SEARCH_SKIP_DIRS = {"userdata", "playerdata", "players", "data", "logs", "cache", "backups", "backup",
+                    "libs", "libraries", "database", "stats", "tiles", "web", "schematics", ".git"}
+SEARCH_MAX_DEPTH = 6
+SEARCH_MAX_VISITED = 50_000
+SEARCH_MAX_DIR_ENTRIES = 2_000
+DIFF_MAX_BYTES = 256 * 1024
+DIFF_MAX_LINES = 8_000  # difflib is quadratic in the worst case
+
+
+class NotFound(PathError):
+    pass
+
+
+def search(server: Server, q: str, limit: int = 200) -> dict:
+    """Case-insensitive substring match on paths inside plugins/, breadth-first, bounded."""
+    needle = q.strip().lower()
+    if len(needle) < 2:
+        raise PathError("search query must have at least 2 non-space characters")
+    root = server.plugins_dir.resolve()
+    results: list[dict] = []
+    visited = 0
+    truncated = False
+    queue: list[tuple[Path, int]] = [(root, 0)]
+    while queue and not truncated:
+        d, depth = queue.pop(0)
+        try:
+            with os.scandir(d) as it:
+                entries = list(itertools.islice(it, SEARCH_MAX_DIR_ENTRIES + 1))
+        except OSError:
+            continue
+        if len(entries) > SEARCH_MAX_DIR_ENTRIES:
+            continue  # huge data folder: never what gets deployed
+        entries.sort(key=lambda e: e.name.lower())
+        for e in entries:
+            visited += 1
+            if visited > SEARCH_MAX_VISITED:
+                truncated = True
+                break
+            rel = Path(e.path).relative_to(root).as_posix()
+            is_dir = e.is_dir(follow_symlinks=False)
+            if needle in rel.lower():
+                try:
+                    size = None if is_dir else e.stat(follow_symlinks=False).st_size
+                except OSError:
+                    size = None
+                results.append({"path": rel, "name": e.name, "type": "dir" if is_dir else
+                                ("symlink" if e.is_symlink() else "file"), "size": size})
+                if len(results) >= limit:
+                    truncated = True
+                    break
+            if is_dir and depth + 1 < SEARCH_MAX_DEPTH and e.name.lower() not in SEARCH_SKIP_DIRS:
+                queue.append((Path(e.path), depth + 1))
+    return {"server": server.id, "q": q, "results": results, "truncated": truncated}
+
+
+def diff_file(source: Server, target: Server, rel: str) -> dict:
+    """Unified diff of one text file between two servers (≤ 256 KB each)."""
+    src = resolve_in(source, rel)
+    dst = resolve_in(target, rel)
+    rel = check_rel(rel)
+    out: dict[str, Any] = {"path": rel, "source": source.id, "target": target.id,
+                           "source_exists": src.is_file(), "target_exists": dst.is_file(),
+                           "identical": False, "binary": False, "too_large": False, "diff": ""}
+    if (src.exists() and not src.is_file()) or (dst.exists() and not dst.is_file()):
+        raise PathError(f"not a file: {rel!r}")
+    if not src.is_file() and not dst.is_file():
+        raise NotFound(f"{rel} exists on neither server")
+    texts = []
+    for p in (src, dst):
+        if not p.is_file():
+            texts.append([])
+            continue
+        with open(p, "rb") as f:
+            data = f.read(DIFF_MAX_BYTES + 1)  # bounded even if the file grows meanwhile
+        if len(data) > DIFF_MAX_BYTES:
+            out["too_large"] = True
+            return out
+        try:
+            texts.append(data.decode("utf-8").splitlines(keepends=True))
+        except UnicodeDecodeError:
+            out["binary"] = True
+            return out
+        if b"\x00" in data:
+            out["binary"] = True
+            return out
+        if len(texts[-1]) > DIFF_MAX_LINES:
+            out["too_large"] = True
+            return out
+    out["identical"] = texts[0] == texts[1] and out["source_exists"] == out["target_exists"]
+    # "what the target will become": target (a) → source (b)
+    out["diff"] = "".join(difflib.unified_diff(texts[1], texts[0], fromfile=f"{target.id}/{rel}",
+                                               tofile=f"{source.id}/{rel}"))
+    return out

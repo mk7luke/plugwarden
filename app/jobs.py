@@ -112,10 +112,12 @@ class Job:
         return r
 
     def to_dict(self, with_log: bool = True) -> dict:
+        undone = self.undone_by is not None
         d = {
-            "id": self.id, "kind": self.kind, "status": self.status, "user": self.user,
+            "id": self.id, "kind": self.kind, "status": "undone" if undone else self.status,
+            "run_status": self.status, "user": self.user,
             "created": self.created, "started": self.started, "finished": self.finished,
-            "summary": self.summary, "dry_run": self.dry_run, "params": self.params,
+            "summary": f"Undone by {self.undone_by} · was: {self.summary}" if undone else self.summary, "dry_run": self.dry_run, "params": self.params,
             "results": self.results, "undo_of": self.undo_of, "undone_by": self.undone_by,
             "undoable": self.undoable, "changed_servers": self.changed_servers,
             "has_backup": self.has_backup,
@@ -133,7 +135,7 @@ class Job:
     def save(self) -> None:
         self._last_save = time.monotonic()
         d = self.to_dict(with_log=False)
-        d["log_lines"] = self.log
+        d.update({"status": self.status, "summary": self.summary, "log_lines": self.log})  # raw, not display
         write_json(config.state("jobs", f"{self.id}.json"), d)
 
     def _maybe_save(self) -> None:
@@ -261,8 +263,10 @@ def _default_summary(job: Job) -> str:
     for r in job.results:
         counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
     if not counts:
-        return "Nothing to do"
-    return ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        return "Nothing to do" if not job.dry_run else "Dry run: nothing would change"
+    words = {"changed": "would change"} if job.dry_run else {}
+    text = ", ".join(f"{v} {words.get(k, k)}" for k, v in sorted(counts.items()))
+    return f"Dry run: {text}" if job.dry_run else text
 
 
 def recover_interrupted() -> None:

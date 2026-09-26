@@ -9,6 +9,7 @@ Every real change is backed up to STATE_DIR/backups/<job_id>/ first, so jobs can
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from . import config, inventory
+from . import config, inventory, plans
 from .inventory import PathError, Server
 from .storage import read_json, write_json
 
@@ -94,7 +95,7 @@ class Backup:
         self.entries.append(entry)
         write_json(self.manifest_path, {"job_id": self.job_id, "entries": self.entries})
         if self._on_record:
-            self._on_record()
+            self._on_record(entry)
 
     def save(self, srv: Server, rel: str, move: bool = False) -> None:
         """Back up plugins/<rel> before it is modified (copy) or removed (move)."""
@@ -188,6 +189,10 @@ class Ctx:
         self.backup = backup
         self.results: list[dict] = []
         self.warnings: list[dict] = []
+        self.fps: dict[tuple, str] = {}  # (server, item, action) -> digest of the full planned change list
+
+    def remember(self, server: str, item: str, action: str, lines: list[str]) -> None:
+        self.fps[(server, item, action)] = hashlib.sha1("\n".join(lines).encode()).hexdigest()
 
     def log(self, line: str) -> None:
         if self.job:
@@ -281,6 +286,8 @@ def _rsync_item(ctx: Ctx, tgt: Server, item: str, action: str, src: str, dest: s
     if not changes:
         return ctx.result(tgt.id, item, action, "unchanged", "already up to date")
     if ctx.dry_run:
+        # A mirror of a live folder: the server keeps writing files, so only promise the deletions.
+        ctx.remember(tgt.id, item, action, [ln for ln in changes if ln.startswith("*deleting")] if delete else changes)
         return ctx.result(tgt.id, item, action, "changed", f"{len(changes)} change(s)", changes)
     if ctx.backup:
         ctx.backup.save(tgt, rel)
@@ -380,6 +387,7 @@ def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str 
     olds = ", ".join(f"{p['jar']} ({p['version']})" for p in existing) or "none"
     detail = f"{olds} → {new_jar.name} ({info['version']})"
     if ctx.dry_run:
+        ctx.remember(tgt.id, item, action, changes + sorted(p["jar"] + ":" + p["sha1"] for p in existing))
         return ctx.result(tgt.id, item, action, "changed", detail, changes)
 
     for n in old_names:
@@ -547,13 +555,94 @@ def _deploy_jar(ctx: Ctx, source: Server, tgt: Server, name: str, action: str, i
     replace_jar(ctx, tgt, src, install, label=name, action=action)
 
 
-def plan(body: dict) -> dict:
+def _dry_run(body: dict) -> tuple[dict, Ctx, dict]:
     req = validate_deploy(body)
     ctx = Ctx(dry_run=True)
     run_deploy(ctx, req)
-    return {"action": req["action"], "source": req["source"].id if req["source"] else None,
-            "targets": [t.id for t in req["targets"]], "results": ctx.results, "summary": summarize(ctx.results),
-            "warnings": ctx.warnings}
+    out = {"action": req["action"], "source": req["source"].id if req["source"] else None,
+           "targets": [t.id for t in req["targets"]], "results": ctx.results, "summary": summarize(ctx.results),
+           "warnings": ctx.warnings}
+    return out, ctx, req
+
+
+def dry_run(body: dict) -> dict:
+    return _dry_run(body)[0]
+
+
+def plan(body: dict, user: str = "local") -> dict:
+    """Dry run a deploy and store it; POST /deploy {plan_id} later applies exactly this."""
+    out, ctx, req = _dry_run(body)
+    p = plans.create("deploy", user, body=body, fingerprint=fingerprint(ctx), sources=source_hashes(req))
+    return {"plan_id": p["plan_id"], "expires": plans.iso(p["expires"]), **out}
+
+
+def fingerprint(ctx: Ctx) -> list[list]:
+    """What a plan promises, per row: outcome + digest of the full change list (for mirrors only the
+    deletions, since a running server keeps writing its own folders). Delete rows: just the outcome."""
+    return [[r["server"], r["item"], r["action"], r["outcome"],
+             "" if r["action"] == "delete" else ctx.fps.get((r["server"], r["item"], r["action"]), "")]
+            for r in ctx.results]
+
+
+def source_hashes(req: dict) -> list[list]:
+    """Content identity of every source item, so a source edited after the preview is caught even when
+    rsync's itemized output would look the same (same-size edits, same-name jar rebuilds)."""
+    out: list[list] = []
+    src = req["source"]
+    for _uid, path in req["uploads"]:
+        out.append(["upload", path.name, inventory.file_hash(path)])
+    if src is None or req["action"] == "delete":
+        return out
+    for rel in req["jars"] + req["folders"] + req["paths"]:
+        try:
+            p = inventory.resolve_in(src, rel)
+        except PathError:
+            out.append(["item", rel, "invalid"])
+            continue
+        out.append(["item", rel, _content_sig(p)])
+    return out
+
+
+def _content_sig(p: Path) -> str:
+    if p.is_symlink() or not p.exists():
+        return "missing"
+    if p.is_file():
+        return inventory.file_hash(p)
+    h = hashlib.sha1()
+    for root, dirs, files in os.walk(p):
+        dirs.sort()
+        for f in sorted(files):
+            fp = os.path.join(root, f)
+            try:
+                st = os.stat(fp, follow_symlinks=False)
+            except OSError:
+                continue
+            h.update(f"{os.path.relpath(fp, p)}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()
+
+
+def plan_drift(plan: dict) -> list[dict]:
+    """Rows whose fresh dry run (or source content) no longer matches what was previewed."""
+    out_now, ctx, req = _dry_run(plan["body"])
+    out = []
+    old_src = {(k, n): h for k, n, h in plan.get("sources", [])}
+    for k, n, h in source_hashes(req):
+        if old_src.get((k, n)) != h:
+            out.append({"server": None, "item": n, "action": "source", "planned": "previewed content",
+                        "now": "source changed since preview", "reason": "source content changed"})
+    fresh, old = fingerprint(ctx), plan["fingerprint"]
+    if fresh == old:
+        return out
+    old_map = {(r[0], r[1], r[2]): r for r in old}
+    new_map = {(r[0], r[1], r[2]): r for r in fresh}
+    for k in sorted(set(old_map) | set(new_map), key=str):
+        a, b = old_map.get(k), new_map.get(k)
+        if a != b:
+            out.append({"server": k[0], "item": k[1], "action": k[2],
+                        "planned": a[3] if a else None, "now": b[3] if b else None,
+                        "reason": "different changes than previewed" if a and b and a[3] == b[3]
+                        else "outcome changed"})
+    return out or [{"server": None, "item": None, "action": None, "planned": "order", "now": "changed"}]
 
 
 def summarize(results: list[dict]) -> dict:

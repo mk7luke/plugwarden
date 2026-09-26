@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from . import actions, config, jobs, settings
+from . import actions, config, jobs, settings, updates
 from .storage import read_json, write_json
 
 USER = "scheduler"
@@ -78,12 +78,15 @@ def run_cycle() -> str:
     check = jobs.wait(actions.start_check(USER), timeout=1800)
     result = f"check: {check.status} ({check.summary})"
     if au["mode"] == "apply" and check.status == "done":
+        plan = updates.create_plan("all", USER)
+        if not plan["rows"]:
+            return _record(result + "; nothing to apply")
         if au["dry_run_first"]:
-            dry = jobs.wait(actions.start_apply(USER, "all", dry_run=True, auto=True), timeout=3600)
+            dry = jobs.wait(actions.start_apply(USER, plan["plan_id"], dry_run=True, auto=True), timeout=3600)
             if dry.status != "done":
                 result += f"; dry run {dry.status}, not applying"
                 return _record(result)
-        real = jobs.wait(actions.start_apply(USER, "all", dry_run=False, auto=True), timeout=3 * 3600)
+        real = jobs.wait(actions.start_apply(USER, plan["plan_id"], dry_run=False, auto=True), timeout=3 * 3600)
         result += f"; apply: {real.status} ({real.summary})"
     return _record(result)
 

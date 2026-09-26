@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import re
 import secrets
@@ -20,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import actions, config, engine, inventory, jobs, scheduler, settings, updates
+from . import actions, config, engine, inventory, jobs, plans, scheduler, settings, updates
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -50,6 +51,11 @@ async def _unknown_server(_: Request, exc: UnknownServer):
     return JSONResponse({"detail": str(exc)}, status_code=404)
 
 
+@app.exception_handler(inventory.NotFound)
+async def _not_found(_: Request, exc: inventory.NotFound):
+    return JSONResponse({"detail": str(exc)}, status_code=404)
+
+
 @app.exception_handler(PathError)
 async def _path_error(_: Request, exc: PathError):
     return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -58,6 +64,11 @@ async def _path_error(_: Request, exc: PathError):
 @app.exception_handler(engine.DeployError)
 async def _deploy_error(_: Request, exc: engine.DeployError):
     return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.exception_handler(plans.PlanError)
+async def _plan_error(_: Request, exc: plans.PlanError):
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status)
 
 
 @app.exception_handler(SettingsError)
@@ -88,40 +99,76 @@ def job_ref(job: jobs.Job) -> dict:
 
 # ---------------------------------------------------------------- snapshot
 
+DRIFT_BASIS = "majority"
+
+
 def snapshot() -> dict:
-    """Everything the read views need: servers, their plugins with status, drift per key."""
+    """Everything the read views need: servers, their plugins with status, drift, update counts.
+
+    Drift basis ("majority"): for each plugin key installed on 2+ servers, the expected version is the
+    one most servers run (ties go to the default source's version, else the highest). A server
+    drifts on a plugin when its version differs from that expected version."""
     st = settings.load_raw()
     cache = updates.load_cache()
     servers = inventory.discover()
+    source = next((s for s in servers if s.id == st["default_source"]), None)
     plugins: dict[str, list[dict]] = {}
-    versions: dict[str, set] = {}
+    per_key: dict[str, dict[str, str]] = {}  # key -> {server: version}
     for srv in servers:
         rows = []
         for p in inventory.list_plugins(srv):
-            status, source, latest = updates.status_for(p, srv, st, cache)
-            rows.append({**p, "status": status, "source": source, "latest": updates.public_latest(latest),
-                         "pinned_version": st["pins"].get(p["key"])})
-            versions.setdefault(p["key"], set()).add(p["version"])
+            status, src, latest = updates.status_for(p, srv, st, cache)
+            pin, ign = st["pins"].get(p["key"]), st["ignores"].get(p["key"])
+            rows.append({**p, "status": status, "source": src, "latest": updates.public_latest(latest),
+                         "current_compat": updates.current_compat(p, srv, cache),
+                         "pinned_version": pin["version"] if settings.hold_applies(pin, srv.id) else None,
+                         "pin_scope": pin["servers"] if pin else None,
+                         "ignore_scope": ign["servers"] if ign else None})
+            per_key.setdefault(p["key"], {}).setdefault(srv.id, p["version"])
         plugins[srv.id] = rows
     inventory.flush_cache()
-    drift = {k for k, v in versions.items() if len(v) > 1}
+    expected = {k: _expected_version(v, source) for k, v in per_key.items() if len(v) > 1}
     for rows in plugins.values():
         for r in rows:
-            r["drift"] = r["key"] in drift
-    source = next((s for s in servers if s.id == st["default_source"]), None)
-    return {"settings": st, "cache": cache, "servers": servers, "plugins": plugins, "drift": drift,
-            "source": source}
+            exp = expected.get(r["key"])
+            r["expected_version"] = exp
+            r["versions_differ"] = r["key"] in expected and len(set(per_key[r["key"]].values())) > 1
+            r["drift"] = exp is not None and r["version"] != exp
+    drift_keys = {k for k in expected if len(set(per_key[k].values())) > 1}
+    pending = updates.pending_updates(servers, plugins)
+    return {"settings": st, "cache": cache, "servers": servers, "plugins": plugins, "drift": drift_keys,
+            "expected": expected, "source": source, "pending": pending, "counts": updates.update_counts(pending)}
+
+
+def _expected_version(by_server: dict[str, str], source: inventory.Server | None) -> str | None:
+    counts: dict[str, int] = {}
+    for v in by_server.values():
+        counts[v] = counts.get(v, 0) + 1
+    top = max(counts.values())
+    tied = [v for v, n in counts.items() if n == top]
+    if len(tied) == 1:
+        return tied[0]
+    if source and by_server.get(source.id) in tied:
+        return by_server[source.id]
+    return sorted(tied, key=functools.cmp_to_key(lambda a, b: updates.compare_versions(a, b) or 0))[-1]
 
 
 def server_view(srv: inventory.Server, snap: dict) -> dict:
     rows = snap["plugins"][srv.id]
     src = snap["source"]
     src_family = src.family if src else "bukkit"
+    seen: set[str] = set()
+    drift_plugins = []
+    for r in rows:
+        if r["drift"] and r["key"] not in seen:
+            seen.add(r["key"])
+            drift_plugins.append({"key": r["key"], "name": r["name"], "version": r["version"],
+                                  "expected": r["expected_version"]})
     return {
         "id": srv.id, "platform": srv.platform, "family": srv.family, "mc_version": srv.mc_version,
         "plugin_count": len(rows),
-        "updates": sum(1 for r in rows if r["status"] == "outdated"),
-        "drift": sum(1 for r in rows if r["drift"]),
+        "updates": sum(1 for u in snap["pending"] if srv.id in u["servers"]),
+        "drift": len(drift_plugins), "drift_plugins": drift_plugins, "drift_basis": DRIFT_BASIS,
         "unknown": sum(1 for r in rows if r["status"] == "unknown"),
         "pending_restart": actions.pending_restart(srv),
         "is_source": bool(src and src.id == srv.id),
@@ -144,18 +191,21 @@ def overview(request: Request):
     snap = snapshot()
     servers = [server_view(s, snap) for s in snap["servers"]]
     keys = {r["key"] for rows in snap["plugins"].values() for r in rows}
+    checklist = actions.restart_checklist(snap["servers"])
     return {
         "servers": servers,
         "totals": {
             "servers": len(servers),
             "plugins": len(keys),
-            "updates": sum(s["updates"] for s in servers),
-            "update_plugins": len({r["key"] for rows in snap["plugins"].values() for r in rows
-                                   if r["status"] == "outdated"}),
+            "updates": snap["counts"],
             "drift": len(snap["drift"]),
-            "pending_restart": sum(1 for s in servers if s["pending_restart"]),
+            "drifted_servers": sum(1 for s in servers if s["drift"]),
+            "pending_restart": len(checklist),
         },
+        "drift_basis": DRIFT_BASIS,
+        "restart_checklist": checklist,
         "last_check": snap["cache"].get("checked_at"),
+        "check_summary": _check_summary(snap),
         "auto_update": scheduler.status(),
         "active_jobs": [j.to_dict(with_log=False) for j in jobs.active_jobs()],
         "recent_jobs": [_job_summary(j) for j in jobs.list_jobs(8)],
@@ -204,23 +254,26 @@ def matrix():
     for srv in snap["servers"]:
         for r in snap["plugins"][srv.id]:
             row = rows.setdefault(r["key"], {"key": r["key"], "name": r["name"], "family": srv.family,
-                                             "drift": r["drift"], "latest_version": None, "cells": {},
-                                             "source": None})
+                                             "drift": r["versions_differ"], "expected_version": r["expected_version"],
+                                             "latest_version": None, "cells": {}, "source": None})
             if r["latest"] and not row["latest_version"]:
                 row["latest_version"] = r["latest"]["version"]
             if r["source"] and not row["source"]:
                 row["source"] = r["source"]
             if srv.id in row["cells"]:  # duplicate jars of one plugin on a server
-                row["cells"][srv.id]["duplicates"].append(r["jar"])
+                cell = row["cells"][srv.id]
+                cell["duplicates"].append(r["jar"])
+                if r["status"] == "outdated":
+                    cell["status"] = "outdated"  # consistent with update counts
                 continue
             row["cells"][srv.id] = {"version": r["version"], "jar": r["jar"], "status": r["status"],
-                                    "sha1": r["sha1"], "duplicates": []}
+                                    "sha1": r["sha1"], "duplicates": [], "drift": r["drift"]}
     src = snap["source"]
     if src:
         for row in rows.values():
             cell = row["cells"].get(src.id)
             row["source_version"] = cell["version"] if cell else None
-    return {"servers": [s.id for s in snap["servers"]],
+    return {"servers": [s.id for s in snap["servers"]], "counts": snap["counts"], "drift_basis": DRIFT_BASIS,
             "server_info": [server_view(s, snap) for s in snap["servers"]],
             "plugins": sorted(rows.values(), key=lambda r: (r["family"] != "bukkit", r["name"].lower()))}
 
@@ -228,7 +281,15 @@ def matrix():
 @app.get("/api/v2/updates")
 def updates_list():
     snap = snapshot()
-    return updates.pending_updates(snap["servers"], snap["plugins"])
+    return {"updates": snap["pending"], "counts": snap["counts"], "last_check": snap["cache"].get("checked_at"),
+            "check_summary": _check_summary(snap)}
+
+
+def _check_summary(snap: dict) -> str | None:
+    stats = snap["cache"].get("stats")
+    if not stats:
+        return None
+    return updates.check_summary(stats["jars"], stats["identified"], snap["counts"], stats["errors"])
 
 
 # ---------------------------------------------------------------- plugin actions
@@ -242,31 +303,39 @@ def _check_key(key: str) -> str:
     return key
 
 
+def _scope_arg(body: dict) -> Any:
+    servers = body.get("servers", "*")
+    if servers == "*":
+        return "*"
+    known = {s.id for s in inventory.discover()}
+    if not isinstance(servers, list) or not servers or not all(isinstance(x, str) and x in known for x in servers):
+        raise HTTPException(400, "servers must be '*' or a non-empty list of known server ids")
+    return servers
+
+
 @app.post("/api/v2/plugins/{key}/pin")
 def plugin_pin(key: str, body: dict = Body(default={})):
+    """{version: str|null, servers: [ids]|"*"}. null unpins on those servers ('*' = everywhere)."""
     _check_key(key)
-    version = body.get("version") if isinstance(body, dict) else None
+    body = body if isinstance(body, dict) else {}
+    version = body.get("version")
     if version is not None and (not isinstance(version, str) or len(version) > 100):
         raise HTTPException(400, "version must be a string or null")
-
-    def fn(raw):
-        if version is None:
-            raw["pins"].pop(key, None)
-        else:
-            raw["pins"][key] = version
-    return settings.mutate(fn)
+    scope = _scope_arg(body)
+    all_ids = [s.id for s in inventory.discover()]
+    return settings.mutate(lambda raw: settings.set_hold(raw["pins"], key, scope, version is not None,
+                                                         version=version, all_ids=all_ids))
 
 
 @app.post("/api/v2/plugins/{key}/ignore")
 def plugin_ignore(key: str, body: dict = Body(default={})):
+    """{ignored: bool, servers: [ids]|"*"}."""
     _check_key(key)
-    ignored = bool(body.get("ignored", True)) if isinstance(body, dict) else True
-
-    def fn(raw):
-        s = set(raw["ignores"])
-        (s.add if ignored else s.discard)(key)
-        raw["ignores"] = sorted(s)
-    return settings.mutate(fn)
+    body = body if isinstance(body, dict) else {}
+    scope = _scope_arg(body)
+    all_ids = [s.id for s in inventory.discover()]
+    return settings.mutate(lambda raw: settings.set_hold(raw["ignores"], key, scope, bool(body.get("ignored", True)),
+                                                         all_ids=all_ids))
 
 
 @app.post("/api/v2/plugins/{key}/remove")
@@ -287,22 +356,44 @@ def updates_check(request: Request):
     return job_ref(actions.start_check(user_of(request)))
 
 
+@app.post("/api/v2/updates/plan")
+def updates_plan(request: Request, body: dict = Body(...)):
+    """{items: "all" | [{key, servers?}]} → a stored changeset of exact jar swaps (expires in 30 min)."""
+    return updates.create_plan(body.get("items", "all"), user_of(request))
+
+
 @app.post("/api/v2/updates/apply")
 def updates_apply(request: Request, body: dict = Body(...)):
-    items = body.get("items", "all")
-    return job_ref(actions.start_apply(user_of(request), items, bool(body.get("dry_run", False))))
+    """{plan_id, exclude?: [[server, key]], dry_run?} → job applying exactly that plan. 409 if stale."""
+    return job_ref(actions.start_apply(user_of(request), body.get("plan_id"), body.get("exclude"),
+                                       dry_run=bool(body.get("dry_run", False))))
 
 
 # ---------------------------------------------------------------- deploy
 
 @app.post("/api/v2/deploy/plan")
-def deploy_plan(body: dict = Body(...)):
-    return engine.plan(body)
+def deploy_plan(request: Request, body: dict = Body(...)):
+    return engine.plan(body, user_of(request))
 
 
 @app.post("/api/v2/deploy")
 def deploy(request: Request, body: dict = Body(...)):
-    return job_ref(actions.start_deploy(user_of(request), body, dry_run=bool(body.get("dry_run", False))))
+    """{plan_id} → job applying exactly the previewed plan. 409 if targets changed since the preview."""
+    return job_ref(actions.start_deploy(user_of(request), body.get("plan_id")))
+
+
+# ---------------------------------------------------------------- search / diff
+
+@app.get("/api/v2/servers/{server_id}/search")
+def server_search(server_id: str, q: str = Query(..., min_length=2, max_length=100),
+                  limit: int = Query(200, ge=1, le=200)):
+    srv = inventory.get_server(server_id)
+    return inventory.search(srv, q, limit)
+
+
+@app.get("/api/v2/diff")
+def diff(source: str, target: str, path: str):
+    return inventory.diff_file(inventory.get_server(source), inventory.get_server(target), path)
 
 
 UPLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._+\-() ]")

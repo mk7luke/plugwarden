@@ -15,12 +15,13 @@ os.environ.pop("LGT_BASE_OVERRIDE", None)
 from app import config, inventory, updates  # noqa: E402
 
 
-def make_jar(path: Path, name: str, version: str, kind: str = "bukkit", extra: bytes = b"") -> Path:
+def make_jar(path: Path, name: str, version: str, kind: str = "bukkit", extra: bytes = b"",
+             yml: str = "") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         if kind == "bukkit":
-            zf.writestr("plugin.yml", f"name: {name}\nversion: {version}\nmain: x.Y\n")
+            zf.writestr("plugin.yml", f"name: {name}\nversion: {version}\nmain: x.Y\n{yml}")
         else:
             zf.writestr("velocity-plugin.json", json.dumps({"id": name.lower(), "name": name, "version": version}))
         zf.writestr("x/Y.class", b"\xca\xfe" + extra + version.encode())

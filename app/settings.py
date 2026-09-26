@@ -19,8 +19,8 @@ DEFAULTS: dict[str, Any] = {
     "groups": {},
     "default_source": "elChapo01",
     "auto_update": {"mode": "off", "interval_hours": 24, "window": None, "dry_run_first": True},
-    "pins": {},
-    "ignores": [],
+    "pins": {},      # key -> {"version": str, "servers": [ids] | "*"}
+    "ignores": {},   # key -> {"servers": [ids] | "*"}
     "source_map": {},
     "backup_keep_jobs": 100,
 }
@@ -50,6 +50,7 @@ def load_raw() -> dict:
     for k in DEFAULTS:
         if k in data:
             out[k] = data[k]
+    out["pins"], out["ignores"] = migrate_holds(out["pins"], out["ignores"])
     au = dict(DEFAULTS["auto_update"])
     au.update(out.get("auto_update") or {})
     out["auto_update"] = au
@@ -120,17 +121,18 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
         if "dry_run_first" in au:
             cur["dry_run_first"] = bool(au["dry_run_first"])
         out["auto_update"] = cur
-    if "pins" in new:
-        p = new["pins"]
-        if not isinstance(p, dict) or not all(KEY_RE.match(str(k)) and isinstance(v, (str, type(None)))
-                                              for k, v in p.items()):
-            raise SettingsError("pins must map plugin keys to version strings")
-        out["pins"] = {k: v for k, v in p.items() if v is not None}
-    if "ignores" in new:
-        ig = new["ignores"]
-        if not isinstance(ig, list) or not all(isinstance(k, str) and KEY_RE.match(k) for k in ig):
-            raise SettingsError("ignores must be a list of plugin keys")
-        out["ignores"] = sorted(set(ig))
+    if "pins" in new or "ignores" in new:
+        pins, ignores = migrate_holds(new.get("pins", out["pins"]), new.get("ignores", out["ignores"]))
+        for kind, holds in (("pins", pins), ("ignores", ignores)):
+            for k, v in holds.items():
+                if not KEY_RE.match(str(k)):
+                    raise SettingsError(f"{kind}: invalid plugin key {k!r}")
+                sv = v.get("servers")
+                if sv != "*" and not (isinstance(sv, list) and sv and all(s in known_ids for s in sv)):
+                    raise SettingsError(f"{kind}[{k}].servers must be '*' or a non-empty list of known server ids")
+                if kind == "pins" and (not isinstance(v.get("version"), str) or len(v["version"]) > 100):
+                    raise SettingsError(f"pins[{k}].version must be a string")
+        out["pins"], out["ignores"] = pins, ignores
     if "source_map" in new:
         sm = new["source_map"]
         if not isinstance(sm, dict):
@@ -166,6 +168,63 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
             raise SettingsError("backup_keep_jobs must be an integer")
         out["backup_keep_jobs"] = max(5, min(n, 1000))
     return out
+
+
+def migrate_holds(pins: Any, ignores: Any) -> tuple[dict, dict]:
+    """Accept legacy shapes (pins {key: "ver"}, ignores [key]) and return the scoped shapes."""
+    out_p: dict[str, dict] = {}
+    if isinstance(pins, dict):
+        for k, v in pins.items():
+            if isinstance(v, str):
+                out_p[k] = {"version": v, "servers": "*"}
+            elif isinstance(v, dict):
+                out_p[k] = {"version": v.get("version"), "servers": _scope(v.get("servers", "*"))}
+    out_i: dict[str, dict] = {}
+    if isinstance(ignores, list):
+        out_i = {k: {"servers": "*"} for k in ignores if isinstance(k, str)}
+    elif isinstance(ignores, dict):
+        for k, v in ignores.items():
+            out_i[k] = {"servers": _scope((v or {}).get("servers", "*") if isinstance(v, dict) else "*")}
+    return out_p, out_i
+
+
+def _scope(v: Any) -> Any:
+    if v == "*" or v is None:
+        return "*"
+    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+        return sorted(set(v))
+    return v  # left for validation to reject
+
+
+def hold_applies(hold: dict | None, server_id: str) -> bool:
+    return bool(hold) and (hold["servers"] == "*" or server_id in hold["servers"])
+
+
+def set_hold(holds: dict, key: str, servers: Any, on: bool, version: str | None = None,
+             all_ids: list[str] | None = None) -> None:
+    """Add or remove a pin/ignore for a key on some servers ('*' = network-wide)."""
+    cur = holds.get(key)
+    if on:
+        if cur and cur.get("version") != version and servers != "*" and \
+                (cur["servers"] == "*" or not set(cur["servers"]) <= set(servers)):
+            where = "all servers" if cur["servers"] == "*" else ", ".join(cur["servers"])
+            raise SettingsError(f"{key} is already pinned at {cur.get('version')} on {where}; "
+                                f"unpin it there first (one pinned version per plugin)")
+        if cur and cur.get("version") == version and servers != "*":
+            servers = "*" if cur["servers"] == "*" else sorted(set(cur["servers"]) | set(servers))
+        holds[key] = {"servers": _scope(servers), **({"version": version} if version is not None else {})}
+        return
+    if not cur:
+        return
+    if servers == "*":
+        holds.pop(key, None)
+    else:
+        base = set(all_ids or []) if cur["servers"] == "*" else set(cur["servers"])
+        left = sorted(base - set(servers))
+        if left:
+            cur["servers"] = left
+        else:
+            holds.pop(key, None)
 
 
 def update(new: dict) -> dict:

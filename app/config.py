@@ -29,7 +29,7 @@ def init(base: str | None = None, state_dir: str | None = None, create: bool = T
 
 
 def ensure_dirs() -> None:
-    for sub in ("jobs", "uploads", "backups", "staging", "cache"):
+    for sub in ("jobs", "uploads", "backups", "staging", "cache", "plans"):
         (STATE_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 

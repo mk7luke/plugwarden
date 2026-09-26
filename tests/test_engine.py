@@ -9,8 +9,9 @@ from app.main import app
 from conftest import make_jar, snapshot_tree
 
 
-def deploy(body, dry_run=False):
-    job = jobs.wait(actions.start_deploy("tester", body, dry_run=dry_run), timeout=30)
+def deploy(body):
+    plan = engine.plan(body, "tester")
+    job = jobs.wait(actions.start_deploy("tester", plan["plan_id"]), timeout=30)
     assert job.status in ("done", "failed"), job.log
     return job
 
@@ -74,8 +75,7 @@ def test_plan_and_dry_run_make_no_changes(env):
     engine.plan(body)
     body["action"] = "replace"
     engine.plan(body)
-    job = deploy(body, dry_run=True)
-    assert job.dry_run and not job.undoable
+    assert engine.dry_run(body)["summary"]["changed"] > 0
     assert snapshot_tree(env["base"]) == before
 
 
@@ -167,8 +167,11 @@ def test_upload_rejects_non_jars(env):
         assert r.status_code == 200, r.text
         up = r.json()
         assert up["plugin_name"] == "Vault" and up["name"] == "Vault-1.8.jar"
-        r = c.post("/api/v2/deploy", json={"targets": ["M1-hub01"], "action": "replace",
-                                           "items": {"uploads": [up["upload_id"]]}})
+        r = c.post("/api/v2/deploy/plan", json={"targets": ["M1-hub01"], "action": "replace",
+                                                "items": {"uploads": [up["upload_id"]]}})
+        assert r.status_code == 200, r.text
+        assert c.post("/api/v2/deploy", json={"action": "replace"}).status_code == 400  # plan_id required
+        r = c.post("/api/v2/deploy", json={"plan_id": r.json()["plan_id"]})
         assert r.status_code == 200, r.text
         jobs.wait(jobs.get(r.json()["job_id"]), timeout=30)
     assert jars_of("M1-hub01", "bukkit:vault") == ["Vault-1.8.jar"]
@@ -185,7 +188,7 @@ def _mock_modrinth(env, new_jar_bytes, fail_hash=False):
     cur = {"id": "v231", "project_id": "Lu3KuzdV", "version_number": "23.1", "version_type": "release",
            "date_published": "2025-01-01T00:00:00Z", "files": []}
     new = {"id": "v241", "project_id": "Lu3KuzdV", "version_number": "24.1", "version_type": "release",
-           "date_published": "2026-01-01T00:00:00Z",
+           "date_published": "2026-01-01T00:00:00Z", "game_versions": ["1.21.6"], "loaders": ["paper"],
            "files": [{"url": "https://cdn.modrinth.com/cp.jar", "filename": "CoreProtect-CE-24.1.jar",
                       "primary": True, "hashes": {"sha1": hashlib.sha1(new_jar_bytes).hexdigest(), "sha512": sha512}}]}
     seen = []
@@ -221,11 +224,16 @@ def test_update_check_parsing_and_apply(env):
     assert [(u["key"], u["to_version"], u["servers"]) for u in pend] == [("bukkit:coreprotect", "24.1", ["M1-hub01"])]
     assert pend[0]["source"]["name"] == "CoreProtect"
 
-    job = jobs.wait(actions.start_apply("tester", "all", dry_run=True), timeout=30)
+    plan = updates.create_plan("all", "tester")
+    assert [(r["server"], r["from_jar"], r["to_jar"], r["to_version"]) for r in plan["rows"]] == [
+        ("M1-hub01", "CoreProtect-23.1.jar", "CoreProtect-CE-24.1.jar", "24.1")]
+    assert plan["rows"][0]["compat"] == {"mc_versions": ["1.21.6"], "loaders": ["paper"]}
+    job = jobs.wait(actions.start_apply("tester", plan["plan_id"], dry_run=True), timeout=30)
     assert jars_of("M1-hub01", "bukkit:coreprotect") == ["CoreProtect-23.1.jar"]
     assert job.results and job.results[0]["outcome"] == "changed", job.log
+    assert job.summary == "Dry run: 1 would change"
 
-    job = jobs.wait(actions.start_apply("tester", [{"key": "bukkit:coreprotect"}], dry_run=False), timeout=30)
+    job = jobs.wait(actions.start_apply("tester", plan["plan_id"]), timeout=30)
     assert job.status == "done", job.log
     assert jars_of("M1-hub01", "bukkit:coreprotect") == ["CoreProtect-CE-24.1.jar"]
     jobs.wait(actions.start_undo("tester", job.id), timeout=30)
@@ -236,7 +244,7 @@ def test_update_apply_rejects_hash_mismatch(env):
     new_bytes = make_jar(env["tmp"] / "dl" / "x.jar", "CoreProtect", "24.1", extra=b"m").read_bytes()
     _mock_modrinth(env, new_bytes, fail_hash=True)
     updates.check()
-    job = jobs.wait(actions.start_apply("tester", "all", dry_run=False), timeout=30)
+    job = jobs.wait(actions.start_apply("tester", updates.create_plan("all", "t")["plan_id"]), timeout=30)
     assert job.status == "failed"
     assert "hash mismatch" in job.results[0]["detail"]
     assert jars_of("M1-hub01", "bukkit:coreprotect") == ["CoreProtect-23.1.jar"]
@@ -247,10 +255,18 @@ def test_pinned_and_ignored_are_not_outdated(env):
     _mock_modrinth(env, new_bytes)
     updates.check()
     from app import settings
-    settings.update({"pins": {"bukkit:coreprotect": "23.1"}})
+    settings.update({"pins": {"bukkit:coreprotect": "23.1"}})  # legacy shape is migrated
+    assert settings.load_raw()["pins"] == {"bukkit:coreprotect": {"version": "23.1", "servers": "*"}}
     assert updates.pending_updates() == []
     settings.update({"pins": {}, "ignores": ["bukkit:coreprotect"]})
     assert updates.pending_updates() == []
+
+
+def test_display_version_strips_loader_prefix():
+    assert updates.display_version("bukkit-2.6.24") == "2.6.24"
+    assert updates.display_version("paper-v1.2") == "v1.2"
+    assert updates.display_version("5.12.0") == "5.12.0"
+    assert updates.display_version("bukkitx") == "bukkitx"
 
 
 def test_compare_versions():
@@ -314,9 +330,10 @@ def test_exception_mid_job_keeps_undo(env, monkeypatch):
     calls = {"n": 0}
 
     def boom(ctx, s, t, rel, install):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise RuntimeError("boom")
+        if not ctx.dry_run:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("boom")
         return orig(ctx, s, t, rel, install)
 
     monkeypatch.setattr(engine, "sync_path", boom)
@@ -366,3 +383,47 @@ def test_jobs_run_in_submission_order(env):
     for j in js:
         jobs.wait(j, 10)
     assert order == list(range(6))
+
+
+# ---------------------------------------------------------------- shared config folders
+
+def _essentials(env):
+    make_jar(env["a"] / "EssentialsX-2.22.0.jar", "Essentials", "2.22.0")
+    make_jar(env["a"] / "EssentialsXChat-2.22.0.jar", "EssentialsChat", "2.22.0", yml="depend: [Essentials]\n")
+    make_jar(env["a"] / "EssentialsXSpawn-2.22.0.jar", "EssentialsSpawn", "2.22.0",
+             yml="depend:\n  - Essentials\n")
+    make_jar(env["a"] / "Unrelated.jar", "EssentialsLookalike", "1", yml="softdepend: [Vault]\n")
+
+
+def test_remove_skips_shared_folder_unless_forced(env):
+    _essentials(env)
+    job = jobs.wait(actions.start_remove("t", "bukkit:essentials", ["M1-hub01"], True, False), 30)
+    rows = {r["item"]: r for r in job.results}
+    assert rows["Essentials"]["outcome"] == "skipped"
+    assert rows["Essentials"]["shared_with"] == ["EssentialsChat", "EssentialsSpawn"]
+    assert "pass force:true" in rows["Essentials"]["detail"]
+    assert (env["a"] / "Essentials").is_dir() and not (env["a"] / "EssentialsX-2.22.0.jar").exists()
+    jobs.wait(actions.start_undo("t", job.id), 30)
+
+    job = jobs.wait(actions.start_remove("t", "bukkit:essentials", ["M1-hub01"], True, False, force=True), 30)
+    assert {r["item"]: r["outcome"] for r in job.results}["Essentials"] == "changed"
+    assert not (env["a"] / "Essentials").exists()
+
+
+def test_delete_plan_warns_about_shared_folder_with_size(env):
+    _essentials(env)
+    plan = engine.plan({"targets": ["M1-hub01"], "action": "delete", "items": {"folders": ["Essentials"]}})
+    assert plan["warnings"] == [{"server": "M1-hub01", "folder": "Essentials",
+                                 "shared_with": ["Essentials", "EssentialsChat", "EssentialsSpawn"]}]
+    row = plan["results"][0]
+    assert row["outcome"] == "skipped" and row["files"] == 3 and row["size"] > 0
+    # deleting the whole family in one request is not "shared"
+    plan = engine.plan({"targets": ["M1-hub01"], "action": "delete", "items": {
+        "jars": ["EssentialsX-2.22.0.jar", "EssentialsXChat-2.22.0.jar", "EssentialsXSpawn-2.22.0.jar"],
+        "folders": ["Essentials"]}})
+    assert plan["warnings"] == []
+    folder_row = [r for r in plan["results"] if r["item"] == "Essentials"][0]
+    assert folder_row["outcome"] == "changed" and folder_row["size"] > 0
+    forced = engine.plan({"targets": ["M1-hub01"], "action": "delete", "force": True,
+                          "items": {"folders": ["Essentials"]}})
+    assert forced["results"][0]["outcome"] == "changed" and forced["warnings"]

@@ -4,14 +4,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from . import config, engine, inventory, settings
+from . import config, engine, inventory, plans, settings
 from .storage import read_json, write_json
 
 MODRINTH = "https://api.modrinth.com/v2"
@@ -109,8 +111,13 @@ def _modrinth_latest(v: dict) -> dict:
         "changelog_url": f"https://modrinth.com/project/{pid}/version/{vid}",
         "download_url": f.get("url"), "filename": f.get("filename"),
         "hashes": {k: v2 for k, v2 in (f.get("hashes") or {}).items() if k in ("sha1", "sha512")},
-        "verified": bool(f.get("hashes")),
+        "verified": bool(f.get("hashes")), "size": f.get("size"),
+        "compat": _compat(v),
     }
+
+
+def _compat(v: dict) -> dict:
+    return {"mc_versions": list(v.get("game_versions") or []), "loaders": list(v.get("loaders") or [])}
 
 
 def _is_newer(new: dict | None, cur: dict) -> bool:
@@ -163,6 +170,7 @@ def _resolve_hangar(c: httpx.Client, slug: str, family: str, mc: str | None) -> 
         "download_url": dl.get("downloadUrl") or dl.get("externalUrl"), "filename": fi.get("name"),
         "hashes": {"sha256": fi["sha256Hash"]} if fi.get("sha256Hash") else {},
         "verified": bool(fi.get("sha256Hash")) and bool(dl.get("downloadUrl")),
+        "size": fi.get("sizeBytes"), "compat": {"mc_versions": list(deps), "loaders": [platform.lower()]},
     }
 
 
@@ -193,7 +201,7 @@ def _resolve_spiget(c: httpx.Client, rid: str, family: str, mc: str | None) -> d
         "url": f"https://www.spigotmc.org/resources/{rid}/",
         "changelog_url": f"https://www.spigotmc.org/resources/{rid}/updates",
         "download_url": None if external or res.get("premium") else f"{SPIGET}/resources/{rid}/download",
-        "filename": None, "hashes": {}, "verified": False,
+        "filename": None, "hashes": {}, "verified": False, "size": None, "compat": None,
     }
 
 
@@ -218,7 +226,7 @@ def _resolve_github(c: httpx.Client, repo: str, family: str, mc: str | None, ass
         "version": re.sub(r"^v(?=\d)", "", tag), "version_id": str(d.get("id")), "type": "release",
         "published": d.get("published_at"), "url": d.get("html_url"), "changelog_url": d.get("html_url"),
         "download_url": (a or {}).get("browser_download_url"), "filename": (a or {}).get("name"),
-        "hashes": hashes, "verified": bool(hashes),
+        "hashes": hashes, "verified": bool(hashes), "size": (a or {}).get("size"), "compat": None,
     }
 
 
@@ -319,6 +327,7 @@ def check(job=None) -> dict:
                     pid = cur.get("project_id")
                     entry["source"] = _source_info("modrinth", pid, titles.get(pid))
                     entry["current"] = {"version": display_version(cur.get("version_number")), "version_id": cur.get("id"),
+                                        "compat": _compat(cur),
                                         "type": cur.get("version_type"), "published": cur.get("date_published")}
                     rel = latest_rel.get(sha1)
                     new = rel if _is_newer(rel, cur) or not latest_any.get(sha1) else latest_any[sha1]
@@ -362,13 +371,25 @@ def check(job=None) -> dict:
         cache["checked_at"] = now
         cache["errors"] = errors
         write_json(_cache_file(), cache)
-    n_out = sum(1 for e in entries.values() if e["outdated"])
     n_src = sum(1 for e in entries.values() if e["source"])
-    summary = f"{n_src}/{len(entries)} jars have a known source, {n_out} outdated"
-    if errors:
-        summary += f", {errors} lookup error(s)"
+    counts = update_counts(pending_updates())
+    summary = check_summary(len(entries), n_src, counts, errors)
+    with _cache_lock:
+        cache = load_cache()
+        cache["stats"] = {"jars": len(entries), "identified": n_src, "errors": errors}
+        write_json(_cache_file(), cache)
     log(summary)
-    return {"summary": summary, "outdated": n_out, "errors": errors}
+    return {"summary": summary, "outdated": counts["installs"], "errors": errors, "counts": counts}
+
+
+def check_summary(jars: int, identified: int, counts: dict, errors: int) -> str:
+    """One wording everywhere: '24 plugins outdated (64 installs on 10 servers) · 46 of 78 jars identified'."""
+    s = (f"{counts['plugins']} plugin{'s' * (counts['plugins'] != 1)} outdated "
+         f"({counts['installs']} install{'s' * (counts['installs'] != 1)} on {counts['servers']} "
+         f"server{'s' * (counts['servers'] != 1)}) · {identified} of {jars} jars identified")
+    if errors:
+        s += f" · {errors} source{'s' * (errors != 1)} failed"
+    return s
 
 
 # ---------------------------------------------------------------- status views
@@ -377,25 +398,35 @@ def status_for(p: dict, srv: inventory.Server, st: dict, cache: dict) -> tuple[s
     entry = cache["entries"].get(cache_key(p["sha1"], srv.family, srv.mc_version))
     source = entry["source"] if entry else None
     latest = entry["latest"] if entry else None
-    if p["key"] in st["ignores"]:
+    if settings.hold_applies(st["ignores"].get(p["key"]), srv.id):
         return "ignored", source, latest
-    if p["key"] in st["pins"]:
+    if settings.hold_applies(st["pins"].get(p["key"]), srv.id):
         return "pinned", source, latest
     if not entry or not entry["source"] or entry.get("error"):
         return "unknown", source, latest
     return ("outdated" if entry["outdated"] else "current"), source, latest
 
 
+def current_compat(p: dict, srv: inventory.Server, cache: dict) -> dict | None:
+    """Compat of the *installed* jar (Modrinth only), and whether it lists this server's MC version."""
+    entry = cache["entries"].get(cache_key(p["sha1"], srv.family, srv.mc_version))
+    comp = ((entry or {}).get("current") or {}).get("compat")
+    if not comp:
+        return None
+    ok = None if not srv.mc_version or srv.family == "velocity" else srv.mc_version in comp["mc_versions"]
+    return {**comp, "supports_server": ok}
+
+
 def public_latest(latest: dict | None) -> dict | None:
     if not latest:
         return None
     return {k: latest.get(k) for k in ("version", "url", "download_url", "published", "changelog_url",
-                                       "type", "verified", "filename")}
+                                       "type", "verified", "filename", "size", "compat")}
 
 
 def pending_updates(servers: list[inventory.Server] | None = None,
                     plugins_by_server: dict[str, list[dict]] | None = None) -> list[dict]:
-    """Available updates grouped by plugin key (excludes pinned/ignored)."""
+    """Available updates grouped by plugin key (excludes pinned/ignored installs)."""
     st = settings.load_raw()
     cache = load_cache()
     servers = servers if servers is not None else inventory.discover()
@@ -411,13 +442,149 @@ def pending_updates(servers: list[inventory.Server] | None = None,
                 "servers": [], "targets": [], "changelog_url": latest.get("changelog_url"),
                 "download_url": latest.get("download_url"), "published": latest.get("published"),
                 "source": source, "verified": latest.get("verified", False),
+                "compat": latest.get("compat"), "size": latest.get("size"),
             })
+            if srv.id in u["servers"]:
+                continue  # duplicate jars of one plugin on a server count as one install
             if p["version"] not in u["from_versions"]:
                 u["from_versions"].append(p["version"])
-            if srv.id not in u["servers"]:
-                u["servers"].append(srv.id)
-            u["targets"].append({"server": srv.id, "jar": p["jar"], "from": p["version"], "to": latest["version"]})
+            u["servers"].append(srv.id)
+            u["targets"].append({"server": srv.id, "jar": p["jar"], "from": p["version"], "to": latest["version"],
+                                 "to_jar": latest.get("filename"), "compat": latest.get("compat")})
     return sorted(out.values(), key=lambda u: u["name"].lower())
+
+
+def update_counts(pending: list[dict]) -> dict:
+    """The single definition of update counts used by /overview, /updates, /matrix and job summaries.
+
+    plugins  = distinct plugin keys with at least one outdated install
+    installs = outdated (server, plugin key) pairs; duplicate jars of one plugin on a server count once
+    servers  = distinct servers with at least one outdated install
+    Pinned/ignored installs are not outdated and never counted."""
+    servers = {s for u in pending for s in u["servers"]}
+    return {"plugins": len(pending), "installs": sum(len(u["servers"]) for u in pending), "servers": len(servers)}
+
+
+# ---------------------------------------------------------------- plans (changesets)
+
+def _parse_items(items: Any, pending: list[dict]) -> tuple[list[tuple[str, str]], list[dict]]:
+    """Resolve {items} to outdated (key, server) pairs plus skipped entries with reasons."""
+    by_key = {u["key"]: u for u in pending}
+    if items == "all":
+        return [(u["key"], s) for u in pending for s in u["servers"]], []
+    if not isinstance(items, list) or not items:
+        raise engine.DeployError("items must be 'all' or a non-empty list of {key, servers?}")
+    known = inventory.servers_by_id()
+    pairs: list[tuple[str, str]] = []
+    skipped: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict) or not isinstance(it.get("key"), str):
+            raise engine.DeployError("each item needs a key")
+        servers = it.get("servers")
+        if servers is not None and (not isinstance(servers, list) or not all(isinstance(s, str) for s in servers)):
+            raise engine.DeployError("servers must be a list of ids")
+        for s in servers or []:
+            if s not in known:
+                raise engine.DeployError(f"unknown server: {s!r}")
+        candidates = by_key[it["key"]]["servers"] if it["key"] in by_key else []
+        for s in (candidates if servers is None else servers):
+            if s in candidates:
+                pairs.append((it["key"], s))
+            else:
+                skipped.append({"server": s, "key": it["key"], "reason": "no update available (current, pinned or ignored)"})
+        if servers is None and not candidates:
+            skipped.append({"server": None, "key": it["key"], "reason": "no update available"})
+    return list(dict.fromkeys(pairs)), skipped
+
+
+def create_plan(items: Any, user: str) -> dict:
+    """Freeze exactly which jar on which server becomes which new jar. Stored server-side."""
+    st = settings.load_raw()
+    cache = load_cache()
+    pending = pending_updates()
+    pairs, skipped = _parse_items(items, pending)
+    known = inventory.servers_by_id()
+    rows = []
+    for key, sid in pairs:
+        srv = known[sid]
+        for p in inventory.list_plugins(srv):
+            if p["key"] != key:
+                continue
+            status, source, latest = status_for(p, srv, st, cache)
+            if status != "outdated" or not latest:
+                continue
+            same_key = [q for q in inventory.list_plugins(srv) if q["key"] == key]
+            rows.append({
+                "row": len(rows), "server": sid, "key": key, "name": p["name"], "action": "update",
+                "from_jar": p["jar"], "from_version": p["version"], "from_sha1": p["sha1"],
+                "from_jars": sorted([q["jar"], inventory.file_hash(srv.plugins_dir / q["jar"])] for q in same_key),
+                "also_removes": sorted(q["jar"] for q in same_key if q["jar"] != p["jar"]),
+                "to_jar": _safe_filename(latest.get("filename"), f"{p['name']}-{latest['version']}"),
+                "to_version": latest["version"], "compat": latest.get("compat"), "size": latest.get("size"),
+                "verified": bool(latest.get("verified")), "changelog_url": latest.get("changelog_url"),
+                "source": source, "_latest": latest,
+            })
+            break
+    inventory.flush_cache()
+    return public_plan(plans.create("updates", user, items=items, rows=rows, skipped=skipped))
+
+
+def public_plan(plan: dict) -> dict:
+    rows = [{k: v for k, v in r.items() if not k.startswith("_") and k not in ("from_sha1", "from_jars")}
+            for r in plan["rows"]]
+    servers = {r["server"] for r in rows}
+    return {
+        "plan_id": plan["plan_id"], "rows": rows, "skipped": plan["skipped"],
+        "summary": {"rows": len(rows), "plugins": len({r["key"] for r in rows}), "servers": len(servers),
+                    "download_bytes": sum(r["size"] or 0 for r in {r["to_jar"]: r for r in rows}.values()),
+                    "unverified": sum(1 for r in rows if not r["verified"])},
+        "created": plans.iso(plan["created"]), "expires": plans.iso(plan["expires"]),
+        "applied_by": plan.get("applied_by"),
+    }
+
+
+def check_plan(plan: dict, exclude: Any = None) -> list[dict]:
+    """Validate a stored update plan before applying it; returns the rows to apply.
+
+    409 if expired, already applied, or any from_jar changed since planning."""
+    plans.ensure_usable(plan)
+    excl = set()
+    if exclude is not None:
+        if not isinstance(exclude, list) or not all(
+                isinstance(e, list) and len(e) == 2 and all(isinstance(x, str) for x in e) for e in exclude):
+            raise plans.PlanError(400, "exclude must be a list of [server, key] pairs")
+        excl = {tuple(e) for e in exclude}
+    rows = [r for r in plan["rows"] if (r["server"], r["key"]) not in excl]
+    if not rows:
+        raise plans.PlanError(400, "nothing to apply (all rows excluded)")
+    conflicts = row_conflicts(rows)
+    if conflicts:
+        raise plans.PlanError(409, {"message": "servers changed since the plan was made; re-plan",
+                                    "conflicts": conflicts})
+    return rows
+
+
+def row_conflicts(rows: list[dict]) -> list[dict]:
+    known = inventory.servers_by_id()
+    out = []
+    for r in rows:
+        srv = known.get(r["server"])
+        if srv is None:
+            out.append({"server": r["server"], "key": r["key"], "from_jar": r["from_jar"], "reason": "server gone"})
+            continue
+        path = srv.plugins_dir / r["from_jar"]
+        if not path.is_file():
+            out.append({"server": r["server"], "key": r["key"], "from_jar": r["from_jar"], "reason": "jar missing"})
+            continue
+        # Hash directly (not the size/mtime cache): a same-size copy with preserved mtime must not slip by.
+        now = sorted([q["jar"], inventory.file_hash(srv.plugins_dir / q["jar"])]
+                     for q in inventory.list_plugins(srv) if q["key"] == r["key"])
+        planned = r.get("from_jars") or [[r["from_jar"], r["from_sha1"]]]
+        if [r["from_jar"], inventory.file_hash(path)] not in now or \
+                now != [list(x) for x in planned]:
+            reason = "jar changed" if inventory.file_hash(path) != r["from_sha1"] else "other versions changed"
+            out.append({"server": r["server"], "key": r["key"], "from_jar": r["from_jar"], "reason": reason})
+    return out
 
 
 # ---------------------------------------------------------------- apply
@@ -470,66 +637,26 @@ def _verify(path: Path, hashes: dict) -> bool:
     return True
 
 
-def select_targets(items: Any) -> list[tuple[str, str]]:
-    """Resolve an apply request to [(key, server_id)] pairs that are currently outdated."""
-    pending = pending_updates()
-    by_key = {u["key"]: u for u in pending}
-    if items == "all":
-        return [(u["key"], s) for u in pending for s in u["servers"]]
-    if not isinstance(items, list) or not items:
-        raise engine.DeployError("items must be 'all' or a non-empty list of {key, servers}")
-    known = inventory.servers_by_id()
-    pairs = []
-    for it in items:
-        if not isinstance(it, dict) or not isinstance(it.get("key"), str):
-            raise engine.DeployError("each item needs a key")
-        servers = it.get("servers")
-        if servers is not None:
-            if not isinstance(servers, list) or not all(isinstance(s, str) for s in servers):
-                raise engine.DeployError("servers must be a list of ids")
-            for s in servers:
-                if s not in known:
-                    raise engine.DeployError(f"unknown server: {s!r}")
-        u = by_key.get(it["key"])
-        candidates = u["servers"] if u else []
-        chosen = candidates if servers is None else [s for s in servers if s in candidates]
-        skipped = [] if servers is None else [s for s in servers if s not in candidates]
-        pairs += [(it["key"], s) for s in chosen]
-        pairs += [(it["key"], "!" + s) for s in skipped]  # reported as "no update available"
-    return pairs
-
-
-def apply(job, ctx: engine.Ctx, pairs: list[tuple[str, str]], require_verified: bool = False) -> None:
-    st = settings.load_raw()
-    cache = load_cache()
+def apply_rows(ctx: engine.Ctx, rows: list[dict], require_verified: bool = False) -> None:
+    """Apply exactly the planned rows: each from_jar (same sha1 as planned) → the planned new jar."""
     known = inventory.servers_by_id()
     with _client() as c:
-        for key, sid in pairs:
-            if sid.startswith("!"):
-                ctx.result(sid[1:], key, "update", "skipped", "no update available")
-                continue
+        for r in rows:
+            sid, key, latest = r["server"], r["key"], r["_latest"]
+            label = f"{r['name']} {r['from_version']} → {r['to_version']}"
+            ctx.log(f"==> {sid}: {label}")
             srv = known.get(sid)
             if srv is None:
-                ctx.result(sid, key, "update", "error", "server no longer exists")
+                ctx.result(sid, label, "update", "error", "server no longer exists")
                 continue
-            plugins = [p for p in inventory.list_plugins(srv) if p["key"] == key]
-            target = None
-            for p in plugins:
-                status, _src, latest = status_for(p, srv, st, cache)
-                if status == "outdated" and latest:
-                    target = (p, latest)
-                    break
-            if not target:
-                ctx.result(sid, key, "update", "skipped", "not outdated (or pinned/ignored)")
+            if row_conflicts([r]):
+                ctx.result(sid, label, "update", "error", f"{r['from_jar']} changed since the plan; not applied")
                 continue
-            p, latest = target
-            label = f"{p['name']} {p['version']} → {latest['version']}"
-            ctx.log(f"==> {sid}: {label}")
             if require_verified and not latest.get("verified"):
                 ctx.result(sid, label, "update", "skipped", "source provides no hash; not auto-applied")
                 continue
             try:
-                staged = _download(c, latest, f"{p['name']}-{latest['version']}", ctx.log)
+                staged = _download(c, latest, f"{r['name']}-{r['to_version']}", ctx.log)
             except (httpx.HTTPError, ValueError, OSError) as e:
                 ctx.result(sid, label, "update", "error", f"download failed: {e}")
                 continue
