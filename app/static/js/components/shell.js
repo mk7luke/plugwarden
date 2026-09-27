@@ -12,6 +12,7 @@ const ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: "layout-dashboard", href: "#/dashboard" },
   { id: "servers", label: "Servers", icon: "server", href: "#/servers" },
   { id: "plugins", label: "Plugins", icon: "grid-3x3", href: "#/plugins" },
+  { id: "stats", label: "Stats", icon: "chart-column", href: "#/stats" },
   { id: "updates", label: "Updates", icon: "circle-arrow-up", href: "#/updates", count: "updates" },
   { id: "deploy", label: "Deploy", icon: "rocket", href: "#/deploy" },
   { id: "activity", label: "Activity", icon: "history", href: "#/activity" },
@@ -23,7 +24,7 @@ const signedIn = (ov) => ov?.user && ov.user !== "local" && ov.auth !== "none";
 const MODE_LABEL = { off: "Auto-update off", notify: "Auto-check · notify", apply: "Auto-update on" };
 
 // Mark: a warden's shield with a plug — "keeps your plugins in line".
-export const Brand = () => html`<a class="brand" href="#/dashboard" aria-label="PlugWarden — dashboard">
+export const Brand = () => html`<a class="brand" href="#/dashboard" aria-label="PlugWarden dashboard">
   <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3.5 26 7v8.2c0 6-4.1 10.9-10 13.3C10.1 26.1 6 21.2 6 15.2V7z" fill="var(--accent)"/>
     <path d="M12.5 9.5v4M19.5 9.5v4M10.5 13.5h11v2.5a5.5 5.5 0 0 1-11 0zM16 21.5v3" fill="none" stroke="var(--accent-fg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
   <div class="brand-text">PlugWarden<small>LGT Network</small></div>
@@ -38,9 +39,9 @@ function NavList({ route, ov, onNav }) {
   };
   return html`<nav class="nav" aria-label="Primary">
     <div class="nav-label">Network</div>
-    ${ITEMS.slice(0, 3).map(link)}
+    ${ITEMS.slice(0, 4).map(link)}
     <div class="nav-label">Operate</div>
-    ${ITEMS.slice(3).map(link)}
+    ${ITEMS.slice(4).map(link)}
   </nav>`;
 }
 
@@ -50,12 +51,12 @@ function SideFoot({ ov, route, onNav }) {
   return html`<div class="sidebar-foot">
     <a class="auto-chip" href="#/updates" onClick=${onNav} title="Auto-update policy">
       <span class=${"dot " + (mode === "apply" ? "dot-ok pulse" : mode === "notify" ? "dot-update" : "dot-muted")}></span>
-      <div>${mode ? html`<b>${MODE_LABEL[mode] || mode}</b>${ov.auto_update.next_run ? `Next run ${relTime(ov.auto_update.next_run)}` : "Not scheduled"}` : html`<b>Auto-update</b>—`}</div>
+      <div>${mode ? html`<b>${MODE_LABEL[mode] || mode}</b>${ov.auto_update.next_run ? `Next run ${relTime(ov.auto_update.next_run)}` : "Not scheduled"}` : html`<b>Auto-update</b>–`}</div>
     </a>
     <a class="nav-item" href="#/settings" aria-current=${route.name === "settings" ? "page" : undefined} onClick=${onNav} title="Settings"><${Icon} n="settings" /><span>Settings</span></a>
     <div class="user-row">
       <span class="avatar" aria-hidden="true">${initials(ov?.user)}</span>
-      <span title=${signedIn(ov) ? `Signed in as ${ov.user} (Cloudflare Access)` : "No Cloudflare Access identity — development mode"}>${!ov ? "—" : signedIn(ov) ? ov.user : "local (dev)"}</span>
+      <span title=${signedIn(ov) ? `Signed in as ${ov.user} (Cloudflare Access)` : "No Cloudflare Access identity (development mode)"}>${!ov ? "–" : signedIn(ov) ? ov.user : "local (dev)"}</span>
       <${Btn} kind="ghost" size="sm" icon=${theme === "dark" ? "sun" : "moon"} aria-label=${`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
         onClick=${() => setTheme(theme === "dark" ? "light" : "dark")} cls="hide-rail" />
     </div>
@@ -120,7 +121,7 @@ export function Topbar({ crumbs }) {
       <span class="kbds"><${Kbd}>${modKey}<//><${Kbd}>K<//></span>
     </button>
     <div class="top-actions">
-      <span class="check-status" title=${indexing ? "Reading plugin jars after a restart — results are provisional until this finishes" : "Last update check"}>${indexing ? html`<${Icon} n="loader-circle" cls="i-xs spin" /> Indexing plugins… ${indexing.done}/${indexing.total}` : checking ? (pct != null ? `Checking… ${pct}%` : "Checking…") : ov ? (ov.last_check ? `Checked ${relTime(ov.last_check)}` : "Never checked") : ""}</span>
+      <span class="check-status" title=${indexing ? "Reading plugin jars after a restart. Results are provisional until this finishes" : "Last update check"}>${indexing ? html`<${Icon} n="loader-circle" cls="i-xs spin" /> Indexing plugins… ${indexing.done}/${indexing.total}` : checking ? (pct != null ? `Checking… ${pct}%` : "Checking…") : ov ? (ov.last_check ? `Checked ${relTime(ov.last_check)}` : "Never checked") : ""}</span>
       <${Btn} icon="refresh-cw" busy=${checking} onClick=${checkUpdates} aria-label="Check for updates"><span class="hide-sm">Check updates</span><//>
     </div>
   </header>`;
@@ -129,7 +130,7 @@ export function Topbar({ crumbs }) {
 export function Tabbar({ route }) {
   const { data: ov } = useQuery("/overview");
   // Servers is the #1 entry point on a phone; Deploy lives in the menu drawer.
-  const tabs = [ITEMS[0], ITEMS[1], ITEMS[2], ITEMS[3], ITEMS[5]];
+  const tabs = ["dashboard", "servers", "plugins", "updates", "activity"].map(id => ITEMS.find(t => t.id === id));
   return html`<nav class="tabbar" aria-label="Primary">
     ${tabs.map(t => html`<a href=${t.href} aria-current=${route.name === t.id ? "page" : undefined}>
       <${Icon} n=${t.icon} cls="i-lg" />${t.label}

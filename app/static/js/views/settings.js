@@ -53,7 +53,7 @@ function General({ d, set, servers }) {
     <div class="field-row"><div class="field-label">Datastore base<small>The folder that holds every server; each server's <span class="mono">Minecraft/plugins</span> is managed.</small></div>
       <div class="stack" style="gap:6px"><div class="readonly"><${Icon} n="folder-open" cls="i-sm" /><span class="path-scroll">${d.base || "Configured on the server"}</span>
         ${d.base && html`<${Btn} size="sm" kind="ghost" icon="copy" aria-label="Copy datastore path" onClick=${() => { navigator.clipboard?.writeText(d.base); toast({ kind: "ok", title: "Path copied" }); }} />`}</div>
-        ${(d.base_overridden || d.base_readonly) && html`<span class="small muted row" style="gap:6px">${d.base_overridden && html`<${Tag} kind="warn">override<//>`}Set by the server environment — read-only here.</span>`}</div></div>
+        ${(d.base_overridden || d.base_readonly) && html`<span class="small muted row" style="gap:6px">${d.base_overridden && html`<${Tag} kind="warn">override<//>`}Set by the server environment, read-only here.</span>`}</div></div>
     <div class="field-row"><label class="field-label" for="def-src">Default source<small>Pre-selected in Deploy. Usually the staging server.</small></label>
       <div><select id="def-src" class="select" style="max-width:320px" value=${d.default_source || ""} onChange=${e => set({ ...d, default_source: e.currentTarget.value })}>
         ${servers.filter(s => s.plugin_count > 0).map(s => html`<option value=${s.id}>${s.id} (${s.platform})</option>`)}</select></div></div>
@@ -77,7 +77,7 @@ function Groups({ d, set, servers }) {
   const eligible = servers.filter(s => (s.family || "bukkit") === "bukkit");
   const upd = (g) => set({ ...d, groups: g });
   const add = (e) => { e.preventDefault(); const n = name.trim(); if (!n || groups[n]) return; upd({ ...groups, [n]: [] }); setName(""); };
-  const del = async (g) => { if (await confirmDialog({ danger: true, title: `Delete group “${g}”?`, body: "Servers aren't affected — only the preset is removed.", confirmLabel: "Delete group" })) { const n = { ...groups }; delete n[g]; upd(n); } };
+  const del = async (g) => { if (await confirmDialog({ danger: true, title: `Delete group “${g}”?`, body: "Servers aren't affected. Only the preset is removed.", confirmLabel: "Delete group" })) { const n = { ...groups }; delete n[g]; upd(n); } };
   return html`<div class="stack">
     <p class="small muted">Groups become one-click target presets in Deploy. Proxy and modded servers can't be added.</p>
     ${!Object.keys(groups).length && html`<${Empty} icon="layers" title="No groups yet">Create one below, e.g. “Survival” or “Minigames”.<//>`}
@@ -127,7 +127,7 @@ function Sources({ d, set }) {
         <td><span class="strong">${p.name}</span>${p.family && p.family !== "bukkit" ? html` <span class="small muted">· ${p.family}</span>` : ""}</td>
         <td>${m.kind ? html`<${Tag} kind="accent" title="A manual source is used instead of the automatic match">${p.source && p.source.kind !== m.kind ? `manual · overrides ${p.source.kind}` : "manual"}<//>` : p.unknown ? html`<${Tag} icon="circle-dashed">untracked<//>` : html`<span class="row" style="gap:6px"><${Tag} kind="ok" icon="check">auto<//><span class="small muted">${p.source?.kind}</span></span>`}</td>
         <td style="width:150px"><select class="select" style="height:28px" aria-label=${`Source for ${p.name}`} value=${m.kind || ""} onChange=${e => setMap(p.key, { ...m, kind: e.currentTarget.value })}>
-          <option value="">—</option>${KINDS.map(k => html`<option value=${k}>${k}</option>`)}</select></td>
+          <option value="">–</option>${KINDS.map(k => html`<option value=${k}>${k}</option>`)}</select></td>
         <td style="width:70px;text-align:center"><${Check} label=${`Allow automatic updates for ${p.name}`} disabled=${!m.kind} checked=${!!m.auto_apply} onChange=${v => setMap(p.key, { ...m, auto_apply: v || undefined })} /></td>
         <td style="min-width:180px"><input class="input mono" style="height:28px" aria-label=${`Id for ${p.name}`} placeholder=${m.kind === "github" ? "owner/repo" : m.kind === "spiget" ? "resource id" : "slug"} value=${m.id || ""} disabled=${!m.kind} onInput=${e => setMap(p.key, { ...m, id: e.currentTarget.value })} /></td>
       </tr>`; })}</tbody></table></div>`}

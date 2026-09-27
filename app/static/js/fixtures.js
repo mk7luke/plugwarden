@@ -213,10 +213,10 @@ const jobs = [
   { id: "j-38", kind: "deploy", status: "done", user: "ops@example.com", started: iso(20 * HOUR), finished: iso(20 * HOUR - 40e3), summary: "Synced Essentials/config.yml to 7 servers (1 failed)", undoable: true,
     results: [["M1-hub01", "changed"], ["M3-hunger01", "changed"], ["M4-skyblock01", "changed"], ["M5-kitpvp01", "changed"], ["M6-creative01", "failed"], ["M7-bending01", "changed"], ["M8-lifesteal01", "changed"]].map(([s, o]) => ({ server: s, item: "Essentials/config.yml", action: "sync", outcome: o === "failed" ? "error" : o, detail: o === "failed" ? "permission denied" : "updated (4.1 KB)" })),
     log: "$ rsync -a --itemize-changes elChapo01/Essentials/config.yml → 7 targets\n>f.st...... Essentials/config.yml  (M1-hub01)\n...\nERROR M6-creative01: rsync: open \"Essentials/config.yml\": Permission denied (13)\n" },
-  { id: "j-37", kind: "update-check", status: "done", user: "auto", started: iso(26 * HOUR), finished: iso(26 * HOUR - 12e3), summary: "Checked 61 plugins — 9 updates available", undoable: false, results: [], log: "modrinth: 44 hashes resolved\nhangar: 1 mapped\nspiget: 2 mapped\ngithub: 3 mapped\n9 updates available\n" },
+  { id: "j-37", kind: "update-check", status: "done", user: "auto", started: iso(26 * HOUR), finished: iso(26 * HOUR - 12e3), summary: "Checked 61 plugins, 9 updates available", undoable: false, results: [], log: "modrinth: 44 hashes resolved\nhangar: 1 mapped\nspiget: 2 mapped\ngithub: 3 mapped\n9 updates available\n" },
   { id: "j-36", kind: "remove", status: "done", user: "admin@example.com", started: iso(3 * DAY), finished: iso(3 * DAY - 9e3), summary: "Removed TreeCuter from M4-skyblock01", undoable: true,
     results: [{ server: "M4-skyblock01", item: "TreeCuter-v2.0.5.jar", action: "delete", outcome: "changed", detail: "removed jar + folder" }], log: "deleting TreeCuter-v2.0.5.jar\ndeleting TreeCuter/\n" },
-  { id: "j-35", kind: "undo", status: "failed", user: "admin@example.com", started: iso(4 * DAY), finished: iso(4 * DAY - 2e3), summary: "Undo of j-33 failed — backups expired", undoable: false,
+  { id: "j-35", kind: "undo", status: "failed", user: "admin@example.com", started: iso(4 * DAY), finished: iso(4 * DAY - 2e3), summary: "Undo of j-33 failed: backups expired", undoable: false,
     results: [], log: "ERROR: backup set j-33 not found in STATE_DIR/backups\n" },
 ];
 
@@ -228,6 +228,89 @@ const TREE = {
   "Essentials": [["config.yml", 48211], ["worth.yml", 22019], ["kits.yml", 3412], ["messages_en.properties", 61022], ["userdata", null], ["spawn.yml", 322]].map(([n, s]) => ({ name: n, type: s == null ? "dir" : "file", size: s, mtime: iso(DAY) })),
   "LuckPerms": [["config.yml", 31077], ["libs", null], ["translations", null]].map(([n, s]) => ({ name: n, type: s == null ? "dir" : "file", size: s, mtime: iso(DAY) })),
 };
+
+// /stats (same shape as the server): installs, sources, spread and footprint come from the fixture network above;
+// the history (timeline, heatmap, lag, trend) is seeded noise shaped like a real year of use.
+function stats() {
+  const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+  let seed = 7;
+  const rnd = () => ((seed = Math.imul(seed ^ (seed >>> 15), 2246822507) + 0x9e3779b9 | 0) >>> 0) / 4294967296;
+  const all = SERVERS.map(([id]) => [id, pluginsFor(id)]);
+  const installs = all.flatMap(([, ps]) => ps);
+  const tracked = (p) => p.status === "current" || p.status === "outdated";
+  const count = (ps, st) => ps.filter(p => st === "untracked" ? !tracked(p) : p.status === st).length;
+  const current = count(installs, "current"), outdated = count(installs, "outdated");
+  const keys = {};
+  for (const [id, ps] of all) for (const p of ps) (keys[p.key] ||= { key: "bukkit:" + p.key, name: p.name, servers: 0, src: p.source?.kind || "untracked" }).servers++;
+  const plugins = Object.values(keys);
+  const sources = { modrinth: 0, hangar: 0, spiget: 0, github: 0, untracked: 0 };
+  for (const p of plugins) sources[p.src]++;
+  const buckets = {};
+  for (const p of plugins) buckets[p.servers] = (buckets[p.servers] || 0) + 1;
+  const today = new Date(now); today.setUTCHours(0, 0, 0, 0);
+  const day = (n) => new Date(today - n * DAY).toISOString().slice(0, 10);
+  // A quiet year that gets busier once PlugWarden took over (the last ~10 weeks).
+  const days = Array.from({ length: 365 }, (_, i) => {
+    const age = 364 - i, wd = new Date(today - age * DAY).getUTCDay();
+    const base = age < 70 ? 0.55 : age < 180 ? 0.22 : 0.1;
+    if (rnd() > base * (wd === 0 || wd === 6 ? 1.6 : 1)) return 0;
+    return Math.round(1 + rnd() * rnd() * (age < 70 ? 14 : 6));
+  });
+  days[362] = 9; days[364] = 3;
+  const weeks = Array.from({ length: 52 }, (_, w) => {
+    const end = 364 - (51 - w) * 7, changed = days.slice(Math.max(0, end - 6), end + 1).reduce((a, b) => a + b, 0);
+    return { start: day(364 - end + 6), installs_changed: changed, updates_applied: w < 43 ? 0 : Math.round(changed * (0.45 + rnd() * 0.35)) };
+  });
+  const E = [[0, 1, "<1d"], [1, 3, "1–3d"], [3, 7, "3–7d"], [7, 14, "1–2w"], [14, 28, "2–4w"], [28, 91, "1–3mo"], [91, null, ">3mo"]];
+  const bins = (counts) => E.map(([lo, hi, bucket], i) => ({ bucket, lo, hi, count: counts[i] }));
+  const fr = (ps) => ({ current: count(ps, "current"), outdated: count(ps, "outdated"), unknown: count(ps, "untracked"), pinned: 0, ignored: 0 });
+  const sizes = all.map(([id, ps]) => ({ id, bytes: ps.reduce((a, p) => a + p.size, 0), jars: ps.length }));
+  const unique = plugins.filter(p => p.servers === 1);
+  return {
+    generated_at: iso(0), indexing: null,
+    inventory: {
+      totals: { servers: SERVERS.length, plugin_servers: all.filter(([, ps]) => ps.length).length, plugins: plugins.length, jars: installs.length, bytes: sum(sizes.map(x => x.bytes)) },
+      servers: SERVERS.map(([id, platform, mc], i) => ({ id, platform, family: platform === "velocity" ? "velocity" : "bukkit", mc_version: mc, plugins: sizes[i].jars, jars: sizes[i].jars, bytes: sizes[i].bytes, unique: 0 })),
+      sharing: Object.entries(buckets).map(([n, c]) => ({ servers: +n, plugins: c })).sort((a, b) => a.servers - b.servers),
+      most_shared: [...plugins].sort((a, b) => b.servers - a.servers || a.name.localeCompare(b.name)).slice(0, 10).map(({ key, name, servers }) => ({ key, name, servers })),
+      unique: unique.map(p => ({ key: p.key, name: p.name, server: null })),
+    },
+    freshness: {
+      score: Math.round(1000 * current / (current + outdated)) / 10, counts: { ...fr(installs), total: installs.length },
+      servers: all.filter(([, ps]) => ps.length).map(([id, ps]) => { const c = fr(ps); return { id, ...c, score: Math.round(1000 * c.current / Math.max(1, c.current + c.outdated)) / 10 }; }),
+      last_check: iso(26 * HOUR),
+    },
+    sources,
+    history: {
+      weekly: weeks.map(w => ({ week_start: w.start, count: w.installs_changed, from_jobs: w.updates_applied })),
+      daily: days.map((count, i) => ({ date: day(364 - i), count })),
+      recent_30d: { changes: days.slice(-30).reduce((a, b) => a + b, 0), from_jobs: weeks.slice(-4).reduce((a, w) => a + w.updates_applied, 0) },
+      max_daily: Math.max(...days), total: days.reduce((a, b) => a + b, 0), excluded: 0,
+      note: "Dates come from jar file times; PlugWarden job records are exact and replace file times for the jars they wrote.",
+    },
+    lag: {
+      samples: 118, median_days: 11, p75_days: 23, histogram: bins([14, 17, 19, 21, 22, 21, 4]),
+      behind: { installs: outdated, median_days: 19, max_days: 142, histogram: bins([2, 5, 9, 14, 18, 15, 2]),
+        plugins: updates().map((u, i) => ({ key: "bukkit:" + u.key, name: u.name, to_version: u.to_version, servers: u.servers.length, days: 142 - i * 9 })) },
+    },
+    health: {
+      servers: { ok: 9, warnings: 1, not_running: 1, unknown: 1 }, plugins: { ok: installs.length - 2, warnings: 1, not_running: 1 },
+      per_server: all.filter(([, ps]) => ps.length).map(([id]) => ({ id, status: id === "M1-hub01" ? "not_running" : id === "M5-kitpvp01" ? "warnings" : "ok", failed: id === "M1-hub01" ? 1 : 0, warnings: id === "M5-kitpvp01" ? 1 : 0 })),
+    },
+    trend: [40, 34, 30, 22, 19, 12, 1].map((d, i) => { const o = [58, 55, 61, 49, 47, 52, outdated][i]; const c = current + outdated - o; return { at: iso(d * DAY + 2 * HOUR), outdated_plugins: Math.round(o / 3), outdated_installs: o, current_installs: c, score: Math.round(1000 * c / (c + o)) / 10, servers: 10, tracked: 46, total: installs.length }; }),
+    footprint: {
+      jar_bytes: sum(sizes.map(x => x.bytes)), servers: sizes.map(({ id, bytes }) => ({ id, bytes })),
+      backups_bytes: 412e6, backups: 14, jobs: 143, undos: 3, jobs_failed: 6,
+      jobs_by_kind: { "update-check": 88, "update-apply": 31, deploy: 17, remove: 4, undo: 3 },
+    },
+  };
+}
+
+// "41 of 68 plugins identified": distinct plugins with a known update source, like the server's check summary.
+function identifiedLine() {
+  const keys = new Set(SERVERS.flatMap(([id]) => INSTALLED[id].map(p => p[0])));
+  return `${[...keys].filter(k => CATALOG[k]?.[2]).length} of ${keys.size} plugins identified`;
+}
 
 function delay(v, ms = 280) { return new Promise(r => setTimeout(() => r(structuredClone(v)), ms)); }
 
@@ -303,7 +386,7 @@ export async function handle(method, path, body) {
       const ss = servers(); const m = matrix();
       const u = updates();
       return delay({ servers: ss, totals: { servers: ss.length, plugins: m.plugins.length, updates: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, drift: [...driftKeys()].length },
-        last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · 46 of 78 jars identified`,
+        last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · ${identifiedLine()}`,
         ...{},
       restart_checklist: [...pendingRestart].map(sv => ({ server: sv, since: iso(2 * HOUR), jobs: [{ job_id: "j-39", kind: "update-apply", summary: "Updated LuckPerms", at: iso(2 * HOUR) }] })), auto_update: { mode: "apply", next_run: new Date(now + 3 * HOUR + 12 * MIN).toISOString(), effective_canary: "elChapo01",
           canary: [{ key: "bukkit:coreprotect", name: "CoreProtect", version: "23.4", server: "elChapo01", soak_hours_left: 9, canary_health: { status: "healthy", reason: "Enabling CoreProtect v23.4 logged", excerpt: [], log: "latest.log", checked_at: iso(20 * MIN) } }],
@@ -323,17 +406,18 @@ export async function handle(method, path, body) {
     if ((m = p.match(/^\/servers\/([^/]+)\/search$/))) return delay(search(q.get("q") || ""), 200);
     if (p === "/diff") return delay({ path: q.get("path"), source: q.get("source"), target: q.get("target"), source_exists: true, target_exists: true, identical: false, binary: false, too_large: false,
       diff: "--- a\n+++ b\n@@ -12,5 +12,5 @@\n # Essentials config\n ops-name-color: '4'\n-nickname-prefix: '~'\n+nickname-prefix: ''\n max-nick-length: 15\n@@ -88,3 +88,4 @@\n teleport-cooldown: 0\n-teleport-delay: 3\n+teleport-delay: 0\n+teleport-safety: true" }, 250);
-    if (p === "/updates") { const u = updates(); return delay({ updates: u, counts: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · 46 of 78 jars identified` }); }
+    if (p === "/updates") { const u = updates(); return delay({ updates: u, counts: { plugins: u.length, installs: u.reduce((a, x) => a + x.servers.length, 0), servers: new Set(u.flatMap(x => x.servers)).size }, last_check: iso(26 * HOUR), check_summary: `${u.length} plugins outdated · ${identifiedLine()}` }); }
     if (p === "/jobs") return delay(jobs.map(({ log, results, ...j }) => ({ ...j, servers: [...new Set(results.map(r => r.server))], counts: results.reduce((a, r) => (a[r.outcome] = (a[r.outcome] || 0) + 1, a), {}) })));
     if ((m = p.match(/^\/jobs\/([^/]+)$/))) return delay(jobs.find(j => j.id === m[1]), 120);
     if (p === "/settings") return delay(settings);
+    if (p === "/stats") return delay(stats(), 420);
     if ((m = p.match(/^\/servers\/([^/]+)\/health$/))) return delay({ server: decodeURIComponent(m[1]), since: q.get("since"), checked_at: iso(0), logs: ["latest.log"], startup_complete: true, restarted: true, restarted_at: (now - 20 * MIN) / 1000,
       counts: { healthy: 1, failed: 1, unknown: 0 },
       plugins: [{ key: "bukkit:voicechat", name: "voicechat", version: "2.6.6", status: "failed", running: false, preexisting: true, reason: "disabled itself after startup", match_index: 1, line: 657, log: "latest.log", excerpt: ["[22:10:01 ERROR]: [voicechat] Voice chat server error", "[22:10:01 ERROR]: [voicechat] Disabling Simple Voice Chat", "[22:10:01 INFO]: [voicechat] Disabling voicechat v2.6.6"] },
         { key: "bukkit:plugmanx", name: "PlugManX", version: "3.2.1", status: "failed", reason: "Error occurred while enabling PlugManX v3.2.1", excerpt: ["[ERROR] Error occurred while enabling PlugManX v3.2.1 (Is it up to date?)", "java.lang.NoSuchMethodError: 'void org.bukkit…'"], log: "latest.log" },
         { key: "bukkit:coreprotect", name: "CoreProtect", version: "24.1", status: "healthy", reason: "Enabling CoreProtect v24.1", excerpt: [], log: "latest.log" }],
       preexisting_errors: [{ key: "bukkit:essentials", name: "Essentials", level: "error", reason: "You are running an unsupported server version!", excerpt: ["[22:09:40 ERROR]: [Essentials] You are running an unsupported server version!"], match_index: 0, log: "latest.log", seen_in_runs: 3 },
-        { key: "bukkit:voicechat", name: "voicechat", level: "warning", reason: "Failed to bind UDP port 24454 (address already in use)", excerpt: ["[WARN] [voicechat] Failed to bind to 0.0.0.0:24454 — java.net.BindException: Address already in use"], log: "latest.log", seen_in_runs: 4 }] }, 400);
+        { key: "bukkit:voicechat", name: "voicechat", level: "warning", reason: "Failed to bind UDP port 24454 (address already in use)", excerpt: ["[WARN] [voicechat] Failed to bind to 0.0.0.0:24454: java.net.BindException: Address already in use"], log: "latest.log", seen_in_runs: 4 }] }, 400);
     if (p === "/access-log") return delay({ entries: [{ at: iso(3 * MIN), user: "admin@example.com", action: "diff", servers: ["elChapo01", "M1-hub01"], path: "LuckPerms/config.yml", detail: "2 value(s) redacted" }] });
   }
   if (method === "PUT" && p === "/settings") { Object.assign(settings, body); return delay(settings); }
@@ -342,7 +426,7 @@ export async function handle(method, path, body) {
     if (p === "/updates/plan") return delay(updatePlan(body.items), 500);
     if (p === "/updates/apply" && body.plan_id) {
       const pl = plans[body.plan_id];
-      if (!pl) throw Object.assign(new Error("plan expired — build a new one"), { status: 409 });
+      if (!pl) throw Object.assign(new Error("plan expired; build a new one"), { status: 409 });
       const ex = new Set((body.exclude || []).map(([sv, k]) => `${sv}|${k}`));
       const rows = pl.rows.filter(r => !ex.has(`${r.server}|${r.key}`));
       const j = newJob("update-apply", `${rows.length} changed`, rows.map(r => ({ server: r.server, key: r.key, item: r.to_jar, action: "update", outcome: "changed", detail: `${r.from_jar} → ${r.to_jar}` })));
@@ -360,7 +444,7 @@ export async function handle(method, path, body) {
       return delay({ job_id: j.id });
     }
     if (p === "/deploy") {
-      if (!plans[body.plan_id]?.deploy) throw Object.assign(new Error("plan expired — preview again"), { status: 409 });
+      if (!plans[body.plan_id]?.deploy) throw Object.assign(new Error("plan expired; preview again"), { status: 409 });
       body = plans[body.plan_id].deploy;
       const pl = plan(body);
       const j = newJob("deploy", `${pl.summary.changed} changed, ${pl.summary.unchanged} unchanged`,
@@ -386,12 +470,12 @@ export async function handle(method, path, body) {
 export function stream(id, onLine, onDone) {
   const j = jobs.find(x => x.id === id);
   const lines = j.results.length
-    ? [`$ job ${id} (${j.kind})`, ...j.results.map(r => `[${r.server}] ${r.action} ${r.item}: ${r.outcome}${r.detail ? " — " + r.detail : ""}`), `done: ${j.results.length} result(s)`]
+    ? [`$ job ${id} (${j.kind})`, ...j.results.map(r => `[${r.server}] ${r.action} ${r.item}: ${r.outcome}${r.detail ? ": " + r.detail : ""}`), `done: ${j.results.length} result(s)`]
     : [`$ job ${id} (${j.kind})`, "modrinth: resolving 61 hashes…", "modrinth: 44 matched", "hangar/spiget/github: 5 mapped", "9 updates available", "done"];
   let i = 0;
   const tick = () => {
     if (i < lines.length) { j.log += lines[i] + "\n"; onLine(lines[i++]); setTimeout(tick, 220); }
-    else { j.status = "done"; j.finished = new Date().toISOString(); j.undoable = !j.dry_run && j.kind !== "update-check"; if (j.kind === "update-check") j.summary = "Checked 61 plugins — 9 updates available"; onDone(structuredClone(j)); }
+    else { j.status = "done"; j.finished = new Date().toISOString(); j.undoable = !j.dry_run && j.kind !== "update-check"; if (j.kind === "update-check") j.summary = "Checked 61 plugins, 9 updates available"; onDone(structuredClone(j)); }
   };
   setTimeout(tick, 200);
 }

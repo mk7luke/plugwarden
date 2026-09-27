@@ -39,7 +39,7 @@ export function bytes(n) {
 export const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 export function initials(email) {
-  if (!email) return "—";
+  if (!email) return "–";
   const name = email.split("@")[0];
   const parts = name.split(/[._-]/).filter(Boolean);
   return ((parts[0] || "?")[0] + (parts[1] ? parts[1][0] : "")).toUpperCase();

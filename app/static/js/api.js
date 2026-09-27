@@ -16,7 +16,7 @@ export async function api(path, { method = "GET", body, form } = {}) {
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   let res;
   try { res = await fetch("/api/v2" + path, opts); }
-  catch (e) { throw new ApiError(0, "Network error — is the server reachable?", path); }
+  catch (e) { throw new ApiError(0, "Network error. Is the server reachable?", path); }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }

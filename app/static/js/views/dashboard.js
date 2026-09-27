@@ -114,7 +114,7 @@ function Headline({ d, c, restarts, since }) {
       ${(() => { const f = d.servers.flatMap(s => (s.startup?.failed || []).map(p => ({ ...p, server: s.id }))); return f.length > 0 && html`<p class="hl-canary-fail"><${Icon} n="circle-x" cls="i-sm" />
         <b>${plural(f.length, "plugin")} ${f.length === 1 ? "is" : "are"} not running:</b> <span>${f.slice(0, 3).map(p => html`<a class="link" href=${`#/servers/${encodeURIComponent(p.server)}`}>${p.name} on ${p.server}</a>${causeShort(p.cause) ? html`<span class="muted"> (${causeShort(p.cause)})</span>` : ""}`).reduce((a, x, i) => i ? [...a, ", ", x] : [x], [])}${f.length > 3 ? ` +${f.length - 3} more` : ""}</span></p>`; })()}
       <${SinceLine} s=${since} pending=${c.plugins} />
-      ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? ` — ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
+      ${restarts.length > 0 && html`<p class="hl-restart"><${Icon} n="rotate-ccw" cls="i-sm" /><b class="tip" tabindex="0" data-tip=${restarts.map(r => r.server + (r.jobs?.length ? `: ${r.jobs.flatMap(j => j.items || []).slice(0, 4).join("; ")}` : "")).join("\n")}>${plural(restarts.length, "server")} need${restarts.length === 1 ? "s" : ""} a restart</b>
         <span class="muted ellipsis">${restarts.map(r => r.server).join(", ")}</span></p>`}
     </div>
     <div class="row wrap" style="gap:8px">
@@ -146,7 +146,7 @@ function ServerTile({ s, ups, loadingUps, vers, checked }) {
       <${Flags} s=${s} n=${n} restart=${false} compact=${true} />
     </div>
     <div class="watch">
-      ${empty ? html`<div class="watch-empty"><${Icon} n="blocks" cls="i-sm" />${s.note || (s.platform === "fabric" ? "Fabric server — no plugins" : "No plugins installed")}</div>`
+      ${empty ? html`<div class="watch-empty"><${Icon} n="blocks" cls="i-sm" />${s.note || (s.platform === "fabric" ? "Fabric server, no plugins" : "No plugins installed")}</div>`
         : loadingUps ? html`<${Skel} w="80%" h=${8} /><${Skel} w="66%" h=${8} />`
         : n ? ups.slice(0, 3).map(u => html`<div class="watch-row"><span class="n">${u.name}</span>
             <${VerArrow} from=${u.from} to=${u.to_version} compact=${true} /></div>`).concat(n > 3 ? [html`<a class="watch-more link" href=${href} aria-label=${`${n - 3} more updates on ${s.id}`}>+${n - 3} more</a>`] : [])
@@ -155,7 +155,7 @@ function ServerTile({ s, ups, loadingUps, vers, checked }) {
     </div>
     <div class="tile-foot">
       ${html`<span class="tile-plat ellipsis" title=${plural(s.plugin_count, "plugin")}>${s.platform === "velocity" ? "Velocity proxy" : html`<${Platform} p=${s.platform} mc=${s.mc_version} short=${!!s.pending_restart} />`}${s.is_source ? html` <span class="muted">· source</span>` : ""}</span>`}
-      ${s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started — restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart</span>`}
+      ${s.pending_restart && html`<span class="tag tag-warn tip" tabindex="0" data-tip="Files changed since the server last started. Restart it, then mark it restarted on the server page"><${Icon} n="rotate-ccw" />Restart</span>`}
       ${n > 0 && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => openChangeset({ server: s.id }, `Review updates on ${s.id}`)}
         aria-label=${`Review ${plural(n, "update")} on ${s.id}`}>Review ${n}<//>`}
     </div>

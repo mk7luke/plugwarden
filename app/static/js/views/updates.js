@@ -47,7 +47,7 @@ export function Updates() {
                 <${VerArrow} from=${u.from_versions} to=${u.to_version} />
                 ${u.canary_health && html`<div style="margin-top:4px" class="row wrap"><span class="small muted">Canary ${u.canary_health.server || ""}:</span><${HealthTag} h=${u.canary_health} /></div>`}
                 ${u.source?.overrides_modrinth && html`<div style="margin-top:4px"><${Tag} kind="warn" icon="triangle-alert">manual source overrides Modrinth (${u.source.overrides_modrinth.name || u.source.overrides_modrinth.slug})<//></div>`}
-                ${u.source?.manual && !u.source?.auto_apply && html`<div class="small muted" style="margin-top:2px">Manual source — never applied automatically</div>`}
+                ${u.source?.manual && !u.source?.auto_apply && html`<div class="small muted" style="margin-top:2px">Manual source, never applied automatically</div>`}
                 <${CompatSummary} u=${u} mcOf=${mcOf} />
                 <${Changelog} r=${u} />
               </div>

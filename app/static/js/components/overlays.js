@@ -87,6 +87,7 @@ const NAV = [
   ["Dashboard", "#/dashboard", "layout-dashboard", "g d"],
   ["Servers", "#/servers", "server", "g s"],
   ["Plugins matrix", "#/plugins", "grid-3x3", "g p"],
+  ["Stats", "#/stats", "chart-column", "g t"],
   ["Updates", "#/updates", "circle-arrow-up", "g u"],
   ["Deploy", "#/deploy", "rocket", "g y"],
   ["Activity", "#/activity", "history", "g a"],
@@ -247,7 +248,7 @@ export function Dock() {
   return html`<section class=${"dock" + (j.min ? " min" : "")} aria-label="Running job">
     <div class="dock-head">
       ${running ? html`<${Icon} n="loader-circle" cls="spin t-info" /> ` : failed ? html`<${Icon} n="circle-x" cls="outcome-failed" />` : html`<${Icon} n="circle-check" cls="outcome-changed" />`}
-      <div class="grow"><b>${j.title}</b><div class="sub">${running && (j.job?.status || j.status) === "queued" ? "Queued — waiting for another job to finish" : running ? (j.progress?.total ? `${j.progress.done} of ${j.progress.total} done` : "Running…") : j.job?.summary || j.status} · <span class="mono">${j.id}</span>${jobs.length > 1 ? ` · +${jobs.length - 1} more` : ""}</div></div>
+      <div class="grow"><b>${j.title}</b><div class="sub">${running && (j.job?.status || j.status) === "queued" ? "Queued, waiting for another job to finish" : running ? (j.progress?.total ? `${j.progress.done} of ${j.progress.total} done` : "Running…") : j.job?.summary || j.status} · <span class="mono">${j.id}</span>${jobs.length > 1 ? ` · +${jobs.length - 1} more` : ""}</div></div>
       ${!running && j.undoUntil && html`<${DockUndo} j=${j} />`}
       <a class="btn btn-ghost btn-sm" href=${`#/activity/${j.id}`}>Details</a>
       <${Btn} kind="ghost" size="sm" icon=${j.min ? "chevron-down" : "minus"} aria-label=${j.min ? "Expand log" : "Minimise log"} onClick=${() => toggleJobMin(j.id)} />
@@ -263,7 +264,7 @@ export function Dock() {
 // "?" — keyboard shortcut sheet.
 const KEYS = [
   [["Ctrl", "K"], "Command palette (also /)"],
-  [["G", "D / S / P / U / Y / A"], "Go to Dashboard, Servers, Plugins, Updates, Deploy, Activity"],
+  [["G", "D / S / P / T / U / Y / A"], "Go to Dashboard, Servers, Plugins, Stats, Updates, Deploy, Activity"],
   [["G", ","], "Go to Settings"],
   [["J", "K"], "Next / previous tile or list row"],
   [["Enter"], "Open the focused item"],

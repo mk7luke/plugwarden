@@ -6,7 +6,7 @@
 
 Plugin management for Minecraft networks that run on [CubeCoders AMP](https://cubecoders.com/AMP).
 
-<img src="docs/screenshots/dashboard.png" alt="PlugWarden dashboard showing 24 plugins with updates across 10 servers" width="100%" />
+<img src="docs/screenshots/stats.png" alt="PlugWarden Stats page: a freshness gauge at 69%, update lag, freshness by server and waiting updates" width="100%" />
 
 </div>
 
@@ -41,6 +41,14 @@ AMP 2.7 added a Store for installing plugins into an instance. It's good at that
 ### Dashboard
 
 Each server gets a tile listing what's outdated (current version and latest version), whether it's drifted from the rest of the network, whether it needs a restart, and whether any plugin failed to start. The headline at the top sums up the network and shows what changed since your last visit.
+
+<img src="docs/screenshots/dashboard.png" alt="Dashboard with one tile per server showing outdated plugins" width="100%" />
+
+### Stats
+
+The Stats page shows how your network is doing over time, using data that's already on disk. It covers how many installs are current, how long updates take to reach your servers after they're released, how long waiting updates have been available, which servers are furthest behind, a year of plugin changes as a daily heatmap and weekly bars, where your plugins come from, which plugins are shared most, and how much disk the jars and backups use.
+
+Install dates come from the jar files themselves, so the history goes back as far as your plugins do, even on a fresh install of PlugWarden. Every chart can be read with the keyboard and has a data table behind it, and charts that don't have enough data yet stay hidden instead of showing something made up.
 
 ### Plugin matrix
 

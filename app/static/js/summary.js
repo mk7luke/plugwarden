@@ -24,7 +24,7 @@ export const updateDetail = (c) => c.plugins ? `${plural(c.installs, "install")}
 // Servers needing a restart: [{server, since?, causes?}]
 export const restartList = (ov) => ov?.restart_checklist || [];
 
-// "46 of 78 jars identified · checked 4m ago" — the counts half of check_summary is shown by the headline.
+// "41 of 68 plugins identified · checked 4m ago" — the counts half of check_summary is shown by the headline.
 export function checkLine(ov) {
   const identified = (ov?.check_summary || "").split(" · ").slice(1).join(" · ");
   return [identified, ov?.last_check ? `checked ${relTime(ov.last_check)}` : "never checked"].filter(Boolean).join(" · ");

@@ -60,7 +60,7 @@ export function CanaryStatus({ au, compact }) {
   if (compact) {
     if (!held.length) return null;
     return html`<p class="hl-canary-fail"><${Icon} n="circle-x" cls="i-sm" /><b>Canary check failed:</b>
-      ${held.map(h => `${pname(h)} ${h.version} on ${h.server}`).join(", ")} — held back from the other servers
+      ${held.map(h => `${pname(h)} ${h.version} on ${h.server}`).join(", ")}, held back from the other servers
       <a class="link" href="#/updates">View log</a></p>`;
   }
   return html`<div class="canary">
@@ -71,7 +71,7 @@ export function CanaryStatus({ au, compact }) {
       ${st === "healthy" && r.soak_hours_left > 0 && html`<span class="small muted">${Math.ceil(r.soak_hours_left)} h soak left</span>`}
       ${(st === "failed" || st === "warning") && html`<div class="canary-ex"><${Cause} cause=${r.canary_health?.cause} server=${r.server} /><${Excerpt} ...${ex(r.canary_health)} label=${r.canary_health?.reason || "Why it was held"} /></div>`}
     </li>`; })}</ul>`}
-    ${held.length > 0 && html`<div class="field-label" style="margin-top:8px">Held — never auto-applied</div>
+    ${held.length > 0 && html`<div class="field-label" style="margin-top:8px">Held, never auto-applied</div>
     <ul>${held.map(h => html`<li><span class="grow"><b>${pname(h)} ${h.version}</b> <span class="muted">failed on ${h.server} ${relTime(h.at)}</span></span>
       <${Tag} kind="danger" icon="circle-x">held<//>
       <div class="canary-ex"><${Excerpt} ...${ex(h)} label=${h.reason || "Log excerpt"} /></div></li>`)}</ul>`}
@@ -127,7 +127,7 @@ function group(issues) {
   return out.filter(i => !DECOR.test(i.reason || ""));
 }
 
-export function KnownIssues({ issues, notices, title = "Known issues on this server", sub = "seen in earlier starts — not caused by recent changes" }) {
+export function KnownIssues({ issues, notices, title = "Known issues on this server", sub = "seen in earlier starts, not caused by recent changes" }) {
   const [showWarn, setShowWarn] = useState(false);
   const [wid] = useState(() => "kw-" + Math.random().toString(36).slice(2, 8));
   issues = issues || [];
@@ -141,7 +141,7 @@ export function KnownIssues({ issues, notices, title = "Known issues on this ser
   const errors = merged.filter(i => levelOf(i) === "error"), warnings = merged.filter(i => levelOf(i) !== "error");
   const nagPlugins = [...new Set(nags.map(i => i.name).filter(Boolean))];
   if (!merged.length && !nagPlugins.length) return null;
-  const row = (i) => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b> — ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
+  const row = (i) => html`<li><span class="small"><b>${i.name || pname(i) || "Server"}</b>: ${i.reason}${i.n > 1 ? html` <span class="muted">×${i.n}</span>` : ""}</span>
       ${i.seen_in_runs > 1 && html`<span class="small muted"> · in the last ${i.seen_in_runs} starts</span>`}
       <${Excerpt} ...${ex(i)} label=${i.extra ? `Log excerpt (+${plural(i.extra, "line")})` : "Log excerpt"} /></li>`;
   return html`<section class="known" aria-label=${title}>
@@ -152,7 +152,7 @@ export function KnownIssues({ issues, notices, title = "Known issues on this ser
       : html`<button type="button" class="linkbtn small known-more" aria-expanded=${showWarn ? "true" : "false"} aria-controls=${wid} onClick=${() => setShowWarn(v => !v)}>
           <${Icon} n="chevron-right" cls=${"i-xs" + (showWarn ? " rot90" : "")} />${showWarn ? "Hide" : "Show"} ${plural(warnings.length, "warning")}</button>
         <ul class="known-warn" id=${wid} hidden=${!showWarn}>${warnings.map(row)}</ul>`)}
-    ${nagPlugins.length > 0 && html`<p class="small muted known-nag"><${Icon} n="circle-arrow-up" cls="i-xs" />${plural(nagPlugins.length, "plugin")} announce${nagPlugins.length === 1 ? "s" : ""} updates in ${nagPlugins.length === 1 ? "its" : "their"} logs (${nagPlugins.slice(0, 4).join(", ")}${nagPlugins.length > 4 ? ` +${nagPlugins.length - 4}` : ""}) — <a class="link" href="#/updates">see Updates</a></p>`}
+    ${nagPlugins.length > 0 && html`<p class="small muted known-nag"><${Icon} n="circle-arrow-up" cls="i-xs" />${plural(nagPlugins.length, "plugin")} announce${nagPlugins.length === 1 ? "s" : ""} updates in ${nagPlugins.length === 1 ? "its" : "their"} logs (${nagPlugins.slice(0, 4).join(", ")}${nagPlugins.length > 4 ? ` +${nagPlugins.length - 4}` : ""}). <a class="link" href="#/updates">See Updates</a></p>`}
   </section>`;
 }
 // The failure's own log line is already the card's excerpt; don't list it again as "also logged".
@@ -168,7 +168,7 @@ export function ServerKnownIssues({ server }) {
   return html`${failing.length > 0 && html`<section class="known is-failing" aria-label="Plugins failing at startup">
       <div class="row" style="gap:8px"><${Icon} n="circle-x" cls="i-sm" /><b class="small">${plural(failing.length, "plugin")} ${failing.some(p => p.running === false) ? "not running" : "failed to start"} after the last start</b>
         <span class="small muted">${q.data.restarted_at ? `started ${relTime(q.data.restarted_at)}` : ""}</span></div>
-      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b> — ${p.reason}${p.preexisting && !/every start/.test(p.reason || "") ? " (on every start)" : ""}</span>
+      <ul>${failing.map(p => html`<li><span class="small"><b>${pname(p)}</b>: ${p.reason}${p.preexisting && !/every start/.test(p.reason || "") ? " (on every start)" : ""}</span>
         ${p.running === false && html` <${Tag} kind="danger">Not running<//>`}<${Cause} cause=${p.cause} server=${server} /><${Excerpt} ...${ex(p)} />
         ${related(p).map(i => html`<div class="related small"><span class="muted">Also logged:</span> ${i.reason}${i.repeats > 1 ? ` ×${i.repeats}` : ""}
           <${Excerpt} ...${ex(i)} label=${(i.group_size || 1) > 1 ? `Log excerpt (+${plural(i.group_size - 1, "line")})` : "Log excerpt"} /></div>`)}</li>`)}</ul>
@@ -188,7 +188,7 @@ export function StartupCheck({ server, since, auto }) {
   if (!st) return html`<${Btn} size="sm" icon="scroll-text" onClick=${run}>Check plugin startup<//>`;
   if (st === "loading") return html`<div class="startup"><${Skel} w="60%" /><${Skel} w="40%" /></div>`;
   if (st instanceof Error) return html`<div class="startup small" style="color:var(--danger)">Couldn't read ${server}'s log: ${st.message} <button type="button" class="linkbtn" onClick=${run}>Retry</button></div>`;
-  if (st.restarted === false) return html`<div class="startup small muted"><${Icon} n="clock" cls="i-xs" />${server} hasn't restarted since the change — restart it, then check again.
+  if (st.restarted === false) return html`<div class="startup small muted"><${Icon} n="clock" cls="i-xs" />${server} hasn't restarted since the change. Restart it, then check again.
     <button type="button" class="linkbtn" onClick=${run}>Check again</button></div>`;
   const plugins = st.plugins || [];
   const c = st.counts || {};
@@ -204,7 +204,7 @@ export function StartupCheck({ server, since, auto }) {
       <span class="small muted">${st.restarted_at ? `restarted ${relTime(st.restarted_at)}` : "no restart found in the logs"}${st.startup_complete ? " · finished starting" : st.restarted_at ? " · still starting" : ""}</span>
       <button type="button" class="linkbtn" onClick=${run}>Refresh</button></div>
     ${plugins.length > 0 && html`<ul class="startup-list">${plugins.map(p => html`<li><span class="grow">${pname(p)} ${p.version || ""}</span>
-      <${HealthTag} h=${p} />${p.status === "failed" && p.preexisting && html`<${Tag} title="This failure also happened on earlier starts — not caused by this change">on every start<//>`}
+      <${HealthTag} h=${p} />${p.status === "failed" && p.preexisting && html`<${Tag} title="This failure also happened on earlier starts. It wasn't caused by this change">on every start<//>`}
       ${p.status === "healthy" && (p.preexisting_errors || []).length > 0 && html`<span class="small muted">known issues</span>`}
       ${lines(p.excerpt) && p.status !== "healthy" && html`<div class="canary-ex"><${Excerpt} ...${ex(p)} label=${p.reason || "Log excerpt"} /></div>`}</li>`)}</ul>`}
     <${KnownIssues} issues=${knownIssues(st)} notices=${updateNotices(st)} title="Known issues (already there before)" />

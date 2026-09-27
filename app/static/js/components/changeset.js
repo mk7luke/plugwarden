@@ -110,17 +110,17 @@ function Changeset({ cs }) {
   <aside class=${"sheet" + (!jobId && plan && rows.length <= 5 ? " is-small" : "")} role="dialog" aria-modal="true" aria-labelledby="cs-t" ref=${ref} tabindex="-1">
     <header class="sheet-head">
       <div class="grow"><h2 id="cs-t">${done ? (jobTone(job) === "ok" ? "Updates applied" : "Update finished with problems") : running ? "Applying updates…" : cs.title}</h2>
-        <p class="small muted">${jobId ? html`<a class="link" href=${`#/activity/${jobId}`} onClick=${close}>Job details</a>` : "Exactly these changes will be applied — nothing else."}</p></div>
+        <p class="small muted">${jobId ? html`<a class="link" href=${`#/activity/${jobId}`} onClick=${close}>Job details</a>` : "Exactly these changes will be applied, nothing else."}</p></div>
       <${Btn} kind="ghost" icon="x" aria-label="Close" onClick=${close} />
     </header>
     ${jobId ? html`<${Result} live=${live} job=${job} running=${running} rows=${rows} onClose=${close} />`
       : html`<div class="sheet-body">
       ${err ? html`<div style="padding:16px"><${ErrorState} title="Couldn't build the changeset" error=${err} retry=${() => setN(n + 1)} /></div>`
-        : !plan ? html`<div class="stack" style="padding:16px" aria-busy="true"><span class="small muted">Building plan — resolving downloads and compatibility…</span>${Array.from({ length: 6 }, () => html`<${Skel} h=${28} />`)}</div>`
+        : !plan ? html`<div class="stack" style="padding:16px" aria-busy="true"><span class="small muted">Building plan: resolving downloads and compatibility…</span>${Array.from({ length: 6 }, () => html`<${Skel} h=${28} />`)}</div>`
         : !rows.length ? html`<${Empty} ok icon="circle-check" title="Nothing to update">Every plugin in this scope is on its latest compatible version.<//>`
         : html`${(plan.warnings || []).map(w => html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${w}</div>`)}
           ${skipped.length > 0 && html`<details class="cs-skipped"><summary>${plural(skipped.length, "update")} left out of this plan</summary>
-            <ul>${skipped.map(k => html`<li><b>${k.name || k.key}</b>${k.server ? ` on ${k.server}` : ""} — <span class="muted">${k.reason || k.detail || "skipped"}</span></li>`)}</ul></details>`}
+            <ul>${skipped.map(k => html`<li><b>${k.name || k.key}</b>${k.server ? ` on ${k.server}` : ""}: <span class="muted">${k.reason || k.detail || "skipped"}</span></li>`)}</ul></details>`}
           <div class="cs-bar">
             <${Check} label="Include all" checked=${!excluded.size} indeterminate=${excluded.size > 0 && included.length > 0} onChange=${v => toggle(rows.map(r => r.row_id), v)}><span class="small">All</span><//>
             <span class="spacer"></span>
@@ -140,7 +140,7 @@ function Changeset({ cs }) {
           ? html`<span style="color:var(--warn)">${[tot.compatWarn && `${plural(tot.compatWarn, "change")} not listed for its server's MC version`, tot.unverified && `${tot.unverified} without a verified hash`].filter(Boolean).join(" · ")}</span>`
           : html`<${Icon} n="check" cls="i-xs" />All compatible · all hashes verified`}</div>` : ""}</div>
       <${Btn} onClick=${close}>Cancel<//>
-      <${Btn} kind=${applyErr?.status === 409 ? "" : "primary"} icon="circle-arrow-up" disabled=${!plan || !tot.changes || applyErr?.status === 409} title=${applyErr?.status === 409 ? "Re-plan first — this plan is out of date" : undefined} onClick=${apply} data-autofocus>Apply ${plural(tot.changes, "change")}<//>
+      <${Btn} kind=${applyErr?.status === 409 ? "" : "primary"} icon="circle-arrow-up" disabled=${!plan || !tot.changes || applyErr?.status === 409} title=${applyErr?.status === 409 ? "Re-plan first. This plan is out of date" : undefined} onClick=${apply} data-autofocus>Apply ${plural(tot.changes, "change")}<//>
     </footer>`}
   </aside>`;
 }

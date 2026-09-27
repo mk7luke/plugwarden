@@ -40,7 +40,7 @@ export function Activity({ id, tab }) {
     if (!id && kind !== "access" && list.length && matchMedia("(min-width: 1280px)").matches) navigate(`#/activity/${list[0].id}`, { replace: true });
   }, [id, list.length, kind]);
 
-  return html`<${PageHead} title="Activity" sub="Every update, deploy and undo — who ran it, what changed, and the full log." />
+  return html`<${PageHead} title="Activity" sub="Every update, deploy and undo: who ran it, what changed, and the full log." />
     <div class="toolbar"><div class="seg" role="group" aria-label="Filter by kind">
       ${kinds.map(([k, l]) => html`<button type="button" aria-pressed=${kind === k ? "true" : "false"} onClick=${() => setKind(k)}>${l}${q.data ? html` <span class="muted num">${count(k)}</span>` : ""}</button>`)}
       <button type="button" aria-pressed=${kind === "access" ? "true" : "false"} onClick=${() => setKind("access")} title="Who viewed config diffs and changed settings, pins, ignores, sources and uploads"><${Icon} n="eye" cls="i-xs" />Audit</button></div>
@@ -55,7 +55,7 @@ export function Activity({ id, tab }) {
           : html`<div class="job-list" role="list">${list.map(j => html`<a class="job-row" role="listitem" data-nav href=${`#/activity/${j.id}`} aria-current=${selected === j.id ? "true" : undefined}>
               <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${isActive(j.status) ? "loader-circle" : KIND_ICON[j.kind] || "terminal"} cls=${"i-xs" + (isActive(j.status) ? " spin" : "")} /></span>
               <div style="min-width:0"><div class=${"t" + (reverted(j) ? " is-reverted" : "")}>${jobTitle(j)}${j.dry_run ? html` <span class="tag" style="vertical-align:1px">dry run</span>` : ""}${reverted(j) ? html` <span class="tag" style="vertical-align:1px">Reverted</span>` : j.undo_failed_by ? html` <span class="tag tag-danger" style="vertical-align:1px">Undo failed</span>` : ""}</div>
-                <div class="m"><span class="ellipsis">${jobSummary(j) || (isActive(j.status) ? "In progress…" : "—")}</span></div>
+                <div class="m"><span class="ellipsis">${jobSummary(j) || (isActive(j.status) ? "In progress…" : "–")}</span></div>
                 <div class="m"><span class="ellipsis">${j.user || "system"}</span>${j.servers?.length ? html`·<span>${plural(j.servers.length, "server")}</span>` : ""}${!["done", "undone"].includes(j.status) ? html`·<span class=${jobTone(j) === "danger" ? "outcome-error" : ""}>${j.status}</span>` : ""}</div></div>
               <span class="when" title=${absTime(j.started || j.created)}>${relTime(j.started || j.created)}</span>
             </a>`)}</div>`}
@@ -129,7 +129,7 @@ function AccessLog() {
     const d = dayLabel(e.last_seen || e.at);
     if (d !== lastDay) { rows.push(html`<tr class="day-row"><th colspan="5" scope="colgroup">${d}</th></tr>`); lastDay = d; }
     rows.push(html`<tr><td class="small muted" title=${absTime(e.last_seen || e.at)} style="white-space:nowrap">${hhmm(e.last_seen || e.at)}</td><td>${e.user}</td>
-      <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "—"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · ${span(e)}` : ""}</span></div></td>
+      <td><div class="cell-name"><span class="mono small">${e.path || e.target || e.key || "–"}</span><span class="small muted">${ACTION_LABEL[e.action] || e.action}${e.count > 1 ? ` ×${e.count} · ${span(e)}` : ""}</span></div></td>
       <td class="hide-sm small">${(e.servers || []).join(" → ")}</td><td class="hide-md small muted audit-change" title=${change(e)}>${change(e)}</td></tr>`);
   }
   return html`<div class="toolbar">
@@ -155,7 +155,7 @@ function JobDetail({ id }) {
   const [busy, setBusy] = useState(false);
   const [checkAll, setCheckAll] = useState(false);
   useEffect(() => { if (live && !isActive(live.status)) q.reload(); }, [live?.status]);
-  if (q.error) return html`<div class="panel"><div class="panel-body">${q.error.status === 404 ? html`<${Empty} icon="history" title="Job not found">No job with id <span class="mono">${id}</span> — it may have been pruned. <a class="link" href="#/activity">See all activity</a><//>` : html`<${ErrorState} error=${q.error} retry=${q.reload} />`}</div></div>`;
+  if (q.error) return html`<div class="panel"><div class="panel-body">${q.error.status === 404 ? html`<${Empty} icon="history" title="Job not found">No job with id <span class="mono">${id}</span>. It may have been pruned. <a class="link" href="#/activity">See all activity</a><//>` : html`<${ErrorState} error=${q.error} retry=${q.reload} />`}</div></div>`;
   if (q.loading) return html`<div class="panel"><div class="panel-body stack"><${Skel} w="60%" h=${16} /><${Skel} w="40%" /><${Skel} w="50%" /><${Skel} h=${120} /></div></div>`;
   const j = q.data;
   if (!j) return html`<div class="panel"><${Empty} icon="scroll-text" title="Job not found">It may have been pruned from history.<//></div>`;
@@ -183,10 +183,10 @@ function JobDetail({ id }) {
 
   return html`<article class=${"panel" + (reverted(j) ? " is-reverted" : "")} aria-labelledby="jd-h">
     ${(j.undo_failed_by || j.undo_error) && !reverted(j) && html`<div class="reverted-banner is-failed" role="alert"><${Icon} n="circle-x" cls="i-sm" />
-      <span class="grow">Undo failed${j.undo_error ? ` — ${j.undo_error}` : ""}.</span>
+      <span class="grow">Undo failed${j.undo_error ? `: ${j.undo_error}` : ""}.</span>
       ${j.undo_failed_by && html`<a class="link" href=${`#/activity/${j.undo_failed_by}`}>View failed undo</a>`}
       ${j.undoable && html`<${Btn} size="sm" icon="undo-2" busy=${busy} onClick=${undo}>Retry undo<//>`}</div>`}
-    ${reverted(j) && html`<div class="reverted-banner" role="status"><${Icon} n="undo-2" cls="i-sm" /><span>Reverted${j.undone_at ? ` ${relTime(j.undone_at)}` : ""} — the changes below were rolled back.</span>
+    ${reverted(j) && html`<div class="reverted-banner" role="status"><${Icon} n="undo-2" cls="i-sm" /><span>Reverted${j.undone_at ? ` ${relTime(j.undone_at)}` : ""}. The changes below were rolled back.</span>
       ${j.undone_by && html`<a class="link" href=${`#/activity/${j.undone_by}`}>View undo job</a>`}</div>`}
     <div class="panel-head" style="flex-wrap:wrap">
       <span class=${"feed-icon " + jobTone(j)}><${Icon} n=${KIND_ICON[j.kind] || "terminal"} cls="i-xs" /></span>
@@ -201,7 +201,7 @@ function JobDetail({ id }) {
         <dt>Started</dt><dd>${absTime(j.started || j.created)} <span class="muted">(${relTime(j.started || j.created)})</span></dd>
         ${j.undo_of && html`<dt>Undo of</dt><dd><a class="link mono small" href=${`#/activity/${j.undo_of}`}>${j.undo_of}</a></dd>`}
         ${j.undone_by && html`<dt>Undone by</dt><dd><a class="link mono small" href=${`#/activity/${j.undone_by}`}>${j.undone_by}</a></dd>`}
-        ${j.dry_run && html`<dt>Mode</dt><dd>Dry run — nothing was changed</dd>`}
+        ${j.dry_run && html`<dt>Mode</dt><dd>Dry run, nothing was changed</dd>`}
         ${j.finished && html`<dt>Duration</dt><dd>${duration(j.started, j.finished)}</dd>`}
         ${res.length > 0 && html`<dt>Outcome</dt><dd class="row wrap" style="gap:4px">${Object.entries(tally).map(([k, n]) => html`<${Tag} kind=${j.dry_run && k === "changed" ? "update" : OUTCOME_TAG[k] || ""}>${n} ${j.dry_run && k === "changed" ? "would change" : k}<//>`)}</dd>`}
       </dl>
@@ -213,7 +213,7 @@ function JobDetail({ id }) {
     ${res.length > 0 && html`<div class="tbl-wrap" style="max-height:300px;border-top:1px solid var(--line)"><table class="tbl">
       <thead><tr><th scope="col">Server</th><th scope="col">Item</th><th scope="col">Outcome</th><th scope="col" class="hide-md">Detail</th></tr></thead>
       <tbody>${res.map(r => html`<tr><td class="strong" style="white-space:nowrap">${r.server}</td><td><span class="jar" style="max-width:200px" title=${r.item}>${r.item}</span></td>
-        <td class=${"small outcome-" + (j.dry_run && r.outcome === "changed" ? "would_change" : r.outcome)} style="font-weight:600;white-space:nowrap">${r.reason_code === "changed_since_job" ? "changed since — kept" : r.reason_code === "stopped_after_failure" ? "not restarted" : r.health_failed ? "plugins failed" : r.skipped_by_choice ? "skipped (by choice)" : j.dry_run && r.outcome === "changed" ? "would change" : r.outcome}</td><td class="hide-md small muted">${r.detail}</td></tr>`)}</tbody></table></div>`}
+        <td class=${"small outcome-" + (j.dry_run && r.outcome === "changed" ? "would_change" : r.outcome)} style="font-weight:600;white-space:nowrap">${r.reason_code === "changed_since_job" ? "changed since, kept" : r.reason_code === "stopped_after_failure" ? "not restarted" : r.health_failed ? "plugins failed" : r.skipped_by_choice ? "skipped (by choice)" : j.dry_run && r.outcome === "changed" ? "would change" : r.outcome}</td><td class="hide-md small muted">${r.detail}</td></tr>`)}</tbody></table></div>`}
     <div class="panel-head" style="border-top:1px solid var(--line);border-bottom:0"><${Icon} n="terminal" cls="i-sm" /><h3>Log</h3><span class="spacer"></span>
       <${Btn} size="sm" kind="ghost" icon="copy" onClick=${() => navigator.clipboard?.writeText(logLines.join("\n"))}>Copy<//></div>
     <${LogView} lines=${logLines} live=${running} empty="No log output." />

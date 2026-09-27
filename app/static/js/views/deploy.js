@@ -22,8 +22,8 @@ const kindOf = (e) => e.type === "dir" ? "dir" : (e.jar || /\.jar$/i.test(e.name
 // Why a server can't receive items from `src`, or null if it can.
 export function ineligible(s, src) {
   const f = familyOf(s);
-  if (f === "fabric") return "Fabric server — it has no plugins";
-  if (src && f !== familyOf(src)) return f === "velocity" ? "Velocity proxy — Bukkit plugins are never pushed here" : `A ${s.platform} server can't receive items from a ${src.platform} source`;
+  if (f === "fabric") return "Fabric server, no plugins";
+  if (src && f !== familyOf(src)) return f === "velocity" ? "Velocity proxy. Bukkit plugins are never pushed here" : `A ${s.platform} server can't receive items from a ${src.platform} source`;
   return null;
 }
 
@@ -95,7 +95,7 @@ export function Deploy({ query }) {
       const ok = await confirmDialog({
         title: `Execute ${plural(changes, "change")} and skip ${failing.length} that would fail?`,
         body: "These items can't be applied as planned. They'll be left untouched on their servers; everything else runs. Backups are kept for undo.",
-        list: failing.map(r => `${r.server}: ${r.item} — ${r.detail}`),
+        list: failing.map(r => `${r.server} · ${r.item}: ${r.detail}`),
         confirmLabel: `Execute ${changes} · skip ${failing.length}`,
       });
       if (!ok) return;
@@ -119,17 +119,17 @@ export function Deploy({ query }) {
       trackJob(r.job_id, { title: `Deploy · ${ACTIONS.find(a => a[0] === action)[1]}` });
     } catch (e) {
       toast({ kind: "err", title: e.status === 409 ? "Targets changed since this preview" : "Deploy didn't start",
-        body: e.status === 409 ? `${e.detail?.code === "has_failing" || e.code === "has_failing" ? "some items would fail" : e.conflicts.map(c => c.reason === "needs_decision" ? "a server-specific value appeared since the preview" : `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed — review it and execute again.` : e.message });
+        body: e.status === 409 ? `${e.detail?.code === "has_failing" || e.code === "has_failing" ? "some items would fail" : e.conflicts.map(c => c.reason === "needs_decision" ? "a server-specific value appeared since the preview" : `${c.server || "source"} · ${c.item}: ${c.reason}`).join("; ") || e.message}. The plan was refreshed. Review it and execute again.` : e.message });
       if (e.status === 409) setNonce(n => n + 1);
     }
   };
 
   const loadErr = servers.error || settings.error;
-  if (loadErr) return html`<${PageHead} title="Deploy" sub="Push configs, roll out jars, or remove plugins — with a dry-run plan before anything is touched." />
+  if (loadErr) return html`<${PageHead} title="Deploy" sub="Push configs, roll out jars, or remove plugins, with a dry-run plan before anything is touched." />
     <div class="panel"><div class="panel-body"><${ErrorState} error=${loadErr} retry=${() => { servers.reload(); settings.reload(); }} /></div></div>`;
 
   return html`
-    <${PageHead} title="Deploy" sub="Push configs, roll out jars, or remove plugins — with a dry-run plan before anything is touched." >
+    <${PageHead} title="Deploy" sub="Push configs, roll out jars, or remove plugins, with a dry-run plan before anything is touched." >
       ${(count > 0 || targets.size > 0) && html`<${Btn} kind="ghost" icon="x" onClick=${() => { reset(); setTargets(new Set()); history.replaceState(null, "", "#/deploy"); }}>Clear<//>`}
     <//>
     <div class="composer">
@@ -231,7 +231,7 @@ function SourceCol({ source, setSource, servers, items, setItems, setAction, aut
     </div>
     <div class="browser-tools">
       <div class="input-wrap"><${Icon} n="search" cls="i-sm" /><input class="input" type="search" placeholder="Search all files, e.g. config.yml" aria-label="Search source files" value=${filter} onInput=${e => setFilter(e.currentTarget.value)} /></div>
-      ${jarOnly && html`<p class="small jar-only-note"><${Icon} n="info" cls="i-xs" />Replace jar only works on .jar files — folders and config files are disabled.</p>`}
+      ${jarOnly && html`<p class="small jar-only-note"><${Icon} n="info" cls="i-xs" />Replace jar only works on .jar files. Folders and config files are disabled.</p>`}
       <nav class="path-bar" aria-label="Folder path" hidden=${!!q}>
         <button type="button" onClick=${() => setPath("")}>plugins</button>
         ${crumbs.map((c, i) => html`<span aria-hidden="true">/</span><button type="button" onClick=${() => setPath(crumbs.slice(0, i + 1).join("/"))}>${c}</button>`)}
@@ -291,7 +291,7 @@ function TargetCol({ source, servers, groups, targets, setTargets, action, setAc
           ${servers.filter(s => s.id !== source).map(s => {
             const why = ineligible(s, src);
             const tag = why && (familyOf(s) === "velocity" ? "proxy" : familyOf(s) === "fabric" ? "Fabric" : s.platform);
-            return html`<button type="button" class="target" aria-pressed=${targets.has(s.id) ? "true" : "false"} disabled=${!!why} title=${why || s.id} aria-label=${why ? `${s.id} — ${why}` : undefined} onClick=${() => flip(s.id)}>
+            return html`<button type="button" class="target" aria-pressed=${targets.has(s.id) ? "true" : "false"} disabled=${!!why} title=${why || s.id} aria-label=${why ? `${s.id}: ${why}` : undefined} onClick=${() => flip(s.id)}>
               <span class="tick">${targets.has(s.id) && html`<${Icon} n="check" />`}</span>${s.id}${tag && html`<span class="target-why">· ${tag}</span>`}</button>`;
           })}
           ${!servers.length && Array.from({ length: 8 }, () => html`<${Skel} w="96px" h=${28} r=${14} />`)}
@@ -373,13 +373,13 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
       <${Icon} n="triangle-alert" cls="i-sm" />
       <div><b>${force ? "Shared folders will be deleted" : "Shared folders are skipped"}</b>
         <p>Still used by installed plugins:</p>
-        <ul class="shared-list">${sharedGroups(shared).map(g => html`<li><span class="mono">${g.item}/</span> — ${g.names.join(", ")} <span class="muted">(${g.servers.join(", ")})</span></li>`)}</ul>
-        <label class="check"><input type="checkbox" checked=${force} onChange=${e => setForce(e.currentTarget.checked)} />Delete them anyway — I understand shared data will be lost</label></div>
+        <ul class="shared-list">${sharedGroups(shared).map(g => html`<li><span class="mono">${g.item}/</span>: ${g.names.join(", ")} <span class="muted">(${g.servers.join(", ")})</span></li>`)}</ul>
+        <label class="check"><input type="checkbox" checked=${force} onChange=${e => setForce(e.currentTarget.checked)} />Delete them anyway (I understand shared data will be lost)</label></div>
     </div>`}
     ${plan?.unchecked.length > 0 && html`<div class="plan-warn is-info"><${Icon} n="info" cls="i-sm" /><span>Not checked for server-specific values: ${plan.unchecked.map(w => `${w.path || "config files"} on ${w.server} (${w.reason})`).join("; ")}</span></div>`}
     ${plan?.dataWarn && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />${plan.dataWarn.message}</div>`}
     ${errors > 0 && html`<div class="plan-warn"><${Icon} n="triangle-alert" cls="i-sm" />
-      <span class="grow">${plural(errors, "item")} would fail${changes ? " — they'll be skipped if you execute" : ""}. Details below.</span>
+      <span class="grow">${plural(errors, "item")} would fail${changes ? ". They'll be skipped if you execute" : ""}. Details below.</span>
       ${removable.length > 0 && html`<button type="button" class="linkbtn" onClick=${() => onRemoveFailing(removable)}>Remove failing items</button>`}</div>`}
     <div class="plan-body">
       ${plan?.servers.some(sv => sv.rows.some(r => r.data_excluded)) && html`<div class="data-note small"><${Icon} n="shield" cls="i-sm" />
@@ -405,7 +405,7 @@ function PlanCol({ body, nonce, ready, count, targets, onExecute, action, force,
     <div class="panel-foot exec-bar" style="align-items:stretch">
       <span class="summary">${!plan ? "Execute unlocks when the plan has changes."
         : changes ? `${plural(changes, "change")} on ${plural(affected, "server")} · backed up for undo`
-        : errors ? html`<span style="color:var(--warn)">Nothing can be pushed${identity === "keep" ? " with “Keep”" : ""} — ${plural(errors, "file")} can't be applied safely. ${identity === "keep" ? "Overwrite, skip them, or remove them." : "Remove them or change the plan."}</span>`
+        : errors ? html`<span style="color:var(--warn)">Nothing can be pushed${identity === "keep" ? " with “Keep”" : ""}: ${plural(errors, "file")} can't be applied safely. ${identity === "keep" ? "Overwrite, skip them, or remove them." : "Remove them or change the plan."}</span>`
         : "Targets already match. Nothing to do."}</span>
       ${plan?.needsDecision && html`<span class="summary" style="color:var(--warn)">Choose how to handle server-specific values above.</span>`}
       <${Btn} kind=${action === "delete" ? "danger-solid" : errors ? "warn" : "primary"} size="lg" icon=${action === "delete" ? "trash-2" : "play"} disabled=${!plan || !changes || loading || plan.needsDecision} onClick=${() => onExecute(plan)}>
@@ -450,7 +450,7 @@ function PlanRow({ r, action, source, install, onInstall, idKeys = [], identity 
           ${r.reason_code === "not_installed" && !install && action !== "delete" && html`<button type="button" class="linkbtn" onClick=${onInstall}>Also install where missing</button>`}
           ${diffable && html`<button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide diff" : "Show diff"}</button>`}</span>`}
     </div>
-    ${refused && html`<div class=${"refused small" + (r.skipped_by_choice ? " by-choice" : "")}><${Icon} n=${r.skipped_by_choice ? "minus" : "circle-x"} cls="i-xs" /><div><div>${r.skipped_by_choice ? "Skipped by choice — " : ""}Nothing will be written to this file on ${r.server}.</div>
+    ${refused && html`<div class=${"refused small" + (r.skipped_by_choice ? " by-choice" : "")}><${Icon} n=${r.skipped_by_choice ? "minus" : "circle-x"} cls="i-xs" /><div><div>${r.skipped_by_choice ? "Skipped by choice. " : ""}Nothing will be written to this file on ${r.server}.</div>
       <button type="button" class="linkbtn" aria-expanded=${diff && diff !== "loading" ? "true" : "false"} onClick=${loadDiff}>${diff && diff !== "loading" ? "Hide" : "Show what Overwrite would do"}</button></div></div>`}
     ${r.delete_count > 0 && html`<${Deletions} r=${r} />`}
     ${diff && html`<${DiffView} d=${diff} />`}
@@ -470,13 +470,13 @@ function Deletions({ r }) {
 function DiffView({ d }) {
   if (d === "loading") return html`<div class="diff"><${Skel} w="60%" /><${Skel} w="45%" /></div>`;
   if (d instanceof Error) return html`<div class="diff small" style="color:var(--danger)">Couldn't load diff: ${d.message}</div>`;
-  if (d.binary) return html`<div class="diff small muted">Binary file — no text diff.</div>`;
+  if (d.binary) return html`<div class="diff small muted">Binary file, no text diff.</div>`;
   if (d.too_large) return html`<div class="diff small muted">File too large to diff.</div>`;
   const red = d.redacted || [];
-  const redNote = red.length > 0 && html`<div class="diff-note small muted"><${Icon} n="shield" cls="i-xs" />${plural(red.length, "secret value")} hidden (${[...new Set(red.map(x => x.key.replace(/ \(\d+\)$/, "")))].join(", ")})${d.redacted_changed ? " — at least one differs" : ""}</div>`;
-  const kept = d.kept_keys?.length > 0 && html`<div class="diff-note small"><${Icon} n="shield" cls="i-xs" style="color:var(--ok)" />Merged preview — keeps this server's ${d.kept_keys.join(", ")}</div>`;
-  const mergeErr = d.merge_error && html`<div class="diff-note small" style="color:var(--danger)"><${Icon} n="triangle-alert" cls="i-xs" />Can't keep this server's values here (${d.merge_error}) — this file will be refused; diff shows the raw source.</div>`;
-  if (d.identical) return html`${kept}<div class="diff small muted">${kept ? "Identical after merge" : "Identical"} — nothing would change.</div>`;
+  const redNote = red.length > 0 && html`<div class="diff-note small muted"><${Icon} n="shield" cls="i-xs" />${plural(red.length, "secret value")} hidden (${[...new Set(red.map(x => x.key.replace(/ \(\d+\)$/, "")))].join(", ")})${d.redacted_changed ? ", at least one differs" : ""}</div>`;
+  const kept = d.kept_keys?.length > 0 && html`<div class="diff-note small"><${Icon} n="shield" cls="i-xs" style="color:var(--ok)" />Merged preview: keeps this server's ${d.kept_keys.join(", ")}</div>`;
+  const mergeErr = d.merge_error && html`<div class="diff-note small" style="color:var(--danger)"><${Icon} n="triangle-alert" cls="i-xs" />Can't keep this server's values here (${d.merge_error}). This file will be refused; diff shows the raw source.</div>`;
+  if (d.identical) return html`${kept}<div class="diff small muted">${kept ? "Identical after merge" : "Identical"}. Nothing would change.</div>`;
   if (!d.diff && d.redacted_changed) return html`<div class="diff small">Only redacted values differ (${red.filter(x => x.changed).map(x => x.key).join(", ")}).</div>`;
   if (!d.target_exists) return html`<div class="diff small muted">New file on this server.</div>`;
   const lines = (d.diff || "").split("\n").filter(l => !/^(---|\+\+\+) /.test(l));
@@ -507,7 +507,7 @@ function SearchResults({ found, q, picked, toggle, open, blocked }) {
 function Val({ v }) {
   const s = String(v);
   if (s.length <= 24) return html`<span class="mono">${s}</span>`;
-  return html`<button type="button" class="val-copy mono" title=${`${s} — click to copy`} onClick=${() => { navigator.clipboard?.writeText(s); toast({ kind: "ok", title: "Value copied" }); }}>${midTrunc(s, 20)}</button>`;
+  return html`<button type="button" class="val-copy mono" title=${`${s} (click to copy)`} onClick=${() => { navigator.clipboard?.writeText(s); toast({ kind: "ok", title: "Value copied" }); }}>${midTrunc(s, 20)}</button>`;
 }
 
 // Per-file block listing keys whose value is this server's own (identity, ports, DB names…).
@@ -537,14 +537,14 @@ function IdentityBlock({ warnings, choice, setChoice, unmergeable }) {
         <tbody>${[...keys].map(([key, v]) => v.targets.map(([srv, tv, reason], i) => html`<tr>
           ${i === 0 && html`<th scope="row" rowspan=${v.targets.length} class="mono">${key}</th>`}
           <td><span class="small muted">${srv}</span> <${Val} v=${tv} />
-            ${reason === "target_only" && html`<div class="small id-why">not in the source file — overwriting drops it</div>`}
+            ${reason === "target_only" && html`<div class="small id-why">not in the source file, so overwriting drops it</div>`}
             ${reason === "complex" && html`<div class="small id-why">list or multi-line value</div>`}</td>
-          ${i === 0 && html`<td rowspan=${v.targets.length}>${v.source == null ? "—" : html`<${Val} v=${v.source} />`}</td>`}</tr>`))}</tbody></table></div>`)}
+          ${i === 0 && html`<td rowspan=${v.targets.length}>${v.source == null ? "–" : html`<${Val} v=${v.source} />`}</td>`}</tr>`))}</tbody></table></div>`)}
     <div class="id-choice" role="radiogroup" aria-label="Server-specific values" aria-required="true">
       <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "keep"} onChange=${() => { setChoice("keep"); setEditing(false); }} />
         <div><b>Keep each server's own values <span class="tag tag-ok">recommended</span></b><span>Push everything else; these keys stay as they are on every target.</span></div></label>
       <label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "overwrite"} onChange=${() => { setChoice("overwrite"); setEditing(false); }} />
-        <div><b>Overwrite with source values</b><span>Every target gets the source's values above — only if you really want them identical.</span></div></label>
+        <div><b>Overwrite with source values</b><span>Every target gets the source's values above. Use this only when you want them identical.</span></div></label>
       ${unmergeable && html`<label class="radio-card"><input type="radio" name="idchoice" checked=${choice === "keep_skip"} onChange=${() => { setChoice("keep_skip"); setEditing(false); }} />
         <div><b>Keep, and skip files that can't be merged</b><span>Files whose values can't be kept safely (lists, multi-line values) are left untouched on those servers.</span></div></label>`}
     </div>

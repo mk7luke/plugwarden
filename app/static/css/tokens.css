@@ -72,6 +72,9 @@
   --danger: #ff5d5d;   --danger-soft: rgba(255, 93, 93, .12);   --danger-line: rgba(255, 93, 93, .38);
   --muted: #80848f;    --muted-soft: rgba(128, 132, 143, .12);  --muted-line: rgba(128, 132, 143, .3);
 
+  /* chart categories (identity, never status) — fixed order, validated for CVD separation on --surface */
+  --cat-1: #22a898; --cat-2: #e8692e; --cat-3: #cf5aae; --cat-4: #7f87e0;
+
   --shadow-1: 0 1px 0 rgba(0, 0, 0, .4);
   --shadow-pop: 0 12px 32px -8px rgba(0, 0, 0, .65), 0 0 0 1px var(--line-strong);
   --scrim: rgba(4, 5, 6, .66);
@@ -109,6 +112,8 @@
   --warn: #8f5c00;     --warn-soft: rgba(196, 132, 0, .12);     --warn-line: rgba(196, 132, 0, .35);
   --danger: #c02424;   --danger-soft: rgba(213, 43, 43, .08);   --danger-line: rgba(213, 43, 43, .32);
   --muted: #6c707a;    --muted-soft: rgba(108, 112, 122, .1);   --muted-line: rgba(108, 112, 122, .28);
+
+  --cat-1: #008f80; --cat-2: #c4501a; --cat-3: #b0408f; --cat-4: #5a62c9;
 
   --shadow-1: 0 1px 2px rgba(16, 18, 24, .06);
   --shadow-pop: 0 16px 40px -12px rgba(16, 18, 24, .25), 0 0 0 1px var(--line-strong);

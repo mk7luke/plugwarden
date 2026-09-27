@@ -26,7 +26,7 @@ export function ServersList() {
               ${s.updates ? html`<${Tag} kind="update" icon="circle-arrow-up">${plural(s.updates, "update")}<//>` : s.plugin_count ? html`<${Tag} kind="ok" icon="check">Current<//>` : html`<${Tag}>No plugins<//>`}
               ${s.drift > 0 && html`<span class="tag tag-drift tip" tabindex="0" data-tip=${driftTip(s)}><${Icon} n="git-compare-arrows" />${s.drift} drift</span>`}
               ${s.pending_restart && html`<${Tag} kind="warn" icon="rotate-ccw">Restart needed<//>`}</div></td>
-            <td class="hide-md muted small">${s.is_source ? html`<${Tag} kind="plain" icon="circle-dot">Default source<//>` : s.note || (s.platform === "velocity" ? "Proxy — separate plugin ecosystem" : s.eligible_target ? "Deploy target" : "Not a target")}</td>
+            <td class="hide-md muted small">${s.is_source ? html`<${Tag} kind="plain" icon="circle-dot">Default source<//>` : s.note || (s.platform === "velocity" ? "Proxy, separate plugin ecosystem" : s.eligible_target ? "Deploy target" : "Not a target")}</td>
             <td class="col-actions"><${Icon} n="chevron-right" cls="i-sm muted" /></td>
           </tr>`)}</tbody></table></div>`}
     </div>`;
@@ -88,10 +88,10 @@ export function ServerDetail({ id }) {
       ${!plugins.error && html`<${Btn} kind="primary" icon="circle-arrow-up" disabled=${!outdated.length} aria-busy=${!plugins.data ? "true" : undefined} onClick=${() => review(outdated, `Review updates on ${id}`)}>
         ${!plugins.data ? "Review updates" : reading ? "Reading plugins…" : outdated.length ? `Review ${plural(outdated.length, "update")}` : "Nothing to update"}<//>`}
     <//>
-    ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed</b> — files changed since ${id} last started.</div>
+    ${srv?.pending_restart && html`<div class="restart-banner" role="status"><${Icon} n="rotate-ccw" cls="i-sm" /><div class="grow"><b>Restart needed.</b> Files changed since ${id} last started.</div>
       <${Btn} size="sm" icon="check" onClick=${markRestarted}>Mark restarted<//></div>`}
     ${srv && srv.plugin_count > 0 && html`<${ServerKnownIssues} server=${id} />`}
-    ${srv?.platform === "velocity" && html`<div class="plan-warn" style="border:1px solid var(--warn-line);border-radius:var(--r-md);margin-bottom:var(--s-4)"><${Icon} n="shield" cls="i-sm" />Velocity proxy — it uses a different plugin ecosystem, and Bukkit/Paper plugins are never pushed here.</div>`}
+    ${srv?.platform === "velocity" && html`<div class="plan-warn" style="border:1px solid var(--warn-line);border-radius:var(--r-md);margin-bottom:var(--s-4)"><${Icon} n="shield" cls="i-sm" />Velocity proxy. It uses a different plugin ecosystem, and Bukkit/Paper plugins are never pushed here.</div>`}
 
     <div class="toolbar">
       <div class="seg" role="group" aria-label="Filter plugins">
@@ -104,7 +104,7 @@ export function ServerDetail({ id }) {
     <div class="panel">
       ${plugins.error ? html`<div class="panel-body"><${ErrorState} error=${plugins.error} retry=${plugins.reload} /></div>`
         : plugins.loading ? html`<${SkelRows} n=${10} cols=${[4, 22, 26, 12, 12]} />`
-        : !plugins.data.length ? html`<${Empty} icon="blocks" title="No plugins on this server">${srv?.platform === "fabric" ? "This is a Fabric modded server — mods are managed outside the plugins folder." : "The plugins folder is empty."}<//>`
+        : !plugins.data.length ? html`<${Empty} icon="blocks" title="No plugins on this server">${srv?.platform === "fabric" ? "This is a Fabric modded server. Mods are managed outside the plugins folder." : "The plugins folder is empty."}<//>`
         : !rows.length ? html`<${Empty} icon="filter" title="Nothing matches" action=${html`<${Btn} size="sm" onClick=${() => { setFilter("all"); setSearch(""); }}>Clear filters<//>`}>Try another filter.<//>`
         : html`<div class="tbl-wrap"><table class="tbl tbl-plugins">
           <thead><tr>
@@ -113,19 +113,19 @@ export function ServerDetail({ id }) {
             <th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody>${rows.map(p => p.indexing ? html`<tr key=${p.key} class="is-reading"><td class="col-check"></td>
             <td><div class="cell-name"><b>${p.name}</b><span class="jar">${p.jar}</span></div></td>
-            <td class="hide-sm"><span class="ver muted">${p.version || "—"}</span></td><td class="hide-sm"></td>
+            <td class="hide-sm"><span class="ver muted">${p.version || "–"}</span></td><td class="hide-sm"></td>
             <td class="hide-sm"><span class="tag"><${Icon} n="loader-circle" cls="i-xs spin" />reading…</span></td><td class="col-actions"></td></tr>`
             : html`<tr key=${p.key} class=${sel.has(p.key) ? "is-selected" : ""}>
             <td class="col-check">${p.status === "outdated" ? html`<${Check} label=${`Select ${p.name}`} checked=${sel.has(p.key)} onChange=${v => toggle(p.key, v)} />` : null}</td>
             <td><div class="cell-name"><b>${p.name}</b><span class="jar" title=${`${p.jar} · ${bytes(p.size)} · modified ${relTime(p.mtime)}`}>${p.jar}</span>
-              <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "—"}</span><${Status} p=${p} id=${id} /></span>`}</span></div></td>
-            <td class="hide-sm"><span class="ver">${p.version || "—"}</span>
+              <span class="only-sm" style="margin-top:4px">${p.status === "outdated" ? html`<${VerArrow} from=${p.version} to=${p.latest.version} />` : html`<span class="row wrap" style="gap:6px"><span class="ver">${p.version || "–"}</span><${Status} p=${p} id=${id} /></span>`}</span></div></td>
+            <td class="hide-sm"><span class="ver">${p.version || "–"}</span>
               ${p.current_compat?.ok === false && html`<div><${Tag} kind="warn" icon="triangle-alert" title=${`${p.jar} lists ${p.current_compat.mc_versions.join(", ")}; this server runs ${p.current_compat.mc}`}>built for MC ${p.current_compat.mc_versions.slice(-1)[0]}<//></div>`}
               ${p.drift && p.expected_version && html`<div class="small" style="color:var(--drift)">network runs ${p.expected_version}</div>`}</td>
             <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
                 ${safeUrl(p.latest.changelog_url) && p.status === "outdated" && html` <a class="link small" href=${safeUrl(p.latest.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
-              : html`<span class="muted small">—</span>`}</td>
-            <td class="hide-sm">${notRunning.has(p.key) && html`<${Tag} kind="danger" icon="circle-x" title="Failed to start or disabled itself after the last server start — see the card above">Not running<//> `}<${Status} p=${p} id=${id} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
+              : html`<span class="muted small">–</span>`}</td>
+            <td class="hide-sm">${notRunning.has(p.key) && html`<${Tag} kind="danger" icon="circle-x" title="Failed to start or disabled itself after the last server start. See the card above">Not running<//> `}<${Status} p=${p} id=${id} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
             <td class="col-actions"><div class="row-actions">
               ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => review([p], `Update ${p.name} on ${id}`)} aria-label=${`Review ${p.name} update`}><span class="hide-sm">Review</span><//>`}
               <${RowMenu} p=${p} id=${id} cells=${cellsOf(p.key)} />
@@ -163,7 +163,7 @@ async function hold(p, kind, on, servers, label) {
 function RowMenu({ p, id, cells }) {
   const on = Object.keys(cells);
   const others = Object.entries(cells).filter(([s, c]) => s !== id && c.version !== p.version);
-  const netNote = others.length ? `${others.map(([s, c]) => `${s} is on ${c.version}`).join(", ")} — pinning blocks their updates but doesn't downgrade them` : "";
+  const netNote = others.length ? `${others.map(([s, c]) => `${s} is on ${c.version}`).join(", ")}. Pinning blocks their updates but doesn't downgrade them` : "";
   const [open, setOpen] = useState(false);
   const ref = useRef();
   useEffect(() => {

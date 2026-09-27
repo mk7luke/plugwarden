@@ -85,7 +85,7 @@ function RemoveDialog({ row }) {
           ${planErr ? html`<p class="small" style="color:var(--danger)">Couldn't preview the folder: ${planErr.message}</p>`
             : !plan ? html`<${Skel} w="70%" /><${Skel} w="50%" />`
             : html`<p class="small"><b>${present.length ? `${plural(files, "file")}${size != null ? ` (${bytes(size)})` : ""} in ${plural(present.length, "folder")}` : "No folder found on these servers"}</b>
-                ${present.length > 0 && html`<span class="muted"> — ${present.map(r => `${r.server} (${r.files})`).join(" · ")}</span>`}</p>
+                ${present.length > 0 && html`<span class="muted">: ${present.map(r => `${r.server} (${r.files})`).join(" · ")}</span>`}</p>
               ${needAck && html`<div class="shared-warn" role="alert">
                 <${Icon} n="triangle-alert" cls="i-sm" />
                 <div><b>Shared with ${sharedNames.join(", ")}</b>

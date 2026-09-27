@@ -15,10 +15,11 @@ import { Updates } from "./views/updates.js";
 import { Deploy } from "./views/deploy.js";
 import { Activity } from "./views/activity.js";
 import { Settings } from "./views/settings.js";
+import { Stats } from "./views/stats.js";
 import { Empty } from "./components/ui.js";
 import { relTime } from "./fmt.js";
 
-const TITLES = { dashboard: "Dashboard", servers: "Servers", plugins: "Plugins", updates: "Updates", deploy: "Deploy", activity: "Activity", settings: "Settings" };
+const TITLES = { dashboard: "Dashboard", servers: "Servers", plugins: "Plugins", stats: "Stats", updates: "Updates", deploy: "Deploy", activity: "Activity", settings: "Settings" };
 
 // "Deploy · 5m ago" for a job id, when the job list is cached.
 function jobCrumb(id) {
@@ -33,6 +34,7 @@ function view(r) {
       ? [html`<${ServerDetail} key=${r.parts[1]} id=${r.parts[1]} />`, [{ label: "Servers", href: "#/servers" }, { label: r.parts[1] }]]
       : [html`<${ServersList} />`];
     case "plugins": return [html`<${Matrix} query=${r.query} />`, null, true];
+    case "stats": return [html`<${Stats} />`];
     case "updates": return [html`<${Updates} />`];
     case "deploy": return [html`<${Deploy} query=${r.query} />`, null, true];
     case "activity":
