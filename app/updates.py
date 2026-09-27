@@ -747,6 +747,8 @@ def check(job=None) -> dict:
         cache = load_cache()
         cache["stats"] = {"jars": len(entries), "identified": n_src, "errors": errors}
         write_json(_cache_file(), cache)
+    from . import stats  # stats imports this module
+    stats.record_snapshot(counts, n_src, len(entries))
     log(summary)
     step(progress["total"])
     return {"summary": summary, "outdated": counts["installs"], "errors": errors, "counts": counts}

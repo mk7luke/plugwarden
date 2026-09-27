@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import (actions, audit, auth, config, configmerge, engine, health, inventory, jobs, plans, scheduler,
-               settings, updates, visits)
+               settings, stats, updates, visits)
 from .inventory import PathError, UnknownServer
 from .settings import SettingsError
 
@@ -284,6 +284,12 @@ def overview(request: Request):
         "indexing": inventory.indexing_state(),
         "since_last_visit": visits.since_last_visit(user_of(request), snap["pending"]),
     }
+
+
+@app.get("/api/v2/stats")
+def stats_view():
+    """Network statistics (inventory, freshness, history, lag, health, trend, footprint). Cached, no network."""
+    return stats.get(snapshot)
 
 
 @app.post("/api/v2/seen")
