@@ -118,6 +118,10 @@ async def _security(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Content-Security-Policy", "object-src 'none'; frame-ancestors 'none'; base-uri 'self'")
+    # Everything sits behind login: never let a shared cache (Cloudflare) keep a copy, and make browsers
+    # revalidate the page and its ES modules on every load (304 via ETag) so a redeploy shows up at once.
+    path = request.url.path
+    response.headers.setdefault("Cache-Control", "no-store" if path.startswith("/api/") else "no-cache, private")
     return response
 
 

@@ -550,3 +550,16 @@ def test_move_backup_survives_cross_mount_rename(env, monkeypatch):
     assert undo.status == "done", undo.results
     jars = [p["jar"] for p in inventory.list_plugins(inventory.get_server("M1-hub01")) if p["key"] == "bukkit:coreprotect"]
     assert jars == ["CoreProtect-23.1.jar"]
+
+
+def test_cache_headers_keep_deploys_fresh_and_out_of_shared_caches(env):
+    c = client_for(app)
+    page = c.get("/")
+    script = c.get("/static/js/main.js")
+    api = c.get("/api/v2/overview")
+    assert page.headers["cache-control"] == "no-cache, private"
+    assert script.status_code == 200 and script.headers["cache-control"] == "no-cache, private"
+    assert api.headers["cache-control"] == "no-store"
+    # revalidation stays cheap: an unchanged module answers 304
+    again = c.get("/static/js/main.js", headers={"If-None-Match": script.headers["etag"]})
+    assert again.status_code == 304
