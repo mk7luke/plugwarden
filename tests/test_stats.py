@@ -199,6 +199,7 @@ def test_endpoint_cached_no_network_and_invalidated(env, monkeypatch):
     calls = []
     real = main.snapshot
     monkeypatch.setattr(main, "snapshot", lambda: calls.append(1) or real())
+    monkeypatch.setattr(health, "start_refresher", lambda stop: None)  # its first pass would invalidate
     with client_for(app) as c:
         r = c.get("/api/v2/stats")
         assert r.status_code == 200
