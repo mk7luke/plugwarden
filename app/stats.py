@@ -20,7 +20,7 @@ from . import config, health, inventory, jobs, settings, updates
 from .storage import read_json, write_json
 
 MAX_AGE = 60.0             # seconds; relative values ("days behind") stay fresh enough
-HISTORY_WEEKS = 26
+HISTORY_WEEKS = 52
 HISTORY_DAYS = 365
 TREND_CAP = 400
 MIN_MTIME = datetime(2009, 1, 1, tzinfo=timezone.utc).timestamp()  # older than Bukkit: a bogus clock

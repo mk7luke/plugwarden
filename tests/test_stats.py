@@ -109,7 +109,7 @@ def test_history_from_mtimes_excludes_bogus_and_merges_jobs(env):
     _write_job("20260101-000000-000004", "update-check", job_at, [])
     h = _compute(now)["history"]
     assert h["excluded"] == 2
-    assert len(h["daily"]) == 365 and len(h["weekly"]) == 26
+    assert len(h["daily"]) == 365 and len(h["weekly"]) == 52
     assert h["daily"][-1]["date"] == datetime.fromtimestamp(now).date().isoformat()
     days = {d["date"]: d["count"] for d in h["daily"]}
     day = lambda ago: datetime.fromtimestamp(now - ago * DAY).date().isoformat()  # noqa: E731
