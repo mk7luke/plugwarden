@@ -167,8 +167,10 @@ def test_trend_snapshots_appended_by_checks_and_capped(env, monkeypatch):
     _checked(env)
     trend = _compute()["trend"]
     assert len(trend) == 2
-    assert {k: trend[-1][k] for k in ("outdated_plugins", "outdated_installs", "servers", "tracked", "total")} == \
-        {"outdated_plugins": 1, "outdated_installs": 1, "servers": 1, "tracked": 1, "total": 5}
+    assert {k: trend[-1][k] for k in ("outdated_plugins", "outdated_installs", "servers", "tracked", "total",
+                                      "current_installs", "score")} == \
+        {"outdated_plugins": 1, "outdated_installs": 1, "servers": 1, "tracked": 1, "total": 5,
+         "current_installs": 0, "score": 0.0}
     monkeypatch.setattr(stats, "TREND_CAP", 3)
     for _ in range(3):
         stats.record_snapshot({"plugins": 0, "installs": 0, "servers": 0}, 0, 0)

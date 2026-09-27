@@ -16,7 +16,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
-from . import config, health, inventory, jobs, updates
+from . import config, health, inventory, jobs, settings, updates
 from .storage import read_json, write_json
 
 MAX_AGE = 60.0             # seconds; relative values ("days behind") stay fresh enough
@@ -52,10 +52,18 @@ def load_trend() -> list[dict]:
 
 
 def record_snapshot(counts: dict, tracked: int, total: int) -> None:
-    """Append one compact point after an update check (kept to the last TREND_CAP)."""
+    """Append one compact point after an update check (kept to the last TREND_CAP). current_installs and
+    score use the freshness definitions, so trend points and the freshness section agree."""
+    st, cache = settings.load_raw(), updates.load_cache()
+    rows = {srv.id: [{"key": p["key"], "status": updates.status_for(p, srv, st, cache)[0]}
+                     for p in inventory.list_plugins(srv)] for srv in inventory.discover()}
+    c = dict.fromkeys(STATUSES, 0)
+    for status in _installs(rows).values():
+        c[status] += 1
     snap = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "outdated_plugins": counts["plugins"], "outdated_installs": counts["installs"],
-            "servers": counts["servers"], "tracked": tracked, "total": total}
+            "servers": counts["servers"], "tracked": tracked, "total": total,
+            "current_installs": c["current"], "score": _score(c)}
     write_json(_history_file(), (load_trend() + [snap])[-TREND_CAP:])
 
 
@@ -106,7 +114,7 @@ def compute(snap: dict, now: float) -> dict:
         "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"),
         "indexing": inventory.indexing_state(),
         "inventory": _inventory(snap),
-        "freshness": _freshness(snap, _installs(snap)),
+        "freshness": _freshness(snap, _installs(snap["plugins"])),
         "sources": _sources(snap),
         "history": _history(events, excluded, now),
         "lag": _lag(snap, when, now),
@@ -116,10 +124,10 @@ def compute(snap: dict, now: float) -> dict:
     }
 
 
-def _installs(snap: dict) -> dict[tuple[str, str], str]:
+def _installs(plugins: dict[str, list[dict]]) -> dict[tuple[str, str], str]:
     """(server, plugin key) -> status; duplicate jars of one plugin on a server count once (worst status)."""
     out: dict[tuple[str, str], str] = {}
-    for sid, rows in snap["plugins"].items():
+    for sid, rows in plugins.items():
         for r in rows:
             k = (sid, r["key"])
             if k not in out or STATUS_RANK[r["status"]] < STATUS_RANK[out[k]]:
