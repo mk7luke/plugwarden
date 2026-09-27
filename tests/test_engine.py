@@ -411,7 +411,7 @@ def test_remove_skips_shared_folder_unless_forced(env):
     rows = {r["item"]: r for r in job.results}
     assert rows["Essentials"]["outcome"] == "skipped"
     assert rows["Essentials"]["shared_with"] == ["EssentialsChat", "EssentialsSpawn"]
-    assert "pass force:true" in rows["Essentials"]["detail"]
+    assert "Confirm to delete it anyway." in rows["Essentials"]["detail"]
     assert (env["a"] / "Essentials").is_dir() and not (env["a"] / "EssentialsX-2.22.0.jar").exists()
     jobs.wait(actions.start_undo("t", job.id), 30)
 

@@ -72,6 +72,15 @@ def test_freshness_score_and_sources(env):
     assert hub["outdated"] == 1 and hub["pinned"] == 1 and hub["score"] == 0.0
     assert next(x for x in f["servers"] if x["id"] == "elChapo01")["score"] is None  # nothing tracked
     assert s["sources"] == {"modrinth": 1, "hangar": 0, "spiget": 0, "github": 0, "untracked": 2}
+    # the check summary counts plugins the way Stats does
+    assert main._check_summary(main.snapshot()).endswith(" · 1 of 3 plugins identified")
+
+
+def test_check_summary_wording_for_old_caches():
+    counts = {"plugins": 2, "installs": 5, "servers": 1}
+    assert updates.check_summary(68, 41, counts, 0) == \
+        "2 plugins outdated (5 installs on 1 server) · 41 of 68 plugins identified"
+    assert updates.check_summary(78, 46, counts, 1, unit="jars").endswith(" · 46 of 78 jars identified · 1 source failed")
 
 
 def test_freshness_score_counts_current(env):

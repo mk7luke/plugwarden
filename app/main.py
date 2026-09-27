@@ -397,7 +397,9 @@ def _check_summary(snap: dict) -> str | None:
     stats = snap["cache"].get("stats")
     if not stats:
         return None
-    return updates.check_summary(stats["jars"], stats["identified"], snap["counts"], stats["errors"])
+    if "plugins" in stats:
+        return updates.check_summary(stats["plugins"], stats["plugins_identified"], snap["counts"], stats["errors"])
+    return updates.check_summary(stats["jars"], stats["identified"], snap["counts"], stats["errors"], unit="jars")
 
 
 # ---------------------------------------------------------------- plugin actions

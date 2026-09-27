@@ -653,7 +653,7 @@ def delete_folder_checked(ctx: Ctx, tgt: Server, folder: str, removing_jars: set
         ctx.warnings.append({"type": "shared_folder", "server": tgt.id, "folder": folder, "shared_with": shared})
         if not force:
             return ctx.result(tgt.id, folder, "delete", "skipped",
-                              f"shared with {', '.join(shared)} — pass force:true", shared_with=shared,
+                              f"Shared with {', '.join(shared)}. Confirm to delete it anyway.", shared_with=shared,
                               files=_count_files(path), size=_tree_size(path))
         ctx.log(f"  warning: {folder} is shared with {', '.join(shared)}; deleting anyway (force)")
     delete_item(ctx, tgt, folder)
@@ -730,7 +730,7 @@ def replace_jar(ctx: Ctx, tgt: Server, new_jar: Path, install: bool, label: str 
                 dest.unlink(missing_ok=True)
             detail += "; rolled back"
         except OSError as e2:
-            detail += f"; ROLLBACK FAILED ({e2}) — use Undo on this job"
+            detail += f"; rollback failed ({e2}). Use Undo on this job to roll back."
         return ctx.result(tgt.id, item, action, "error", detail)
     if ctx.backup:
         for n in set(old_names) | {new_jar.name}:

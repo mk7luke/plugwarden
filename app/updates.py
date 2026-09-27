@@ -741,11 +741,14 @@ def check(job=None) -> dict:
         cache["first_seen"] = {k: prev_first.get(k, now) for k in sorted(outdated(entries))}
         write_json(_cache_file(), cache)
     n_src = sum(1 for e in entries.values() if e["source"])
+    plugin_keys = {e["key"] for e in entries.values()}
+    plugins_src = len({e["key"] for e in entries.values() if e["source"]})
     counts = update_counts(pending_updates())
-    summary = check_summary(len(entries), n_src, counts, errors)
+    summary = check_summary(len(plugin_keys), plugins_src, counts, errors)
     with _cache_lock:
         cache = load_cache()
-        cache["stats"] = {"jars": len(entries), "identified": n_src, "errors": errors}
+        cache["stats"] = {"jars": len(entries), "identified": n_src, "plugins": len(plugin_keys),
+                          "plugins_identified": plugins_src, "errors": errors}
         write_json(_cache_file(), cache)
     from . import stats  # stats imports this module
     stats.record_snapshot(counts, n_src, len(entries))
@@ -754,11 +757,13 @@ def check(job=None) -> dict:
     return {"summary": summary, "outdated": counts["installs"], "errors": errors, "counts": counts}
 
 
-def check_summary(jars: int, identified: int, counts: dict, errors: int) -> str:
-    """One wording everywhere: '24 plugins outdated (64 installs on 10 servers) · 46 of 78 jars identified'."""
+def check_summary(total: int, identified: int, counts: dict, errors: int, unit: str = "plugins") -> str:
+    """One wording everywhere: '24 plugins outdated (64 installs on 10 servers) · 41 of 68 plugins identified'.
+    Identified plugins are those with a source on any server, as the Stats page counts them. unit="jars"
+    words summaries of caches written before plugin counts were stored."""
     s = (f"{counts['plugins']} plugin{'s' * (counts['plugins'] != 1)} outdated "
          f"({counts['installs']} install{'s' * (counts['installs'] != 1)} on {counts['servers']} "
-         f"server{'s' * (counts['servers'] != 1)}) · {identified} of {jars} jars identified")
+         f"server{'s' * (counts['servers'] != 1)}) · {identified} of {total} {unit} identified")
     if errors:
         s += f" · {errors} source{'s' * (errors != 1)} failed"
     return s
