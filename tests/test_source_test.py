@@ -86,13 +86,15 @@ def test_plugin_rows_say_where_the_status_came_from(env):
     assert rows["bukkit:vault"]["installed_url"] is None and rows["bukkit:vault"]["stale"] is False
 
 
-def test_throttle_is_per_source_and_longer_for_github(modrinth):
+def test_throttle_is_per_provider_and_longer_for_github(modrinth):
     c = client_for(app)
     assert c.post("/api/v2/sources/test", json={"kind": "modrinth", "id": "harvest-exp", "server": "M1-hub01"}).status_code == 200
     # a different source isn't blocked by a Modrinth test, but GitHub's own window is long
     assert c.post("/api/v2/sources/test", json={"kind": "github", "id": "a/b", "server": "M1-hub01"}).status_code == 200
     updates._last_test["github"] -= updates.TEST_INTERVAL_DEFAULT + 1
     assert c.post("/api/v2/sources/test", json={"kind": "github", "id": "a/b", "server": "M1-hub01"}).status_code == 429
+    # a different id on the same provider shares the window, so cycling ids can't multiply requests
+    assert c.post("/api/v2/sources/test", json={"kind": "github", "id": "c/d", "server": "M1-hub01"}).status_code == 429
 
 
 def test_non_project_answer_is_an_error_not_a_crash(env, monkeypatch):

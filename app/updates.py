@@ -339,8 +339,8 @@ def _source_info(kind: str, sid: str, extra: dict | None = None) -> dict:
 # ---------------------------------------------------------------- testing one source before it is saved
 
 SOURCE_NAMES = {"modrinth": "Modrinth", "hangar": "Hangar", "spiget": "Spigot", "github": "GitHub"}
-# Seconds between source tests per source, so a test button can't flood an API. GitHub allows only 60
-# unauthenticated requests an hour, which update checks share.
+# Seconds between source tests, per provider (not per id: trying many ids must not multiply the request
+# rate). GitHub allows only 60 unauthenticated requests an hour, which update checks share.
 TEST_INTERVAL = {"github": 20.0}
 TEST_INTERVAL_DEFAULT = 2.0
 _test_lock = threading.Lock()
