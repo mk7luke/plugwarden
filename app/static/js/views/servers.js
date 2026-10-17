@@ -155,8 +155,9 @@ function SourceLine({ p }) {
   const s = p.source;
   if (!s || p.status === "unknown" || p.valid === false || p.descriptor_error) return null;
   const label = `${KINDS.find(k => k[0] === s.kind)?.[1] || s.kind} · ${s.slug || s.name || s.id}`;
-  const how = s.manual ? "version number compared" : "exact file match";
+  const how = s.manual ? "version number compared" : s.borrowed ? "matched on other servers" : "exact file match";
   const tip = s.manual ? `You mapped this plugin to ${label}. The status compares version numbers, which can be wrong if the project numbers releases differently.`
+    : s.borrowed ? `Modrinth doesn't recognise this jar, but copies of this plugin on other servers match ${label}. The status compares version numbers, and it's never updated automatically.`
     : `Modrinth recognised this exact jar file by its hash${p.installed_url ? ". Opens the release you have installed" : ""}.`;
   const url = safeUrl(p.installed_url) || safeUrl(s.url);
   return html`<div class="small muted" style="margin-top:2px" title=${`${tip} Checked ${relTime(p.checked_at)}.`}>
@@ -256,7 +257,7 @@ function SourceDialog() {
   useEffect(() => { testRun.current++; setTest(null); }, [p?.key, kind, id]);
   if (!p) return null;
   const close = () => setState({ mapSource: null });
-  const auto = p.source && !p.source.manual ? p.source : p.source?.overrides_modrinth ? { kind: "modrinth", ...p.source.overrides_modrinth } : null;
+  const auto = p.source && !p.source.manual && !p.source.borrowed ? p.source : p.source?.overrides_modrinth ? { kind: "modrinth", ...p.source.overrides_modrinth } : null;
   const sameAsAuto = auto && kind === "modrinth" && [auto.id, auto.slug].includes(id.trim());
   const runTest = async () => {
     const run = ++testRun.current;
@@ -284,6 +285,7 @@ function SourceDialog() {
         <h2 id="ms-t" style="gap:8px"><${Icon} n="sliders-horizontal" cls="i-sm" style="color:var(--fg-2)" />Update source for ${p.name}</h2>
         <p>Applies to ${p.name} on every server. Modrinth matches most jars automatically by file hash; map the rest here.</p>
         ${auto ? html`<p class="small"><${Icon} n="circle-check" cls="i-xs" style="color:var(--ok)" /> Modrinth matched this jar by file hash to <a class="link" href=${safeUrl(p.installed_url) || `https://modrinth.com/project/${encodeURIComponent(auto.id)}`} target="_blank" rel="noopener">${auto.name || auto.slug || auto.id}${auto.slug ? ` (${auto.slug})` : ""}</a>.${p.source?.manual ? " Your manual mapping below is used instead." : " You don't need to map it unless that match is wrong."}</p>`
+          : p.source?.borrowed ? html`<p class="small"><${Icon} n="info" cls="i-xs" /> Modrinth doesn't recognise this jar, so PlugWarden uses the project the same plugin matched on other servers (${p.source.name || p.source.slug || p.source.id}). Save a mapping only if that's wrong, or to allow automatic updates.</p>`
           : !p.source && html`<p class="small muted">No source found yet. The id below is a guess from the plugin name, so test it before saving.</p>`}
         <div class="row wrap" style="gap:10px;align-items:flex-end">
           <div class="field" style="width:140px"><label for="ms-k">Source</label>

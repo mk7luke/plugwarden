@@ -65,12 +65,13 @@ def test_freshness_score_and_sources(env):
     settings.update({"pins": {"bukkit:vault": {"version": "1.7.0", "servers": ["M1-hub01"]}}})
     s = _compute()
     f = s["freshness"]
-    # CoreProtect: outdated on M1, 24.1 on elChapo unknown to the mock; Vault pinned on M1; rest unknown
-    assert f["counts"] == {"current": 0, "outdated": 1, "unknown": 3, "pinned": 1, "ignored": 0, "total": 5}
-    assert f["score"] == 0.0 and f["last_check"]
+    # CoreProtect: outdated on M1; 24.1 on elChapo is unknown to the mock, so it borrows M1's Modrinth match
+    # and is current by version number. Vault pinned on M1; rest unknown
+    assert f["counts"] == {"current": 1, "outdated": 1, "unknown": 2, "pinned": 1, "ignored": 0, "total": 5}
+    assert f["score"] == 50.0 and f["last_check"]
     hub = next(x for x in f["servers"] if x["id"] == "M1-hub01")
     assert hub["outdated"] == 1 and hub["pinned"] == 1 and hub["score"] == 0.0
-    assert next(x for x in f["servers"] if x["id"] == "elChapo01")["score"] is None  # nothing tracked
+    assert next(x for x in f["servers"] if x["id"] == "elChapo01")["score"] == 100.0  # borrowed CoreProtect
     assert s["sources"] == {"modrinth": 1, "hangar": 0, "spiget": 0, "github": 0, "untracked": 2}
     # the check summary counts plugins the way Stats does
     assert main._check_summary(main.snapshot()).endswith(" · 1 of 3 plugins identified")
@@ -178,8 +179,8 @@ def test_trend_snapshots_appended_by_checks_and_capped(env, monkeypatch):
     assert len(trend) == 2
     assert {k: trend[-1][k] for k in ("outdated_plugins", "outdated_installs", "servers", "tracked", "total",
                                       "current_installs", "score")} == \
-        {"outdated_plugins": 1, "outdated_installs": 1, "servers": 1, "tracked": 1, "total": 5,
-         "current_installs": 0, "score": 0.0}
+        {"outdated_plugins": 1, "outdated_installs": 1, "servers": 1, "tracked": 2, "total": 5,
+         "current_installs": 1, "score": 50.0}
     monkeypatch.setattr(stats, "TREND_CAP", 3)
     for _ in range(3):
         stats.record_snapshot({"plugins": 0, "installs": 0, "servers": 0}, 0, 0)

@@ -128,6 +128,8 @@ def select_auto_rows(rows: list[dict], au: dict, canary_state: dict, canary: str
             why = "no verified hash"
         elif r.get("type") != "release":
             why = "pre-release"
+        elif src.get("borrowed"):
+            why = "this jar isn't on Modrinth (source taken from other servers)"
         elif src.get("manual") and not src.get("auto_apply"):
             why = "manual source (not enabled for auto-apply)"
         elif src.get("overrides_modrinth") and not src.get("auto_apply"):

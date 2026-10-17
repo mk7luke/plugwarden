@@ -1,4 +1,6 @@
 """Testing a source before mapping it (POST /sources/test), and where a plugin's status came from."""
+import json
+
 import httpx
 import pytest
 
@@ -112,3 +114,37 @@ def test_auto_apply_is_dropped_for_spiget(env):
     assert r.status_code == 200, r.text
     sm = c.get("/api/v2/settings").json()["source_map"]
     assert "auto_apply" not in sm["bukkit:a"] and sm["bukkit:b"]["auto_apply"] is True
+
+
+def test_unrecognised_jar_borrows_the_project_matched_on_other_servers(env, monkeypatch):
+    """M1-hub01's CoreProtect 23.1 is unknown to Modrinth; elChapo01's 24.1 matches by hash."""
+    from app import scheduler
+    src_sha = inventory.file_hash(env["src"] / "CoreProtect-24.1.jar")
+    v241 = {**VERSION, "id": "v241", "project_id": "Lu3KuzdV", "version_number": "24.1",
+            "files": [{**VERSION["files"][0], "url": "https://cdn.modrinth.com/data/Lu3KuzdV/versions/v241/cp.jar"}]}
+
+    def handler(req: httpx.Request):
+        path = req.url.path
+        if req.method == "POST" and path == "/v2/version_files":
+            hashes = json.loads(req.content)["hashes"]
+            return httpx.Response(200, json={src_sha: v241} if src_sha in hashes else {})
+        if req.method == "POST" and path == "/v2/version_files/update":
+            return httpx.Response(200, json={src_sha: v241})
+        if path == "/v2/projects":
+            return httpx.Response(200, json=[{"id": "Lu3KuzdV", "title": "CoreProtect", "slug": "coreprotect"}])
+        if path == "/v2/project/Lu3KuzdV/version":
+            return httpx.Response(200, json=[v241])
+        return httpx.Response(404, json={})
+    updates.TRANSPORT = httpx.MockTransport(handler)
+    updates.check()
+    rows = {p["key"]: p for p in client_for(app).get("/api/v2/servers/M1-hub01/plugins").json()}
+    cp = rows["bukkit:coreprotect"]
+    assert cp["source"]["borrowed"] is True and cp["source"]["slug"] == "coreprotect"
+    assert not cp["source"].get("manual") and cp["installed_url"] is None
+    assert cp["status"] == "outdated" and cp["latest"]["version"] == "24.1"
+    # never auto-applied
+    row = {"server": "M1-hub01", "key": "bukkit:coreprotect", "to_version": "24.1", "verified": True,
+           "type": "release", "published": "2020-01-01T00:00:00Z", "source": cp["source"]}
+    au = {"min_release_age_hours": 0, "canary_soak_hours": 0, "max_changes_per_run": None}
+    chosen, deferred = scheduler.select_auto_rows([row], au, {}, None, True, 1e10, {})
+    assert not chosen and "isn't on Modrinth" in deferred[0]["reason"]

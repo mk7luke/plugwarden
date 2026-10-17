@@ -704,6 +704,15 @@ def check(job=None) -> dict:
             log(f"Modrinth project lookup failed: {e}")
         step()
 
+        # A jar Modrinth doesn't recognise borrows the project its plugin matched by hash on other servers
+        # (only when that's one unambiguous project). Version numbers are compared; never auto-applied.
+        matched_pids: dict[str, set[str]] = {}
+        for g in groups.values():
+            for sha1, p in g.items():
+                if (identified.get(sha1) or {}).get("project_id") and p["key"] not in smap:
+                    matched_pids.setdefault(p["key"], set()).add(identified[sha1]["project_id"])
+        borrowed = {k: next(iter(v)) for k, v in matched_pids.items() if len(v) == 1}
+
         mapped_cache: dict[tuple, Any] = {}
         for (family, mc), plugins in groups.items():
             hashes = [h for h in plugins if h in identified]
@@ -724,6 +733,8 @@ def check(job=None) -> dict:
             for sha1, p in plugins.items():
                 ck = cache_key(sha1, family, mc)
                 mapping = smap.get(p["key"])
+                if not mapping and sha1 not in identified and p["key"] in borrowed:
+                    mapping = {"kind": "modrinth", "id": borrowed[p["key"]], "borrowed": True}
                 entry: dict[str, Any] = {"key": p["key"], "source": None, "current": None, "latest": None,
                                          "outdated": False, "error": None, "checked_at": now}
                 if sha1 in failed and (not mapping or mapping["kind"] == "modrinth"):
@@ -747,13 +758,22 @@ def check(job=None) -> dict:
                         entry["latest"] = None  # no newer compatible release; treat as current
                 elif mapping:
                     kind, sid = mapping["kind"], mapping["id"]
-                    entry["source"] = _source_info(kind, sid, {"manual": True,
-                                                               "auto_apply": bool(mapping.get("auto_apply"))})
+                    entry["source"] = _source_info(kind, sid, {"borrowed": True, **(titles.get(sid) or {})}
+                                                   if mapping.get("borrowed") else
+                                                   {"manual": True, "auto_apply": bool(mapping.get("auto_apply"))})
                     if sha1 in identified:
                         # An explicit mapping wins over a Modrinth hash match: make that visible.
                         pid = identified[sha1].get("project_id")
                         entry["source"]["overrides_modrinth"] = {"id": pid, **(titles.get(pid) or {})}
                     mk = (kind, sid, family, mc)
+                    sib = next((h for h in hashes if h not in failed
+                                and identified[h].get("project_id") == sid), None) if mapping.get("borrowed") else None
+                    if sib and mk not in mapped_cache:
+                        # Same project already looked up for this server type: reuse it, no extra request.
+                        cur = identified[sib]
+                        rel = latest_rel.get(sib)
+                        new = rel if _is_newer(rel, cur) or not latest_any.get(sib) else latest_any[sib]
+                        mapped_cache[mk] = _modrinth_latest(new or cur)
                     if mk not in mapped_cache:
                         step()
                         try:
@@ -867,7 +887,7 @@ def compat_for(compat: dict | None, srv: inventory.Server) -> dict | None:
 def installed_url(entry: dict | None) -> str | None:
     """Modrinth page of the exact release the installed jar matched by hash (None for manual sources)."""
     src, cur = (entry or {}).get("source") or {}, (entry or {}).get("current") or {}
-    if src.get("kind") != "modrinth" or src.get("manual") or not cur.get("version_id"):
+    if src.get("kind") != "modrinth" or src.get("manual") or src.get("borrowed") or not cur.get("version_id"):
         return None
     return f"https://modrinth.com/project/{src['id']}/version/{cur['version_id']}"
 
