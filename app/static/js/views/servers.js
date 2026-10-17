@@ -270,7 +270,7 @@ function SourceDialog() {
     e.preventDefault();
     setBusy(true);
     try {
-      await put("/settings", { source_map: { ...(st.data?.source_map || {}), [p.key]: { kind, id: id.trim(), ...(autoApply ? { auto_apply: true } : {}) } } });
+      await put("/settings", { source_map: { ...(st.data?.source_map || {}), [p.key]: { kind, id: id.trim(), ...(autoApply && kind !== "spiget" ? { auto_apply: true } : {}) } } });
       toast({ kind: "ok", title: `${p.name} mapped to ${KINDS.find(k => k[0] === kind)[1]}`, body: "Run an update check to fetch its latest version." });
       invalidate("/settings", "/servers", "/matrix", "/updates");
       close();
@@ -294,7 +294,8 @@ function SourceDialog() {
         </div>
         <p class="small muted">${KINDS.find(k => k[0] === kind)[2]}</p>
         <${TestResult} t=${test} p=${p} kind=${kind} />
-        <label class="check"><input type="checkbox" checked=${autoApply} onChange=${e => setAutoApply(e.currentTarget.checked)} />Allow automatic updates from this source</label>
+        ${kind === "spiget" ? html`<p class="small muted">Spigot doesn't publish checksums, so updates from it are never applied automatically. Apply them from the Updates page.</p>`
+          : html`<label class="check"><input type="checkbox" checked=${autoApply} onChange=${e => setAutoApply(e.currentTarget.checked)} />Allow automatic updates from this source</label>`}
         ${auto && !p.source?.manual && kind !== "modrinth" && html`<p class="small" style="color:var(--warn)">Saving replaces the automatic Modrinth match (${auto.name || auto.slug || auto.id}). Updates will then come from this source instead.</p>`}
         ${auto && kind === "modrinth" && !sameAsAuto && html`<p class="small" style="color:var(--warn)">A Modrinth mapping is ignored while this jar matches ${auto.name || auto.slug || auto.id} by file hash.</p>`}
       </div>

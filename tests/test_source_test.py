@@ -102,3 +102,13 @@ def test_non_project_answer_is_an_error_not_a_crash(env, monkeypatch):
     updates.TRANSPORT = httpx.MockTransport(lambda req: httpx.Response(200, json=[]))
     d = updates.test_source("modrinth", "x", "bukkit", "1.21.6")
     assert d["ok"] is False
+
+
+def test_auto_apply_is_dropped_for_spiget(env):
+    c = client_for(app)
+    r = c.put("/api/v2/settings", json={"source_map": {
+        "bukkit:a": {"kind": "spiget", "id": "1997", "auto_apply": True},
+        "bukkit:b": {"kind": "hangar", "id": "o/s", "auto_apply": True}}})
+    assert r.status_code == 200, r.text
+    sm = c.get("/api/v2/settings").json()["source_map"]
+    assert "auto_apply" not in sm["bukkit:a"] and sm["bukkit:b"]["auto_apply"] is True

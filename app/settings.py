@@ -219,8 +219,8 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 raise SettingsError(f"source_map[{k}].kind must be one of {SOURCE_KINDS}")
             sid = check_source(v.get("kind"), v.get("id"), f"source_map[{k}]")
             entry = {"kind": v["kind"], "id": sid}
-            if v.get("auto_apply") is True:
-                entry["auto_apply"] = True  # scheduler may auto-apply from this manual source
+            if v.get("auto_apply") is True and v["kind"] != "spiget":
+                entry["auto_apply"] = True  # scheduler may auto-apply from this manual source (Spiget has no hashes)
             if v.get("asset"):
                 try:
                     re.compile(str(v["asset"]))

@@ -126,9 +126,10 @@ function Sources({ d, set }) {
       <tbody>${rows.map(p => { const m = sm[p.key] || {}; return html`<tr key=${p.key}>
         <td><span class="strong">${p.name}</span>${p.family && p.family !== "bukkit" ? html` <span class="small muted">· ${p.family}</span>` : ""}</td>
         <td>${m.kind ? html`<${Tag} kind="accent" title="A manual source is used instead of the automatic match">${p.source && p.source.kind !== m.kind ? `manual · overrides ${p.source.kind}` : "manual"}<//>` : p.unknown ? html`<${Tag} icon="circle-dashed">untracked<//>` : html`<span class="row" style="gap:6px"><${Tag} kind="ok" icon="check">auto<//><span class="small muted">${p.source?.kind}</span></span>`}</td>
-        <td style="width:150px"><select class="select" style="height:28px" aria-label=${`Source for ${p.name}`} value=${m.kind || ""} onChange=${e => setMap(p.key, { ...m, kind: e.currentTarget.value })}>
+        <td style="width:150px"><select class="select" style="height:28px" aria-label=${`Source for ${p.name}`} value=${m.kind || ""} onChange=${e => { const kind = e.currentTarget.value; setMap(p.key, { ...m, kind, ...(kind === "spiget" ? { auto_apply: undefined } : {}) }); }}>
           <option value="">–</option>${KINDS.map(k => html`<option value=${k}>${k}</option>`)}</select></td>
-        <td style="width:70px;text-align:center"><${Check} label=${`Allow automatic updates for ${p.name}`} disabled=${!m.kind} checked=${!!m.auto_apply} onChange=${v => setMap(p.key, { ...m, auto_apply: v || undefined })} /></td>
+        <td style="width:70px;text-align:center">${m.kind === "spiget" ? html`<span class="muted" title="Spigot doesn't publish checksums, so updates from it are never applied automatically">–</span>`
+          : html`<${Check} label=${`Allow automatic updates for ${p.name}`} disabled=${!m.kind} checked=${!!m.auto_apply} onChange=${v => setMap(p.key, { ...m, auto_apply: v || undefined })} />`}</td>
         <td style="min-width:180px"><input class="input mono" style="height:28px" aria-label=${`Id for ${p.name}`} placeholder=${m.kind === "github" ? "owner/repo" : m.kind === "spiget" ? "resource id" : "slug"} value=${m.id || ""} disabled=${!m.kind} onInput=${e => setMap(p.key, { ...m, id: e.currentTarget.value })} /></td>
       </tr>`; })}</tbody></table></div>`}
   </div>`;
