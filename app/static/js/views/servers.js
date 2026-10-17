@@ -125,7 +125,7 @@ export function ServerDetail({ id }) {
             <td class="hide-sm">${p.latest ? html`<span class=${"ver" + (p.status === "outdated" ? " ver-new" : " muted")}>${p.latest.version}</span>
                 ${safeUrl(p.latest.changelog_url) && p.status === "outdated" && html` <a class="link small" href=${safeUrl(p.latest.changelog_url)} target="_blank" rel="noopener">Changelog<span class="sr-only"> for ${p.name} (opens in new tab)</span></a>`}`
               : html`<span class="muted small">–</span>`}</td>
-            <td class="hide-sm">${notRunning.has(p.key) && html`<${Tag} kind="danger" icon="circle-x" title="Failed to start or disabled itself after the last server start. See the card above">Not running<//> `}<${Status} p=${p} id=${id} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
+            <td class="hide-sm">${notRunning.has(p.key) && html`<${Tag} kind="danger" icon="circle-x" title="Failed to start or disabled itself after the last server start. See the card above">Not running<//> `}<${Status} p=${p} id=${id} /><${SourceLine} p=${p} />${p.source?.overrides_modrinth && html`<div><${Tag} kind="warn" icon="triangle-alert" title="A manual source_map entry is used instead of the Modrinth match for this jar">manual source overrides Modrinth (${p.source.overrides_modrinth.name || p.source.overrides_modrinth.slug})<//></div>`}</td>
             <td class="col-actions"><div class="row-actions">
               ${p.status === "outdated" && html`<${Btn} size="sm" icon="circle-arrow-up" onClick=${() => review([p], `Update ${p.name} on ${id}`)} aria-label=${`Review ${p.name} update`}><span class="hide-sm">Review</span><//>`}
               <${RowMenu} p=${p} id=${id} cells=${cellsOf(p.key)} />
@@ -146,8 +146,23 @@ function Status({ p, id }) {
   const where = (scope) => scope === "*" ? "network-wide" : Array.isArray(scope) && scope.length > 1 ? `on ${plural(scope.length, "server")}` : "this server";
   if (p.status === "pinned") return html`<${Tag} kind="plain" icon="pin" title=${`Pinned ${where(p.pin_scope)}`}>Pinned ${p.pinned_version || p.version} · ${where(p.pin_scope)}<//>`;
   if (p.status === "ignored") return html`<${Tag} kind="plain" icon="eye-off">Ignored · ${where(p.ignore_scope)}<//>`;
-  if (p.status === "unknown") return html`<button type="button" class="tag tag-btn" onClick=${() => setState({ mapSource: p })} aria-label=${`No update source for ${p.name}. Map one`}><${Icon} n="circle-dashed" />No source · Map</button>`;
+  if (p.status === "unknown") return html`<button type="button" class="tag tag-btn" onClick=${() => setState({ mapSource: { ...p, server: id } })} aria-label=${`No update source for ${p.name}. Map one`}><${Icon} n="circle-dashed" />No source · Map</button>`;
   return html`<${StatusTag} status=${p.status} />`;
+}
+
+// Where the status came from, so "Up to date" can be checked by hand. Uses saved check data only.
+function SourceLine({ p }) {
+  const s = p.source;
+  if (!s || p.status === "unknown" || p.valid === false || p.descriptor_error) return null;
+  const label = `${KINDS.find(k => k[0] === s.kind)?.[1] || s.kind} · ${s.slug || s.name || s.id}`;
+  const how = s.manual ? "version number compared" : "exact file match";
+  const tip = s.manual ? `You mapped this plugin to ${label}. The status compares version numbers, which can be wrong if the project numbers releases differently.`
+    : `Modrinth recognised this exact jar file by its hash${p.installed_url ? ". Opens the release you have installed" : ""}.`;
+  const url = safeUrl(p.installed_url) || safeUrl(s.url);
+  return html`<div class="small muted" style="margin-top:2px" title=${`${tip} Checked ${relTime(p.checked_at)}.`}>
+    ${url ? html`<a class="link" href=${url} target="_blank" rel="noopener">${label}<${Icon} n="external-link" cls="i-xs" /><span class="sr-only"> (opens in new tab)</span></a>` : label} · ${how}
+    ${p.stale && html`<div style="color:var(--warn)"><${Icon} n="triangle-alert" cls="i-xs" /> last check failed, showing the result from ${relTime(p.checked_at)}</div>`}
+  </div>`;
 }
 
 async function hold(p, kind, on, servers, label) {
@@ -196,7 +211,7 @@ function RowMenu({ p, id, cells }) {
     ignoredHere && net(p.ignore_scope)
       ? [`Track updates again everywhere`, "eye", () => hold(p, "ignore", false, "*", `Tracking ${p.name} everywhere again`)]
       : !ignoredHere && [`Ignore updates network-wide`, "eye-off", () => hold(p, "ignore", true, "*", `Ignoring updates for ${p.name} network-wide`)],
-    [p.source ? "Change update source…" : "Map update source…", "sliders-horizontal", () => setState({ mapSource: p })],
+    [p.source ? "Change update source…" : "Map update source…", "sliders-horizontal", () => setState({ mapSource: { ...p, server: id } })],
   ].filter(Boolean);
   return html`<div class="menu-wrap" ref=${ref}>
     <${Btn} size="sm" kind="ghost" icon="ellipsis" aria-haspopup="menu" aria-expanded=${open ? "true" : "false"} aria-label=${`More actions for ${p.name}`} onClick=${() => setOpen(!open)} />
@@ -217,13 +232,16 @@ function SourceDialog() {
   const [id, setId] = useState("");
   const [autoApply, setAutoApply] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [test, setTest] = useState(null);  // {busy} | result of POST /sources/test, for the current kind+id
+  const testRun = useRef(0);               // bumped on every change, so a late answer for old input is dropped
   const ref = useRef();
   // Form values follow the stored mapping (and refresh once settings load)…
   useEffect(() => {
     if (!p) return;
     const cur = st.data?.source_map?.[p.key];
-    setKind(cur?.kind || "modrinth");
-    setId(cur?.id || p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const found = p.source && !p.source.manual ? p.source : null;  // automatic Modrinth match
+    setKind(cur?.kind || found?.kind || "modrinth");
+    setId(cur?.id || found?.slug || found?.id || p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     setAutoApply(!!cur?.auto_apply);
   }, [p?.key, st.data]);
   // …while focus handling runs once per opening, so the opener is remembered correctly.
@@ -235,8 +253,19 @@ function SourceDialog() {
     document.addEventListener("keydown", k);
     return () => { document.removeEventListener("keydown", k); restoreFocus(prev); };
   }, [p?.key]);
+  useEffect(() => { testRun.current++; setTest(null); }, [p?.key, kind, id]);
   if (!p) return null;
   const close = () => setState({ mapSource: null });
+  const auto = p.source && !p.source.manual ? p.source : p.source?.overrides_modrinth ? { kind: "modrinth", ...p.source.overrides_modrinth } : null;
+  const sameAsAuto = auto && kind === "modrinth" && [auto.id, auto.slug].includes(id.trim());
+  const runTest = async () => {
+    const run = ++testRun.current;
+    setTest({ busy: true });
+    let res;
+    try { res = await post("/sources/test", { kind, id: id.trim(), server: p.server }); }
+    catch (err) { res = { ok: false, error: err.message }; }
+    if (run === testRun.current) setTest(res);
+  };
   const save = async (e) => {
     e.preventDefault();
     setBusy(true);
@@ -254,17 +283,33 @@ function SourceDialog() {
       <div class="dialog-body">
         <h2 id="ms-t" style="gap:8px"><${Icon} n="sliders-horizontal" cls="i-sm" style="color:var(--fg-2)" />Update source for ${p.name}</h2>
         <p>Applies to ${p.name} on every server. Modrinth matches most jars automatically by file hash; map the rest here.</p>
+        ${auto ? html`<p class="small"><${Icon} n="circle-check" cls="i-xs" style="color:var(--ok)" /> Modrinth matched this jar by file hash to <a class="link" href=${safeUrl(p.installed_url) || `https://modrinth.com/project/${encodeURIComponent(auto.id)}`} target="_blank" rel="noopener">${auto.name || auto.slug || auto.id}${auto.slug ? ` (${auto.slug})` : ""}</a>.${p.source?.manual ? " Your manual mapping below is used instead." : " You don't need to map it unless that match is wrong."}</p>`
+          : !p.source && html`<p class="small muted">No source found yet. The id below is a guess from the plugin name, so test it before saving.</p>`}
         <div class="row wrap" style="gap:10px;align-items:flex-end">
           <div class="field" style="width:140px"><label for="ms-k">Source</label>
             <select id="ms-k" class="select" value=${kind} onChange=${e => setKind(e.currentTarget.value)}>${KINDS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></div>
           <div class="field grow"><label for="ms-i">Id</label>
             <input id="ms-i" class="input mono" required value=${id} placeholder=${KINDS.find(k => k[0] === kind)[2]} onInput=${e => setId(e.currentTarget.value)} /></div>
+          <${Btn} icon="search" busy=${test?.busy} disabled=${!id.trim() || !p.server} onClick=${runTest}>Test<//>
         </div>
         <p class="small muted">${KINDS.find(k => k[0] === kind)[2]}</p>
+        <${TestResult} t=${test} p=${p} kind=${kind} />
         <label class="check"><input type="checkbox" checked=${autoApply} onChange=${e => setAutoApply(e.currentTarget.checked)} />Allow automatic updates from this source</label>
-        ${p.source?.kind === "modrinth" && kind !== "modrinth" && html`<p class="small" style="color:var(--warn)">This replaces the Modrinth match (${p.source.name || p.source.slug || p.source.id}).</p>`}
+        ${auto && !p.source?.manual && kind !== "modrinth" && html`<p class="small" style="color:var(--warn)">Saving replaces the automatic Modrinth match (${auto.name || auto.slug || auto.id}). Updates will then come from this source instead.</p>`}
+        ${auto && kind === "modrinth" && !sameAsAuto && html`<p class="small" style="color:var(--warn)">A Modrinth mapping is ignored while this jar matches ${auto.name || auto.slug || auto.id} by file hash.</p>`}
       </div>
       <div class="dialog-foot"><button type="button" class="btn" onClick=${close}>Cancel</button><${Btn} type="submit" kind="primary" busy=${busy}>Save mapping<//></div>
     </form>
   </div>`;
+}
+
+// Outcome of the Test button: the project it found and its latest release for this server.
+function TestResult({ t, p, kind }) {
+  if (!t || t.busy) return html`<div aria-live="polite"></div>`;
+  const body = !t.ok ? html`<p class="small" style="color:var(--danger)"><${Icon} n="circle-x" cls="i-xs" /> ${t.error}</p>`
+    : html`<p class="small"><${Icon} n=${t.latest ? "circle-check" : "triangle-alert"} cls="i-xs" style=${`color:var(--${t.latest ? "ok" : "warn"})`} />${" "}Found ${safeUrl(t.project.url) ? html`<a class="link" href=${safeUrl(t.project.url)} target="_blank" rel="noopener">${t.project.name || t.project.slug || t.project.id}</a>` : t.project.id}.
+        ${t.latest ? ` Latest for this server: ${t.latest.version} (you have ${p.version || "an unknown version"}).` : ` ${t.note}`}
+        ${kind === "modrinth" && p.source && !p.source.manual && t.project.id && t.project.id !== p.source.id
+          ? html`<br /><span style="color:var(--warn)">This is a different project from the one your jar matched (${p.source.slug || p.source.id}).</span>` : null}</p>`;
+  return html`<div aria-live="polite">${body}</div>`;
 }

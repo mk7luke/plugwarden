@@ -336,6 +336,64 @@ def _source_info(kind: str, sid: str, extra: dict | None = None) -> dict:
     return {"kind": kind, "id": sid, "url": url, **(extra or {})}
 
 
+# ---------------------------------------------------------------- testing one source before it is saved
+
+SOURCE_NAMES = {"modrinth": "Modrinth", "hangar": "Hangar", "spiget": "Spigot", "github": "GitHub"}
+# Seconds between source tests, per provider (not per id: trying many ids must not multiply the request
+# rate). GitHub allows only 60 unauthenticated requests an hour, which update checks share.
+TEST_INTERVAL = {"github": 20.0}
+TEST_INTERVAL_DEFAULT = 2.0
+_test_lock = threading.Lock()
+_last_test: dict[str, float] = {}
+
+
+class TestThrottled(Exception):
+    pass
+
+
+def test_source(kind: str, sid: str, family: str, mc: str | None) -> dict:
+    """Looks up one manual source the way an update check would (1-2 requests), without saving anything.
+    Returns {ok, project?, latest?} or {ok: False, error}."""
+    with _test_lock:
+        if time.monotonic() - _last_test.get(kind, -1e9) < TEST_INTERVAL.get(kind, TEST_INTERVAL_DEFAULT):
+            raise TestThrottled()
+        _last_test[kind] = time.monotonic()
+    name = SOURCE_NAMES[kind]
+    project = None
+    try:
+        with _client() as c:
+            if kind == "modrinth":
+                r = c.get(f"{MODRINTH}/project/{sid}")
+                r.raise_for_status()
+                d = r.json()
+                if not isinstance(d, dict) or not d.get("id"):
+                    raise ValueError("unexpected answer")
+                project = {"id": d.get("id"), "name": d.get("title"), "slug": d.get("slug"),
+                           "url": f"https://modrinth.com/project/{d.get('id')}"}
+                latest = _resolve_modrinth_project(c, d["id"], family, mc)
+            elif kind == "hangar":
+                latest = _resolve_hangar(c, sid, family, mc)
+            elif kind == "spiget":
+                latest = _resolve_spiget(c, sid, family, mc)
+            else:
+                latest = _resolve_github(c, sid, family, mc)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {"ok": False, "error": f"{name} has no project “{sid}”. Check the spelling or copy it from the project's URL."}
+        if e.response.status_code in (403, 429):
+            return {"ok": False, "error": f"{name} is limiting requests right now. Try again in a few minutes."}
+        return {"ok": False, "error": f"{name} answered with an error ({e.response.status_code})."}
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        return {"ok": False, "error": f"Couldn't reach {name}: {str(e).splitlines()[0] if str(e) else type(e).__name__}"}
+    if not project:
+        project = {"id": sid, "name": None, "slug": None, "url": _source_info(kind, sid)["url"]}
+    if not latest:
+        where = "Velocity" if family == "velocity" else f"Paper/Spigot{f' {mc}' if mc else ''}"
+        return {"ok": True, "project": project, "latest": None,
+                "note": f"The project exists, but has no release for {where}."}
+    return {"ok": True, "project": project, "latest": public_latest(latest)}
+
+
 # ---------------------------------------------------------------- Modrinth lookups (POST first, GET fallback)
 # Modrinth's WAF can block POST from a host (403 with an HTML "Request blocked" page) while GET keeps
 # working. The bulk POST endpoints stay the first choice; when refused, the same answers are built from
@@ -804,6 +862,14 @@ def compat_for(compat: dict | None, srv: inventory.Server) -> dict | None:
     elif srv.mc_version and compat["mc_versions"]:
         ok = srv.mc_version in compat["mc_versions"]
     return {**compat, "mc": srv.mc_version, "ok": ok}
+
+
+def installed_url(entry: dict | None) -> str | None:
+    """Modrinth page of the exact release the installed jar matched by hash (None for manual sources)."""
+    src, cur = (entry or {}).get("source") or {}, (entry or {}).get("current") or {}
+    if src.get("kind") != "modrinth" or src.get("manual") or not cur.get("version_id"):
+        return None
+    return f"https://modrinth.com/project/{src['id']}/version/{cur['version_id']}"
 
 
 def public_latest(latest: dict | None) -> dict | None:

@@ -54,6 +54,22 @@ NUMERIC = {
 }
 
 
+def check_source(kind: Any, sid: Any, where: str = "source") -> str:
+    """Validates a manual update source (kind + id) and returns the cleaned id."""
+    if kind not in SOURCE_KINDS:
+        raise SettingsError(f"{where}.kind must be one of {SOURCE_KINDS}")
+    sid = str(sid or "").strip()
+    if not sid or len(sid) > 200 or not re.match(r"^[A-Za-z0-9._\-/]+$", sid) or ".." in sid:
+        raise SettingsError(f"{where}.id is invalid")
+    if kind == "github" and sid.count("/") != 1:
+        raise SettingsError("github id must be 'owner/repo'")
+    if kind == "modrinth" and "/" in sid:
+        raise SettingsError("modrinth id must be a project slug or id")
+    if kind == "spiget" and not sid.isdigit():
+        raise SettingsError("spiget id must be the numeric resource id")
+    return sid
+
+
 def _number(path: str, value: Any, errors: dict[str, str]):
     lo, hi, integer, nullable = NUMERIC[path]
     kind = "a whole number" if integer else "a number"
@@ -199,15 +215,9 @@ def _validate(new: dict, known_ids: set[str]) -> dict:
                 raise SettingsError(f"invalid plugin key: {k!r}")
             if v is None:
                 continue
-            if not isinstance(v, dict) or v.get("kind") not in SOURCE_KINDS:
+            if not isinstance(v, dict):
                 raise SettingsError(f"source_map[{k}].kind must be one of {SOURCE_KINDS}")
-            sid = str(v.get("id") or "").strip()
-            if not sid or len(sid) > 200 or not re.match(r"^[A-Za-z0-9._\-/]+$", sid) or ".." in sid:
-                raise SettingsError(f"source_map[{k}].id is invalid")
-            if v["kind"] == "github" and sid.count("/") != 1:
-                raise SettingsError("github id must be 'owner/repo'")
-            if v["kind"] == "spiget" and not sid.isdigit():
-                raise SettingsError("spiget id must be the numeric resource id")
+            sid = check_source(v.get("kind"), v.get("id"), f"source_map[{k}]")
             entry = {"kind": v["kind"], "id": sid}
             if v.get("auto_apply") is True:
                 entry["auto_apply"] = True  # scheduler may auto-apply from this manual source

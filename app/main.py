@@ -162,7 +162,10 @@ def snapshot() -> dict:
             pub = updates.public_latest(latest)
             if pub:
                 pub["compat"] = updates.compat_for(pub["compat"], srv)
+            entry = cache["entries"].get(updates.cache_key(p["sha1"], srv.family, srv.mc_version)) or {}
             rows.append({**p, "status": status, "source": src, "latest": pub,
+                         "checked_at": entry.get("checked_at"), "stale": bool(entry.get("stale")),
+                         "installed_url": updates.installed_url(entry),
                          "current_compat": updates.current_compat(p, srv, cache),
                          "pinned_version": pin["version"] if settings.hold_applies(pin, srv.id) else None,
                          "pin_scope": pin["servers"] if pin else None,
@@ -487,6 +490,17 @@ def plugin_remove(key: str, request: Request, body: dict = Body(default={})):
 @app.post("/api/v2/updates/check")
 def updates_check(request: Request):
     return job_ref(actions.start_check(user_of(request)))
+
+
+@app.post("/api/v2/sources/test")
+def sources_test(body: dict = Body(...)):
+    """{kind, id, server} → what an update check would find for that source on that server."""
+    srv = inventory.get_server(str(body.get("server") or ""))
+    sid = settings.check_source(body.get("kind"), body.get("id"))
+    try:
+        return updates.test_source(body["kind"], sid, srv.family, srv.mc_version)
+    except updates.TestThrottled:
+        raise HTTPException(429, "Wait a few seconds between tests.")
 
 
 @app.post("/api/v2/updates/plan")
