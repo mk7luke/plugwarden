@@ -1,5 +1,5 @@
 # PlugWarden 2.0 — see dev/DEPLOY_NOTES.md
-FROM python:3.10-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
